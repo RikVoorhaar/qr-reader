@@ -1,0 +1,26 @@
+[project]
+name = "qr-reader"
+version = "0.1.0"
+description = "QR code reader"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "ipykernel>=7.2.0",
+    "matplotlib>=3.10.8",
+    "numpy>=2.2.6",
+    "opencv-python>=4.13.0.92",
+    "pillow>=12.1.1",
+    "qrcode>=8.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/qr_reader"]
