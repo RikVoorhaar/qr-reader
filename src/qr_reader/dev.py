@@ -368,19 +368,80 @@ plt.show()
 # %%
 
 # next step, filling to get the corners. Let's think, what's a good algorithm. The input is a pixel value / location to use as seed. Then the output is a mask of the same shape as the image? where pixels that are connected to the seed are set to True. We maybe even just care about the boundary pixels of the mask?
-# In the end, what we need, to do is to get the homography matrix that transforms image space -> qr code space. One way to do that is to get the 4 gons that define the alignment patterns as accurately as possible, and then solve an optimization problem to get the homography matrix. 
-# So if we have the mask defining the black ring, white ring, black square, then how do from there get the extrema? 
+# In the end, what we need, to do is to get the homography matrix that transforms image space -> qr code space. One way to do that is to get the 4 gons that define the alignment patterns as accurately as possible, and then solve an optimization problem to get the homography matrix.
+# So if we have the mask defining the black ring, white ring, black square, then how do from there get the extrema?
 
 # So yeah, we need to find the _contours_. And a pixel in the fill is part of the contour if it has a neighbor that is not part of the fill. Then we pick the two largest connceted components of the contours (for the rings), or the single largest component for the square.
-# Then, knowing the contour is a 4-gon, we can optimize the location of the 4 vertices, so that the 4-gon formed by them has half the vertices of the contour inside, and half outside or something. 
-# but probably that's overkill, we can just find 4 corners, but finding the 4 points the furthest away from the center 
+# Then, knowing the contour is a 4-gon, we can optimize the location of the 4 vertices, so that the 4-gon formed by them has half the vertices of the contour inside, and half outside or something.
+# but probably that's overkill, we can just find 4 corners, but finding the 4 points the furthest away from the center
 
-# yeah, so we need to figure out the ROI flood fill algorithm in JAX. After that: 
+# yeah, so we need to figure out the ROI flood fill algorithm in JAX. After that:
 # - find the furthest corner by max distance from the center
 # - find the other 3 corners by distance from the center in 90 degree increments from first corner direction
 # - order by the polar angle
 # - that probably already gives reasonable accuracy, but we can do better using optimization
 # - For each boundary pixel (i.e. roi that borders the outside of the mask, and is in biggest connected component), we compute the midpoint to the pixel outside the ROI. These are the boundary points.
-# - We then minimize the distance between boundary points and the quad defined by the 4 corners, as function of the 4 corners. 
+# - We then minimize the distance between boundary points and the quad defined by the 4 corners, as function of the 4 corners.
 
-# the cool thing is that we can do the above not just for the 4 corners of each alignment pattern, but actually to define the quad of the total QR code, becuase we can still use the same boundary pixels using a complete loss function. Then once we have those points very accurately, we can compute the homography matrix, and transform the image as needed. 
+# the cool thing is that we can do the above not just for the 4 corners of each alignment pattern, but actually to define the quad of the total QR code, becuase we can still use the same boundary pixels using a complete loss function. Then once we have those points very accurately, we can compute the homography matrix, and transform the image as needed.
+
+
+# %%
+def get_neighbors(pixel):
+    neighbors = []
+    for dx in [-1, 0, 1]:
+        for dy in [-1, 0, 1]:
+            if dx == 0 and dy == 0:
+                continue
+            neighbor = (pixel[0] + dy, pixel[1] + dx)
+            if (
+                0 <= neighbor[0] < img_binary.shape[0]
+                and 0 <= neighbor[1] < img_binary.shape[1]
+            ):
+                neighbors.append(neighbor)
+    return neighbors
+
+
+cluster = clusters[0]
+seed_pixel = (int(cluster.row), int((cluster.cols[2] + cluster.cols[3]) // 2))
+print(seed_pixel)
+seed_pixel_value = img_binary[seed_pixel[0], seed_pixel[1]]
+region_mask = np.zeros_like(img_binary, dtype=np.bool_)
+region_mask[seed_pixel[0], seed_pixel[1]] = True
+queue = {seed_pixel}
+
+while queue:
+    pixel = queue.pop()
+    neighbors = get_neighbors(pixel)
+    for neighbor in neighbors:
+        if (
+            not region_mask[neighbor[0], neighbor[1]]
+            and img_binary[neighbor[0], neighbor[1]] == seed_pixel_value
+        ):
+            region_mask[neighbor[0], neighbor[1]] = True
+            queue.add(neighbor)
+img_plot = img_binary.copy().astype(np.uint8) * 255
+img_plot = cv2.cvtColor(img_plot, cv2.COLOR_GRAY2BGR)
+img_plot[region_mask] = (0, 255, 0)
+plt.imshow(img_plot)
+plt.title("Region mask")
+plt.show()
+
+# %%
+
+# now to make this jax compatible, we need to use a wave front mask, and process all the pixels in the wave front at once.
+# so we need an update step, which for updates in place the region mask, and returns the new wave front, one neighbor dirction at a time. 
+
+# we assume the target value is true, otherwise we invert the img_binary argument.
+def region_fill_update(region_mask: jnp.ndarray, wave_front: jnp.ndarray, img_binary: jnp.ndarray, dx: int, dy: int)->tuple[jnp.ndarray, jnp.ndarray]: 
+    x_start = max(-dx, 0)
+    x_end = min(wave_front.shape[1] - dx, wave_front.shape[1])
+    y_start = max(-dy, 0)
+    y_end = min(wave_front.shape[0] - dy, wave_front.shape[0])
+    wave_front_shifted = wave_front[y_start:y_end, x_start:x_end]
+    new_pixels= (img_binary[y_start:y_end, x_start:x_end] & wave_front_shifted)
+    # actually we need to shift the wave front, or the image, not both, and which one depends on the direction of the shift.
+    # anyway, we find which pixels are newly added, then or them with the region mask, and return them as the new wave front.
+    # in the full update step, we do this for all neighbors, and then or the new wave fronts together. we don't even need to update the region mask, since we can use the orred wave front for that as well. more efficient. perhaps this method instead takes the new wave front as an argument, so that it can be updated in place and we don't do memory allocation in this method. for arrays.
+    wave_front_shifted 
+
