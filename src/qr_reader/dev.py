@@ -5,8 +5,10 @@ import cv2
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
+import networkx as nx
 import numpy as np
 import qrcode
+from scipy import ndimage
 
 qr = qrcode.QRCode(
     version=1,
@@ -429,19 +431,157 @@ plt.show()
 
 # %%
 
-# now to make this jax compatible, we need to use a wave front mask, and process all the pixels in the wave front at once.
-# so we need an update step, which for updates in place the region mask, and returns the new wave front, one neighbor dirction at a time. 
+# JAX-friendly flood fill: expand the wave front to 8-connected neighbors in one step (vectorized).
 
-# we assume the target value is true, otherwise we invert the img_binary argument.
-def region_fill_update(region_mask: jnp.ndarray, wave_front: jnp.ndarray, img_binary: jnp.ndarray, dx: int, dy: int)->tuple[jnp.ndarray, jnp.ndarray]: 
-    x_start = max(-dx, 0)
-    x_end = min(wave_front.shape[1] - dx, wave_front.shape[1])
-    y_start = max(-dy, 0)
-    y_end = min(wave_front.shape[0] - dy, wave_front.shape[0])
-    wave_front_shifted = wave_front[y_start:y_end, x_start:x_end]
-    new_pixels= (img_binary[y_start:y_end, x_start:x_end] & wave_front_shifted)
-    # actually we need to shift the wave front, or the image, not both, and which one depends on the direction of the shift.
-    # anyway, we find which pixels are newly added, then or them with the region mask, and return them as the new wave front.
-    # in the full update step, we do this for all neighbors, and then or the new wave fronts together. we don't even need to update the region mask, since we can use the orred wave front for that as well. more efficient. perhaps this method instead takes the new wave front as an argument, so that it can be updated in place and we don't do memory allocation in this method. for arrays.
-    wave_front_shifted 
 
+def expand_wave_front_neighbors(wf: jnp.ndarray) -> jnp.ndarray:
+    """OR of wf shifted so each True pixel contributes all 8 neighbors (same connectivity as get_neighbors)."""
+    out = jnp.zeros_like(wf)
+    out = out.at[:-1, :].set(wf[1:, :])
+    out = out.at[1:, :].set(out[1:, :] | wf[:-1, :])
+    out = out.at[:, :-1].set(out[:, :-1] | wf[:, 1:])
+    out = out.at[:, 1:].set(out[:, 1:] | wf[:, :-1])
+    out = out.at[:-1, :-1].set(out[:-1, :-1] | wf[1:, 1:])
+    out = out.at[:-1, 1:].set(out[:-1, 1:] | wf[1:, :-1])
+    out = out.at[1:, :-1].set(out[1:, :-1] | wf[:-1, 1:])
+    out = out.at[1:, 1:].set(out[1:, 1:] | wf[:-1, :-1])
+    return out
+
+
+@jax.jit
+def region_fill_wave_front(
+    img_binary: jnp.ndarray,
+    seed_row: int,
+    seed_col: int,
+) -> jnp.ndarray:
+    """
+    Connected region fill (8-neighbor) matching the seed pixel value.
+    Same semantics as the Python queue BFS above; iteration is jax.lax.while_loop (no Python while).
+    """
+    img = jnp.asarray(img_binary)
+    target = img[seed_row, seed_col]
+    region_mask = jnp.zeros_like(img, dtype=jnp.bool_)
+    wave_front = jnp.zeros_like(img, dtype=jnp.bool_)
+    wave_front = wave_front.at[seed_row, seed_col].set(True)
+    region_mask = region_mask.at[seed_row, seed_col].set(True)
+
+    def cond(carry: tuple[jnp.ndarray, jnp.ndarray]) -> jnp.ndarray:
+        _, wf = carry
+        return jnp.any(wf)
+
+    def body(carry: tuple[jnp.ndarray, jnp.ndarray]) -> tuple[jnp.ndarray, jnp.ndarray]:
+        rm, wf = carry
+        expanded = expand_wave_front_neighbors(wf)
+        new_pixels = expanded & (img == target) & (~rm)
+        return (rm | new_pixels, new_pixels)
+
+    region_mask_out, _ = jax.lax.while_loop(cond, body, (region_mask, wave_front))
+    return region_mask_out
+
+
+@jax.jit
+def region_boundary_8(region_mask: jnp.ndarray) -> jnp.ndarray:
+    """In-region pixels with at least one 8-neighbor not in the region."""
+    return region_mask & expand_wave_front_neighbors(~region_mask)
+
+
+def boundary_connected_components_networkx(
+    boundary_mask: np.ndarray,
+) -> list[list[tuple[int, int]]]:
+    """
+    8-connected components among True boundary pixels (NetworkX).
+    One ``add_node`` per boundary pixel (isolates have no edges); each undirected
+    edge is added once via ``j > i`` in row-major linear index.
+    """
+    boundary_mask = np.asarray(boundary_mask, dtype=bool)
+    h, w = boundary_mask.shape
+    g = nx.Graph()
+    for y, x in zip(*np.where(boundary_mask), strict=True):
+        g.add_node((int(y), int(x)))
+    for y, x in zip(*np.where(boundary_mask), strict=True):
+        i = y * w + x
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dy == 0 and dx == 0:
+                    continue
+                ny, nx_ = y + dy, x + dx
+                if 0 <= ny < h and 0 <= nx_ < w and boundary_mask[ny, nx_]:
+                    j = ny * w + nx_
+                    if j > i:
+                        g.add_edge((int(y), int(x)), (int(ny), int(nx_)))
+    return [sorted(c) for c in nx.connected_components(g)]
+
+
+def boundary_connected_components_ndimage(
+    boundary_mask: np.ndarray,
+) -> list[list[tuple[int, int]]]:
+    """
+    Same 8-connected components as ``boundary_connected_components_networkx``,
+    using ``scipy.ndimage.label`` (C implementation). Pure-Python union-find often
+    loses to NetworkX here: millions of ``find``/``union`` calls still execute in
+    Python, while NetworkX’s graph + BFS path is heavily optimized.
+    """
+    from collections import defaultdict
+
+    boundary_mask = np.asarray(boundary_mask, dtype=bool)
+    structure = ndimage.generate_binary_structure(2, 2)
+    labeled, _n = ndimage.label(boundary_mask, structure=structure)
+    by_label: dict[int, list[tuple[int, int]]] = defaultdict(list)
+    for y, x in zip(*np.where(boundary_mask), strict=True):
+        by_label[int(labeled[y, x])].append((int(y), int(x)))
+    return [sorted(v) for _, v in sorted(by_label.items())]
+
+
+cluster = clusters[1]
+# seed_pixel = (int(cluster.row), int((cluster.cols[2] + cluster.cols[3]) // 2))
+seed_pixel = (int(cluster.row), int((cluster.cols[0] + cluster.cols[1]) // 2))
+region_mask_jax = region_fill_wave_front(
+    jnp.asarray(img_binary), seed_pixel[0], seed_pixel[1]
+)
+img_plot = img_binary.copy().astype(np.uint8) * 255
+img_plot = cv2.cvtColor(img_plot, cv2.COLOR_GRAY2BGR)
+img_plot[np.asarray(region_mask_jax)] = (0, 255, 0)
+plt.imshow(img_plot)
+plt.title("Region mask (JAX wave front)")
+plt.show()
+
+
+# %%
+input_img = jnp.asarray(img_binary)
+region_mask_jax = region_fill_wave_front(input_img, seed_pixel[0], seed_pixel[1])
+boundary_mask = region_boundary_8(region_mask_jax)
+img_plot = img_binary.copy().astype(np.uint8) * 255
+img_plot = cv2.cvtColor(img_plot, cv2.COLOR_GRAY2BGR)
+img_plot[np.asarray(boundary_mask)] = (0, 0, 255)  # BGR red
+plt.imshow(cv2.cvtColor(img_plot, cv2.COLOR_BGR2RGB))
+plt.title("Region boundary (8-neighbor)")
+plt.show()
+
+# %%
+boundary_np = np.asarray(boundary_mask)
+components_nx = boundary_connected_components_networkx(boundary_np)
+components_nd = boundary_connected_components_ndimage(boundary_np)
+assert {frozenset(c) for c in components_nx} == {frozenset(c) for c in components_nd}
+
+h, w = boundary_np.shape
+rng = np.random.default_rng(0)
+cmap = plt.cm.tab20(np.linspace(0, 1, 20))
+rgb = np.stack([img_binary.astype(np.float32)] * 3, axis=-1) / 255.0
+for i, comp in enumerate(components_nd):
+    color = cmap[i % len(cmap)][:3]
+    for y, x in comp:
+        rgb[y, x] = 0.55 * rgb[y, x] + 0.45 * color
+plt.imshow(np.clip(rgb, 0, 1))
+plt.title(f"Boundary connected components (ndimage), n={len(components_nd)}")
+plt.show()
+
+
+# %%
+"""
+next up, we have to do corner finding for the contours. this is a two step process. the input is an ordered list of contour points.
+1. find the rough corners. we find max radial distnace from centroid for the biggest contour. we want to do some kind of nms to accurately find 4 corners. using a neighborhood of e.g. 5-10, or a percentage of total, we find local maxima of angular distance from the centroid. then nms is based on angular from the centroid, i.e. maxima are supressed if they are e.g. within 10 degrees of a higher maximum. this is repeated for a top 4.
+2. find the precise corners. using the rough corners, classifiy each contour point by segment of the 4 edges. then fit a line to each segment. and then the corners are the 4 intersection points
+3. repeat step 2, but using the precise corners to refine further.
+
+for optimal results, we should actually refine the edges using the original gray scale image. we need to estimate gradients from the image, and then use the gradient to nudge the contour points towards the actual edge. that's an interesting add on if we want to go for high accuracy, but really really overkill for a qr code detector.
+"""
