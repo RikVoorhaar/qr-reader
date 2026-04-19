@@ -585,3 +585,117 @@ next up, we have to do corner finding for the contours. this is a two step proce
 
 for optimal results, we should actually refine the edges using the original gray scale image. we need to estimate gradients from the image, and then use the gradient to nudge the contour points towards the actual edge. that's an interesting add on if we want to go for high accuracy, but really really overkill for a qr code detector.
 """
+
+
+def angular_nms_top_radial_indices(
+    radial_distances: np.ndarray,
+    angles: np.ndarray,
+    *,
+    angular_nms_rad: float,
+    k: int = 4,
+) -> np.ndarray:
+    """
+    Pick ``k`` contour indices with largest radial distance (from centroid), with
+    angular non-maximum suppression: after each pick, suppress candidates within
+    ``angular_nms_rad`` (radians) of that pick's angle, wrapping at ±π.
+
+    Raises ``ValueError`` if no unsuppressed candidates remain before ``k`` picks.
+    """
+    radial_distances = np.asarray(radial_distances, dtype=np.float64)
+    angles = np.asarray(angles, dtype=np.float64)
+    if radial_distances.shape != angles.shape:
+        raise ValueError("radial_distances and angles must have the same shape")
+    if radial_distances.ndim != 1:
+        raise ValueError("expected 1-D arrays")
+    n = radial_distances.shape[0]
+    if n == 0:
+        raise ValueError("empty contour")
+    supressed_mask = np.ones(n, dtype=bool)
+    max_inds: list[int] = []
+    neg_inf = -np.finfo(np.float64).max
+    for pick in range(k):
+        if not np.any(supressed_mask):
+            raise ValueError(
+                f"angular NMS: no candidates left before pick {pick + 1}/{k}; "
+                "increase angular separation (angular_nms_rad) or reduce k."
+            )
+        masked_scores = np.where(supressed_mask, radial_distances, neg_inf)
+        argmax = int(np.argmax(masked_scores))
+        max_inds.append(argmax)
+        argmax_angle = angles[argmax]
+        angular_distances = np.abs(angles - argmax_angle)
+        angular_distances = np.minimum(angular_distances, 2 * np.pi - angular_distances)
+        supressed_mask[angular_distances < angular_nms_rad] = False
+    return np.asarray(max_inds, dtype=np.intp)
+
+
+# %%
+comp = components_nd[0]
+comp_np = np.array(comp)
+centroid = comp_np.mean(axis=0)
+radial_distances = np.linalg.norm(comp_np - centroid, axis=1)
+angles = np.arctan2(comp_np[:, 1] - centroid[1], comp_np[:, 0] - centroid[0])
+angle_order = np.argsort(angles)
+angles_ordered = angles[angle_order]
+radial_distances_ordered = radial_distances[angle_order]
+plt.plot(angles_ordered, radial_distances_ordered)
+plt.show()
+
+# %%
+angular_distance_nms = 10 * 2 * np.pi / 360  # 10 degrees
+max_inds = angular_nms_top_radial_indices(
+    radial_distances,
+    angles,
+    angular_nms_rad=angular_distance_nms,
+    k=4,
+)
+
+plt.plot(angles_ordered, radial_distances_ordered)
+plt.scatter(angles[max_inds], radial_distances[max_inds], color="red", s=60, zorder=5)
+plt.xlabel("angle (rad)")
+plt.ylabel("radial distance")
+plt.title("Radial distance vs angle (ordered) + angular NMS maxima")
+plt.show()
+
+# %%
+rgb_corners = np.stack([img_binary.astype(np.float32)] * 3, axis=-1) / 255.0
+for i, comp_i in enumerate(components_nd):
+    color = cmap[i % len(cmap)][:3]
+    for y, x in comp_i:
+        rgb_corners[y, x] = 0.55 * rgb_corners[y, x] + 0.45 * color
+
+fig, ax = plt.subplots(figsize=(8, 8))
+ax.imshow(np.clip(rgb_corners, 0, 1))
+for i, comp_i in enumerate(components_nd):
+    comp_arr = np.asarray(comp_i, dtype=np.float64)
+    if comp_arr.shape[0] < 4:
+        continue
+    centroid_i = comp_arr.mean(axis=0)
+    rd = np.linalg.norm(comp_arr - centroid_i, axis=1)
+    ang = np.arctan2(
+        comp_arr[:, 1] - centroid_i[1], comp_arr[:, 0] - centroid_i[0]
+    )
+    try:
+        idx = angular_nms_top_radial_indices(
+            rd, ang, angular_nms_rad=angular_distance_nms, k=4
+        )
+    except ValueError:
+        continue
+    corners = comp_arr[idx]
+    c = cmap[i % len(cmap)]
+    ax.scatter(
+        corners[:, 1],
+        corners[:, 0],
+        s=200,
+        marker="X",
+        c=[c[:3]],
+        edgecolors="white",
+        linewidths=1.5,
+        zorder=10,
+        label=f"component {i} corners",
+    )
+ax.set_title("Boundary components + angular NMS corners (per component, if ≥4 points)")
+ax.legend(loc="upper right", fontsize=8)
+plt.show()
+
+# %%
