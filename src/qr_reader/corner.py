@@ -15,6 +15,8 @@ def angular_nms_top_radial_indices(
     angular non-maximum suppression: after each pick, suppress candidates within
     ``angular_nms_rad`` (radians) of that pick's angle, wrapping at ±π.
 
+    The returned indices are sorted by increasing angle (CCW, starting from −π).
+
     Raises ``ValueError`` if no unsuppressed candidates remain before ``k`` picks.
     """
     radial_distances = np.asarray(radial_distances, dtype=np.float64)
@@ -42,4 +44,5 @@ def angular_nms_top_radial_indices(
         angular_distances = np.abs(angles - argmax_angle)
         angular_distances = np.minimum(angular_distances, 2 * np.pi - angular_distances)
         supressed_mask[angular_distances < angular_nms_rad] = False
-    return np.asarray(max_inds, dtype=np.intp)
+    max_inds = np.asarray(max_inds, dtype=np.intp)
+    return max_inds[np.argsort(angles[max_inds])]

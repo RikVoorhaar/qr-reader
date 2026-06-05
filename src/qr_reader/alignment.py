@@ -27,7 +27,7 @@ def find_alignment_patterns(img_binary: np.ndarray, max_error: float):
     and columns_all is an (N, 6) array of the column indices marking the boundaries
     of the 5-segment pattern.
     """
-    # Expected ratio 1:1:3:1:1 (white:black:white:black:white)
+    # Expected ratio 1:1:3:1:1 (black:white:black:white:black)
     expected = np.array([1, 1, 3, 1, 1], dtype=np.float64)
     expected = expected / expected.sum()
     log_expected = np.log(expected)
@@ -50,7 +50,13 @@ def find_alignment_patterns(img_binary: np.ndarray, max_error: float):
     indices_to_add = np.arange(6)
     candidate_indices_add = candidate_indices.reshape(-1, 1) + indices_to_add
     candidate_columns_all = columns[candidate_indices_add]
-    return candidate_rows, candidate_columns_all
+
+    # Filter: pattern must start with black (False).  The first segment
+    # begins at ``columns[i] + 1`` (just after the transition into it).
+    first_pixel_cols = np.clip(candidate_columns_all[:, 0] + 1, 0, img_binary.shape[1] - 1)
+    starts_black = ~img_binary[candidate_rows, first_pixel_cols]
+
+    return candidate_rows[starts_black], candidate_columns_all[starts_black]
 
 
 def find_alignment_patterns_2d(img_binary: np.ndarray, max_error: float):

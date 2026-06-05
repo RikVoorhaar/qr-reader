@@ -196,15 +196,16 @@ plt.show()
 # ——— All corners for every detected cluster ——————————————————————————————
 
 # Per-cluster corner-finding: fill → boundary → components → angular NMS.
-# Seed is the centre of the cluster's black segment (cols[2:3]).
+# We seed in the first black segment (cols[0:1]) to fill the outer black
+# ring, whose boundary has two connected components (inner + outer edges).
 
 all_corners: list[tuple[int, np.ndarray]] = []  # (cluster_idx, corners array)
 
 for ci, cluster in enumerate(clusters):
     seed_row = int(cluster.row)
-    seed_col = int((cluster.cols[2] + cluster.cols[3]) // 2)
+    seed_col = int((cluster.cols[0] + cluster.cols[1]) // 2)
 
-    # Flood fill from centre of black segment
+    # Flood fill the outer black ring
     region_mask = region_fill_wave_front(
         np.asarray(img_binary), seed_row, seed_col,
     )
@@ -251,29 +252,37 @@ for ci, corners in all_corners:
 ax.set_title(f"All corners across {len(clusters)} clusters")
 ax.legend(loc="upper right", fontsize=7)
 plt.show()
+
 # %% 
+all_corners
+def area(corners):
+    diag1 = corners[0] - corners[1]
+    diag2 = corners[2] - corners[3]
+    return np.abs(np.linalg.det(np.vstack([diag1, diag2])))
 
-rgb = np.stack([img_binary.astype(np.float32)] * 3, axis=-1) / 255.0
-for ci, cluster in enumerate(clusters):
-    print(f"cluster {ci}: {cluster}")
-    seed_row = int(cluster.row)
-    seed_col = int((cluster.cols[2] + cluster.cols[3]) // 2)
+for ci, corners in all_corners:
+    print(f"Cluster {ci} area: {area(corners)}")
+all_corners[0][1]
+"""We need a primitive that checks how far two line segments are from being co-linear. 
 
-    # Flood fill from centre of black segment
-    region_mask = region_fill_wave_front(
-        np.asarray(img_binary), seed_row, seed_col,
-    )
-    # rgb[region_mask] = 1
+Naive way: we have (p1,p2), (q1,q2) line segments. then the P line is given by p1+t*(p2-p1), and the Q line is given by q1+s*(q2-q1). 
 
-    # Boundary → connected components
-    boundary = region_boundary_8(region_mask)
-    components = boundary_connected_components_ndimage(np.asarray(boundary))
-    print(f"cluster {ci}: {len(components)} components")
+You could like take the max distance between the P line and q1/q2 for example as a colinearity test. 
+
+Yeah, so we want to compute the anglular distance _and_ the max offset. The latter is basically: max(d(q1,P), d(q2,P), d(p1,Q), d(p2,Q)) / L, where L is the distance between (p1+p2)/2 and (q1+q2)/2. To avoid pathological situations, we filter out associations where the finder patterns intersect. 
+
+So TOOD:
+    - angular distnace
+    - distance between point and line
+    - intersection test
+    - move area computation above to a module
 
 
-    for i, comp in enumerate(components):
-        color = cmap[ci % len(cmap)][:3]
-        for y, x in comp:
-            rgb[y, x] = color
-plt.imshow(np.clip(rgb, 0, 1))
-plt.show()
+The idea is then:
+    - take all the finder patterns. For each pair, compute an 'association score' or threshold
+    - Use area to find the _outer_ corners in each case, and only compare the outer part of the finder patterns
+    - For each pair of finder patterns, compute the angular distnaces between all pairs of segments. We should find that each segment is roughly parallel to 2 others, so 8 pairs of parallel segments. For those, compute the offset, and we should find exactly two pairs with low offset -> this tells us how they are alligned. Record the pair of colinear segments
+    - Find situations where e.g. A is similar to B, and B is similar to C, and A is not colinear to C, and the colinear segments of A-B are not the same as the colinear segments of B-C. Then B must be the top left corner
+    - Extract the 24 landmarks, and map them to the QR code grid. Each finder pattern has 4 outer corners and 4 inner corners.
+    - Compute the homography, use some simplified RANSAC to filter outliers.
+"""
