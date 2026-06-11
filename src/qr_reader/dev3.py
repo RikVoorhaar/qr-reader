@@ -579,18 +579,14 @@ plt.show()
 from qr_reader.decoder.decoder import DecodeError, decode
 from qr_reader.sample import sample_qr_bits
 
-bits = sample_qr_bits(img_gray, H_refined, N_best)
-print(f"Sampled grid shape: {bits.shape}, white fraction: {bits.mean():.3f}")
+matrix = sample_qr_bits(img_gray, H_refined, N_best)
+print(f"Sampled matrix shape: {matrix.shape}, dark fraction: {matrix.mean():.3f}")
 
 # Visualize
 fig, ax = plt.subplots(figsize=(8, 8))
-ax.imshow(bits, cmap="gray", interpolation="nearest")
-ax.set_title(f"Sampled QR bits (V={V_best}, N={N_best})")
+ax.imshow(~matrix, cmap="gray", interpolation="nearest")
+ax.set_title(f"Sampled QR matrix (V={V_best}, N={N_best})")
 plt.show()
-
-# The sampler returns True=white/light, but the decoder expects True=dark/black.
-# Invert before decoding.
-matrix = (~bits).T
 
 try:
     decoded_text = decode(matrix)

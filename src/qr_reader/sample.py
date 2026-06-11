@@ -146,14 +146,14 @@ def sample_qr_bits(
     N: int,
     threshold: float | None = None,
 ) -> np.ndarray:
-    """Sample every QR module and return a boolean grid.
+    """Sample every QR module and return a decoder-ready bit matrix.
 
     Each cell is sampled with a 3×3 supersampling neighbourhood.  The
     weighted majority vote uses centre weight 2 and surrounding weight 1
     (total weight = 10, majority ≥ 5 white votes).
 
-    ``False`` = black, ``True`` = white (matching the convention in
-    ``binarize_image``).
+    The sampled light-module grid is converted at the API boundary so the
+    returned matrix matches ``qr_reader.decoder.decode``: ``True`` = dark/black.
 
     Args:
         image: Grayscale ``uint8`` image.
@@ -168,7 +168,7 @@ def sample_qr_bits(
     if threshold is None:
         threshold = compute_adaptive_threshold(image, H, N)
 
-    bits = np.empty((N, N), dtype=bool)
+    light_modules = np.empty((N, N), dtype=bool)
 
     # Pre-allocate the 3×3 weight kernel
     weights = np.ones((3, 3), dtype=np.float64)
@@ -178,6 +178,6 @@ def sample_qr_bits(
         for c in range(N):
             vals = supersample_cell(image, H, r, c)
             white_votes = np.sum((vals > threshold) * weights)
-            bits[r, c] = white_votes >= 5.0
+            light_modules[r, c] = white_votes >= 5.0
 
-    return bits
+    return (~light_modules).T

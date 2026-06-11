@@ -95,21 +95,21 @@ dst_xy = np.vstack(dst_xy)
 H_ransac, inliers = ransac_homography(src_xy, dst_xy, threshold=3.0, iters=2000)
 H_refined = refine_homography_lm(H_ransac, src_xy, dst_xy, loss="linear")
 
-bits = sample_qr_bits(img_gray, H_refined, N)
-matrix = ~bits
+matrix = sample_qr_bits(img_gray, H_refined, N)
+modules = matrix.T  # canonical QR row/col view; True = dark
 
 black_cells, white_cells = finder_pattern_known_cells(N)
 
-print("=== Finder pattern cell values (sampler: True=white, False=black) ===")
-black_vals = [bits[r, c] for r, c in black_cells]
+print("=== Finder pattern cell values (sampler: True=dark, False=light) ===")
+black_vals = [modules[r, c] for r, c in black_cells]
 print(
-    f"Black cells: True(white)={sum(black_vals)}, False(black)={len(black_vals) - sum(black_vals)}"
+    f"Black cells: True(dark)={sum(black_vals)}, False(light)={len(black_vals) - sum(black_vals)}"
 )
 print(f"  Sample: {black_vals[:20]}")
 
-white_vals = [bits[r, c] for r, c in white_cells]
+white_vals = [modules[r, c] for r, c in white_cells]
 print(
-    f"White cells: True(white)={sum(white_vals)}, False(black)={len(white_vals) - sum(white_vals)}"
+    f"White cells: True(dark)={sum(white_vals)}, False(light)={len(white_vals) - sum(white_vals)}"
 )
 print(f"  Sample: {white_vals[:20]}")
 
@@ -126,25 +126,25 @@ except Exception as e:
 
 print("\nTop-left 7x7:")
 for r in range(7):
-    print("  " + " ".join("1" if bits[r, c] else "0" for c in range(7)))
+    print("  " + " ".join("1" if modules[r, c] else "0" for c in range(7)))
 
 print("\nTop-right 7x7:")
 for r in range(7):
-    print("  " + " ".join("1" if bits[r, c] else "0" for c in range(N - 7, N)))
+    print("  " + " ".join("1" if modules[r, c] else "0" for c in range(N - 7, N)))
 
 print("\nBottom-left 7x7:")
 for r in range(N - 7, N):
-    print("  " + " ".join("1" if bits[r, c] else "0" for c in range(7)))
+    print("  " + " ".join("1" if modules[r, c] else "0" for c in range(7)))
 
 print("\nRow 8, cols 0-8:")
-print("  " + " ".join("1" if bits[8, c] else "0" for c in range(9)))
+print("  " + " ".join("1" if modules[8, c] else "0" for c in range(9)))
 
 print("\nRow 8, cols N-8 to N-1:")
-print("  " + " ".join("1" if bits[8, c] else "0" for c in range(N - 8, N)))
+print("  " + " ".join("1" if modules[8, c] else "0" for c in range(N - 8, N)))
 
 print("\nCol 8, rows 0-8:")
 for r in range(9):
-    print(f"  {bits[r, 8]}")
+    print(f"  {modules[r, 8]}")
 
-np.save("/home/rik/git/qr-reader/debug_bits.npy", bits)
+np.save("/home/rik/git/qr-reader/debug_bits.npy", matrix)
 print("\nSaved to debug_bits.npy")

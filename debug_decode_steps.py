@@ -90,8 +90,7 @@ dst_xy = np.vstack(dst_xy)
 H_ransac, inliers = ransac_homography(src_xy, dst_xy, threshold=3.0, iters=2000)
 H_refined = refine_homography_lm(H_ransac, src_xy, dst_xy, loss="linear")
 
-bits = sample_qr_bits(img_gray, H_refined, N)
-matrix = ~bits  # True = dark for decoder
+matrix = sample_qr_bits(img_gray, H_refined, N)  # True = dark for decoder
 
 print("=== Step 1: Format Info ===")
 try:
