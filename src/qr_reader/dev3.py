@@ -582,7 +582,51 @@ ax.set_ylabel("y (row)")
 plt.show()
 
 # %%
-# Step F — Decode the QR code using OpenCV
+# Step G — Supersample QR bits from grayscale & decode via OpenCV
+from qr_reader.decode import decode_qr
+from qr_reader.sample import sample_qr_bits
+
+bits = sample_qr_bits(img_gray, H_refined, N_best)
+print(f"Sampled grid shape: {bits.shape}, white fraction: {bits.mean():.3f}")
+
+# Visualize
+fig, ax = plt.subplots(figsize=(8, 8))
+ax.imshow(bits, cmap="gray", interpolation="nearest")
+ax.set_title(f"Sampled QR bits (V={V_best}, N={N_best})")
+plt.show()
+
+# Build a clean uint8 image for OpenCV
+# Up-scale with box_size=10 and add a white quiet-zone border (4 modules)
+box_size = 10
+border = 4
+img_clean = np.full(
+    ((N_best + 2 * border) * box_size, (N_best + 2 * border) * box_size),
+    255,
+    dtype=np.uint8,
+)
+for r in range(N_best):
+    for c in range(N_best):
+        val = 255 if bits[r, c] else 0
+        img_clean[
+            (r + border) * box_size : (r + border + 1) * box_size,
+            (c + border) * box_size : (c + border + 1) * box_size,
+        ] = val
+
+decoded_text, ok = decode_qr(img_clean, corners_xy=None)  # let OpenCV find corners
+
+if ok:
+    print(f'✓ Decoded from sampled bits: "{decoded_text}"')
+else:
+    print("✗ Decode failed from sampled bits")
+
+assert ok, f"Decode failed for V={V_best}"
+assert decoded_text == QR_CONTENT, (
+    f"Content mismatch: expected '{QR_CONTENT}', got '{decoded_text}'"
+)
+print(f"✓ Content check passed: '{decoded_text}' == '{QR_CONTENT}'")
+
+# %%
+# Step F — Decode the QR code using OpenCV (with corners)
 
 from qr_reader.decode import decode_qr
 

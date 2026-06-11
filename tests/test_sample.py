@@ -1,0 +1,616 @@
+"""Tests for QR sampling & thresholding module (``qr_reader.sample``)."""
+
+import numpy as np
+import pytest
+from qrcode import QRCode
+from qrcode.constants import ERROR_CORRECT_L
+
+from qr_reader.sample import (
+    compute_adaptive_threshold,
+    finder_pattern_known_cells,
+    sample_qr_bits,
+    supersample_cell,
+)
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_rectified_qr_image(
+    version: int = 1, content: str = "test", box_size: int = 10
+) -> tuple[np.ndarray, int]:
+    """Generate a clean, rectified QR code image (no border) and return
+    ``(img, N)``.  The image is ``N*box_size`` × ``N*box_size`` so that
+    subpixel sampling has enough spatial resolution to avoid bleeding
+    into adjacent modules."""
+    qr = QRCode(
+        version=version,
+        error_correction=ERROR_CORRECT_L,
+        box_size=box_size,
+        border=0,
+    )
+    qr.add_data(content)
+    qr.make(fit=True)
+    img = np.array(qr.make_image()).astype(np.uint8) * 255
+    N = qr.modules_count  # = 4*version + 17
+    return img, N
+
+
+def _grid_to_image_homography(box_size: int) -> np.ndarray:
+    """Return the 3×3 homography that maps QR-grid ``(x, y)`` to image
+    ``(x, y)`` when each module is *box_size* × *box_size* pixels."""
+    H = np.eye(3)
+    H[0, 0] = float(box_size)
+    H[1, 1] = float(box_size)
+    return H
+
+
+def _qr_module_grid(version: int = 1, content: str = "test") -> tuple[np.ndarray, int]:
+    """Return the boolean module grid from the ``qrcode`` library.
+
+    Returns ``(grid, N)`` where *grid* is ``(N, N)`` with ``True`` = white,
+    ``False`` = black.  The ``qrcode`` library uses ``True`` = black,
+    ``None`` = white, so we invert accordingly.
+    """
+    qr = QRCode(
+        version=version,
+        error_correction=ERROR_CORRECT_L,
+        box_size=1,
+        border=0,
+    )
+    qr.add_data(content)
+    qr.make(fit=True)
+
+    # qr.modules: list[list[bool|None]]  where True=black, None=white
+    raw = qr.modules
+    N = len(raw)
+    grid = np.empty((N, N), dtype=bool)
+    for r in range(N):
+        for c in range(N):
+            # True=black → False; None/False=white → True
+            grid[r, c] = not raw[r][c]
+    return grid, N
+
+
+# ---------------------------------------------------------------------------
+# Test 1: supersample_cell with identity homography
+# ---------------------------------------------------------------------------
+
+
+class TestSupersampleCellIdentity:
+    """supersample_cell with H=eye(3) on a synthetic image."""
+
+    @staticmethod
+    def _make_synthetic_image(h: int = 100, w: int = 100) -> np.ndarray:
+        """Create a float64 image where ``image[y, x] = y * w + x``."""
+        ys = np.arange(h, dtype=np.float64)[:, np.newaxis]
+        xs = np.arange(w, dtype=np.float64)[np.newaxis, :]
+        return ys * w + xs
+
+    def test_centre_value(self):
+        """The centre sample [1, 1] matches the pixel at (row+0.5, col+0.5)."""
+        img = self._make_synthetic_image()
+        H = np.eye(3)
+        row, col = 10, 20
+
+        vals = supersample_cell(img, H, row, col)
+
+        expected_centre = 10.5 * 100 + 20.5
+        assert vals[1, 1] == pytest.approx(expected_centre, rel=1e-12)
+
+    def test_all_nine_match_bilinear(self):
+        """All 9 values match bilinear interpolation at their sub-pixel coords."""
+        img = self._make_synthetic_image()
+        H = np.eye(3)
+        row, col = 10, 20
+
+        vals = supersample_cell(img, H, row, col)
+        offsets = np.array([0.25, 0.5, 0.75])
+
+        for i, dy in enumerate(offsets):
+            for j, dx in enumerate(offsets):
+                y = row + dy
+                x = col + dx
+                expected = y * 100 + x
+                assert vals[i, j] == pytest.approx(expected, rel=1e-12)
+
+    def test_shape_and_dtype(self):
+        """Return value has shape (3, 3) and float64 dtype."""
+        img = self._make_synthetic_image()
+        vals = supersample_cell(img, np.eye(3), 5, 5)
+        assert vals.shape == (3, 3)
+        assert vals.dtype == np.float64
+
+
+# ---------------------------------------------------------------------------
+# Test 2: supersample_cell with translated homography
+# ---------------------------------------------------------------------------
+
+
+class TestSupersampleCellWithHomography:
+    """supersample_cell with a translation homography."""
+
+    def test_translation(self):
+        """A translation of (+5, +10) shifts by 5 in x, 10 in y."""
+        h, w = 100, 100
+        ys = np.arange(h, dtype=np.float64)[:, np.newaxis]
+        xs = np.arange(w, dtype=np.float64)[np.newaxis, :]
+        img = ys * w + xs  # float64, no uint8 wrap
+
+        H = np.eye(3)
+        H[0, 2] = 5.0
+        H[1, 2] = 10.0
+
+        row, col = 5, 5
+        vals = supersample_cell(img, H, row, col)
+
+        # Grid coords (x, y) map to image (x+5, y+10)
+        offsets = np.array([0.25, 0.5, 0.75])
+        for i, dy in enumerate(offsets):
+            for j, dx in enumerate(offsets):
+                img_y = row + dy + 10.0  # y + translation_y
+                img_x = col + dx + 5.0  # x + translation_x
+                expected = img_y * w + img_x
+                assert vals[i, j] == pytest.approx(expected, rel=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Test 3: finder_pattern_known_cells counts
+# ---------------------------------------------------------------------------
+
+
+class TestFinderPatternCounts:
+    """finder_pattern_known_cells counts are correct."""
+
+    def test_counts_v1(self):
+        """N=21 → 99 black, 48 white."""
+        black, white = finder_pattern_known_cells(21)
+        assert len(black) == 99
+        assert len(white) == 48
+
+    def test_counts_v2(self):
+        """N=25 → 99 black, 48 white (same counts regardless of N)."""
+        black, white = finder_pattern_known_cells(25)
+        assert len(black) == 99
+        assert len(white) == 48
+
+    def test_counts_v14(self):
+        """N=73 → 99 black, 48 white."""
+        black, white = finder_pattern_known_cells(73)
+        assert len(black) == 99
+        assert len(white) == 48
+
+    def test_no_black_white_overlap(self):
+        """No cell appears in both black and white lists."""
+        black, white = finder_pattern_known_cells(21)
+        black_set = set(black)
+        white_set = set(white)
+        assert black_set.isdisjoint(white_set)
+
+    def test_spot_check_tl_outer_corner(self):
+        """(0, 0) is black (TL outer corner)."""
+        black, _ = finder_pattern_known_cells(21)
+        assert (0, 0) in black
+
+    def test_spot_check_tl_white_corner(self):
+        """(1, 1) is white (TL white ring corner)."""
+        _, white = finder_pattern_known_cells(21)
+        assert (1, 1) in white
+
+    def test_spot_check_tr_outer_corner(self):
+        """(0, N-1) = (0, 20) for N=21 is black (TR outer corner)."""
+        black, _ = finder_pattern_known_cells(21)
+        assert (0, 20) in black
+
+    def test_spot_check_bl_outer_corner(self):
+        """(N-1, 0) = (20, 0) for N=21 is black (BL outer corner)."""
+        black, _ = finder_pattern_known_cells(21)
+        assert (20, 0) in black
+
+    def test_spot_check_tl_inner_black(self):
+        """TL inner 3×3 cells (2,2), (3,3), (4,4) are black."""
+        black, _ = finder_pattern_known_cells(21)
+        assert (2, 2) in black
+        assert (3, 3) in black
+        assert (4, 4) in black
+
+    def test_spot_check_tl_white_ring(self):
+        """TL white ring cells (1,3) and (3,5) are white."""
+        _, white = finder_pattern_known_cells(21)
+        assert (1, 3) in white
+        assert (3, 5) in white
+
+
+# ---------------------------------------------------------------------------
+# Test 5: compute_adaptive_threshold on a clean rectified image
+# ---------------------------------------------------------------------------
+
+
+class TestComputeAdaptiveThreshold:
+    """compute_adaptive_threshold on clean rectified QR images."""
+
+    def test_threshold_near_midpoint(self):
+        """On a clean binary image, threshold ≈ 127.5."""
+        img, N = _make_rectified_qr_image(version=1)
+        H = _grid_to_image_homography(10)
+        thresh = compute_adaptive_threshold(img, H, N)
+        # Black cells are 0, white cells are 255 → midpoint = 127.5
+        assert thresh == pytest.approx(127.5, abs=1e-10)
+
+    def test_threshold_on_v2(self):
+        """Also works on version 2."""
+        img, N = _make_rectified_qr_image(version=2)
+        thresh = compute_adaptive_threshold(img, _grid_to_image_homography(10), N)
+        assert thresh == pytest.approx(127.5, abs=1e-10)
+
+    def test_threshold_on_v3(self):
+        """And version 3."""
+        img, N = _make_rectified_qr_image(version=3)
+        thresh = compute_adaptive_threshold(img, _grid_to_image_homography(10), N)
+        assert thresh == pytest.approx(127.5, abs=1e-10)
+
+
+# ---------------------------------------------------------------------------
+# Test 6: compute_adaptive_threshold with noise
+# ---------------------------------------------------------------------------
+
+
+class TestComputeAdaptiveThresholdWithNoise:
+    """compute_adaptive_threshold in the presence of Gaussian noise."""
+
+    def test_threshold_in_range(self):
+        """With moderate noise the threshold falls in [100, 155]."""
+        rng = np.random.default_rng(42)
+        img, N = _make_rectified_qr_image(version=1)
+        noisy = np.clip(
+            img.astype(np.float32) + rng.normal(0, 10, img.shape), 0, 255
+        ).astype(np.uint8)
+        thresh = compute_adaptive_threshold(noisy, _grid_to_image_homography(10), N)
+        assert 100.0 <= thresh <= 155.0
+
+
+# ---------------------------------------------------------------------------
+# Test 7: sample_qr_bits round-trip (critical end-to-end unit test)
+# ---------------------------------------------------------------------------
+
+
+class TestSampleQRBitsRoundTrip:
+    """sample_qr_bits on clean rectified images matches ground truth."""
+
+    @pytest.mark.parametrize("version", [1, 2, 3])
+    def test_bits_match_ground_truth(self, version: int):
+        """On a clean rectified image, sampled bits match the module grid."""
+        content = f"v{version}_test"
+        img, N = _make_rectified_qr_image(version=version, content=content)
+        expected, _ = _qr_module_grid(version=version, content=content)
+        assert N == expected.shape[0]
+
+        H = _grid_to_image_homography(10)
+        bits = sample_qr_bits(img, H, N, threshold=127.5)
+        assert bits.shape == (N, N)
+
+        # Allow tiny boundary differences from bilinear interpolation
+        mismatch = np.sum(bits != expected)
+        total = N * N
+        frac = mismatch / total
+        assert frac < 0.02, f"Too many mismatches: {mismatch}/{total} = {frac:.4f}"
+
+    @pytest.mark.parametrize("version", [1, 2, 3])
+    def test_means_match(self, version: int):
+        """Sampled white fraction ≈ expected white fraction."""
+        content = f"v{version}_mean"
+        img, N = _make_rectified_qr_image(version=version, content=content)
+        expected, _ = _qr_module_grid(version=version, content=content)
+
+        H = _grid_to_image_homography(10)
+        bits = sample_qr_bits(img, H, N, threshold=127.5)
+        assert bits.mean() == pytest.approx(expected.mean(), abs=0.02)
+
+    def test_auto_threshold(self):
+        """Omitting *threshold* still works (auto-computed on clean image)."""
+        img, N = _make_rectified_qr_image(version=1)
+        expected, _ = _qr_module_grid(version=1)
+        H = _grid_to_image_homography(10)
+        bits = sample_qr_bits(img, H, N)  # threshold=None
+        mismatch = np.sum(bits != expected)
+        assert mismatch / (N * N) < 0.02
+
+    def test_bool_dtype(self):
+        """Returned grid is dtype bool."""
+        img, N = _make_rectified_qr_image(version=1)
+        H = _grid_to_image_homography(10)
+        bits = sample_qr_bits(img, H, N, threshold=127.5)
+        assert bits.dtype == bool
+
+
+# ---------------------------------------------------------------------------
+# Test 8: sample_qr_bits with a perspective warp
+# ---------------------------------------------------------------------------
+
+
+class TestSampleQRBitsWithWarp:
+    """sample_qr_bits with a known perspective warp applied."""
+
+    def test_recovery_from_warp_v1(self):
+        """Warp V=1 image, then recover bits using the true inverse homography."""
+        import cv2
+
+        box_size = 10
+        img_clean, N = _make_rectified_qr_image(version=1, box_size=box_size)
+        h_img, w_img = img_clean.shape
+
+        # Source corners: the 4 corners of the image
+        src_corners = np.float32(
+            [[0, 0], [w_img - 1, 0], [w_img - 1, h_img - 1], [0, h_img - 1]]
+        )
+        # Destination corners: perturb each by ~15 pixels
+        rng = np.random.default_rng(99)
+        shifts = rng.uniform(-15, 15, size=(4, 2)).astype(np.float32)
+        dst_corners = np.clip(src_corners + shifts, 0, max(w_img, h_img) - 1)
+
+        # Warp: forward transform (image → warped)
+        M_forward = cv2.getPerspectiveTransform(src_corners, dst_corners)
+        warped = cv2.warpPerspective(
+            img_clean, M_forward, (w_img, h_img), borderValue=255
+        )
+
+        # Grid → warped homography:
+        #   grid (x, y) → scale → clean image (x*bs, y*bs) → warp
+        H_scale = _grid_to_image_homography(box_size)
+        H = M_forward @ H_scale
+
+        expected, _ = _qr_module_grid(version=1)
+        bits = sample_qr_bits(warped, H, N, threshold=127.5)
+
+        # Allow 4% mismatch due to bilinear blending at module boundaries
+        mismatch = np.sum(bits != expected)
+        total = N * N
+        assert mismatch / total < 0.04, (
+            f"Warp recovery: {mismatch}/{total} = {mismatch / total:.4f}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 9: voting weights
+# ---------------------------------------------------------------------------
+
+
+class TestVotingWeights:
+    """The centre-weighted vote logic is correct."""
+
+    @staticmethod
+    def _simulate_vote(vals: np.ndarray, threshold: float) -> bool:
+        """Replicate the voting logic from sample_qr_bits."""
+        weights = np.ones((3, 3), dtype=np.float64)
+        weights[1, 1] = 2.0
+        white_votes = np.sum((vals > threshold) * weights)
+        return bool(white_votes >= 5.0)
+
+    def test_centre_corrupted_but_surroundings_correct(self):
+        """When the centre pixel is noise but surroundings are correct,
+        the centre weight 2 is not enough to flip the vote."""
+        # Cell is truly white (values ~200), but centre is 100 (noise)
+        vals = np.full((3, 3), 200.0, dtype=np.float64)
+        vals[1, 1] = 100.0
+        threshold = 128.0
+
+        result = self._simulate_vote(vals, threshold)
+        assert result  # still white: 8×1 vs 1×2 = 8 > 2
+
+    def test_centre_correct_helps_tiebreaker(self):
+        """When surroundings are evenly split, the centre weight breaks the tie."""
+        # 4 surroundings white, 4 black → tie (4 vs 4)
+        vals = np.array(
+            [
+                [255, 255, 0],
+                [0, 255, 255],  # centre = 255 (white), weight 2
+                [0, 0, 0],
+            ],
+            dtype=np.float64,
+        )
+        threshold = 128.0
+
+        # White votes: 3 surroundings × 1 + centre × 2 = 3 + 2 = 5
+        # Black votes: 4 × 1 = 4
+        result = self._simulate_vote(vals, threshold)
+        assert result  # white wins
+
+    def test_centre_overwhelmed_by_surroundings(self):
+        """When all 8 surroundings say black, centre can't override."""
+        vals = np.full((3, 3), 0.0, dtype=np.float64)
+        vals[1, 1] = 255.0  # centre says white
+        threshold = 128.0
+
+        # White votes: 1 × 2 = 2; Black votes: 8 × 1 = 8 → black
+        result = self._simulate_vote(vals, threshold)
+        assert not result  # black wins
+
+
+# ---------------------------------------------------------------------------
+# Test 9: full-pipeline integration test
+# ---------------------------------------------------------------------------
+
+
+def _full_pipeline_decode(
+    version: int, content: str, seed: int = 42
+) -> tuple[str, bool]:
+    """Run the full dev3 pipeline on a generated test image and return the
+    decoded text via sampling + OpenCV.
+
+    1. Generate a noisy/distorted test image.
+    2. Find landmarks, estimate version, compute homography.
+    3. Sample QR bits via ``sample_qr_bits``.
+    4. Build a clean uint8 image with quiet zone.
+    5. Decode with OpenCV ``detectAndDecode``.
+    """
+    import cv2
+
+    from qr_reader.alignment import (
+        find_alignment_patterns,
+        find_alignment_patterns_2d,
+    )
+    from qr_reader.clustering import cluster_candidates
+    from qr_reader.corner import angular_nms_top_radial_indices
+    from qr_reader.finder_pattern import (
+        extract_finder_patterns,
+        find_all_associations,
+        find_triplets,
+    )
+    from qr_reader.homography import ransac_homography, refine_homography_lm
+    from qr_reader.landmarks import (
+        build_named_landmarks,
+        canonical_grid_landmarks,
+    )
+    from qr_reader.qr_gen import binarize_image, generate_test_image
+    from qr_reader.region import (
+        boundary_connected_components_ndimage,
+        region_boundary_8,
+        region_fill_wave_front,
+    )
+    from qr_reader.version import (
+        build_constraints,
+        estimate_version,
+        filter_constraints,
+    )
+
+    img_gray = generate_test_image(
+        version=version,
+        content=content,
+        rotation_angle_deg=20.0,
+        perspective_max_shift=30.0,
+        noise_std=40.0,
+        seed=seed,
+    )
+
+    # Binarize
+    img_binary = binarize_image(img_gray)
+
+    # Find alignment patterns
+    max_error = np.log(1.3)
+    rows_valid, cols_valid_all = find_alignment_patterns_2d(img_binary, max_error)
+
+    if len(rows_valid) == 0:
+        return "", False
+
+    # Cluster candidates
+    clusters = cluster_candidates(rows_valid, cols_valid_all)
+
+    # Per-cluster corner-finding
+    angular_distance_nms = 10 * 2 * np.pi / 360  # 10 degrees
+    all_corners: list[tuple[int, np.ndarray]] = []
+
+    for ci, cluster in enumerate(clusters):
+        seed_row = int(cluster.row)
+        seed_col = int((cluster.cols[0] + cluster.cols[1]) // 2)
+
+        region_mask = region_fill_wave_front(np.asarray(img_binary), seed_row, seed_col)
+        boundary = region_boundary_8(region_mask)
+        components = boundary_connected_components_ndimage(np.asarray(boundary))
+
+        for comp in components:
+            comp_arr = np.asarray(comp, dtype=np.float64)
+            if comp_arr.shape[0] < 4:
+                continue
+            centroid_i = comp_arr.mean(axis=0)
+            rd = np.linalg.norm(comp_arr - centroid_i, axis=1)
+            ang = np.arctan2(
+                comp_arr[:, 1] - centroid_i[1], comp_arr[:, 0] - centroid_i[0]
+            )
+            try:
+                idx = angular_nms_top_radial_indices(
+                    rd, ang, angular_nms_rad=angular_distance_nms, k=4
+                )
+            except ValueError:
+                continue
+            all_corners.append((ci, comp_arr[idx]))
+
+    if len(all_corners) == 0:
+        return "", False
+
+    # Extract finder patterns
+    fps = extract_finder_patterns(all_corners)
+    associations = find_all_associations(fps)
+    triplets = find_triplets(fps, associations)
+
+    if len(triplets) == 0:
+        return "", False
+
+    triplet = triplets[0]
+    landmarks = build_named_landmarks(triplet, fps)
+
+    # Version estimation
+    constraints = build_constraints(landmarks)
+    usable = filter_constraints(constraints, k=4, min_span=1.0)
+    V_best, _scores = estimate_version(usable)
+    N_best = 4 * V_best + 17
+
+    # Homography estimation
+    grid_lm = canonical_grid_landmarks(N_best)
+    image_lm = build_named_landmarks(triplet, fps)
+
+    def rc_to_xy(pts: np.ndarray) -> np.ndarray:
+        return pts[:, ::-1]
+
+    src_xy = []
+    dst_xy = []
+    for attr in ["A", "B", "C", "D", "E", "F"]:
+        g = getattr(grid_lm, attr)
+        i = getattr(image_lm, attr)
+        if g is not None and i is not None:
+            src_xy.append(rc_to_xy(g))
+            dst_xy.append(rc_to_xy(i))
+    src_xy = np.vstack(src_xy)
+    dst_xy = np.vstack(dst_xy)
+
+    H_ransac, _inliers = ransac_homography(src_xy, dst_xy, threshold=3.0, iters=2000)
+    H_refined = refine_homography_lm(H_ransac, src_xy, dst_xy, loss="linear")
+
+    # Sample QR bits
+    bits = sample_qr_bits(img_gray, H_refined, N_best)
+
+    # Build clean image for OpenCV
+    box_size = 10
+    border = 4
+    img_clean = np.full(
+        ((N_best + 2 * border) * box_size, (N_best + 2 * border) * box_size),
+        255,
+        dtype=np.uint8,
+    )
+    for r in range(N_best):
+        for c in range(N_best):
+            val = 255 if bits[r, c] else 0
+            img_clean[
+                (r + border) * box_size : (r + border + 1) * box_size,
+                (c + border) * box_size : (c + border + 1) * box_size,
+            ] = val
+
+    # Decode
+    from qr_reader.decode import decode_qr
+
+    text, ok = decode_qr(img_clean, corners_xy=None)
+    return text, ok
+
+
+class TestFullPipelineIntegration:
+    """End-to-end: generate a distorted image → pipeline → sample → decode."""
+
+    @pytest.mark.parametrize("version", [1, 2, 3])
+    def test_decode_via_sampling(self, version: int):
+        """Full pipeline with sampling path decodes correctly."""
+        content = f"v{version}_integration"
+        text, ok = _full_pipeline_decode(version, content, seed=version * 42)
+        assert ok, f"Decode failed for V={version}: {text!r}"
+        assert text == content, (
+            f"Content mismatch V={version}: expected {content!r}, got {text!r}"
+        )
+
+    def test_different_seeds(self):
+        """Un-lucky seeds should still work."""
+        seeds_tested = 0
+        for seed in [7, 13, 42, 99, 123]:
+            text, ok = _full_pipeline_decode(1, "hi", seed=seed)
+            if ok and text == "hi":
+                seeds_tested += 1
+        # At least 3 of 5 seeds should work
+        assert seeds_tested >= 3, f"Only {seeds_tested}/5 seeds passed"
