@@ -1,8 +1,6 @@
 # %%
 """dev3.py — QR code reader using modular components."""
 
-from socket import VM_SOCKETS_INVALID_VERSION
-
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
@@ -26,8 +24,8 @@ from qr_reader.region import (
 
 # %%
 # Generate test image (grayscale)
-QR_VERSION=3
-QR_CONTENT="https://www.rikvoorhaar.com"
+QR_VERSION = 3
+QR_CONTENT = "https://www.rikvoorhaar.com"
 
 
 img_gray = generate_test_image(version=QR_VERSION, content=QR_CONTENT)
@@ -471,7 +469,135 @@ assert V_best == QR_VERSION, f"Expected V={QR_VERSION}, got V={V_best}"
 print(f"✓ Version check passed: inferred V={V_best} matches generator's V={QR_VERSION}")
 
 # Show expected cross-ratios for reference
-outer_exp, inner_exp = expected_cross_ratio_by_N(21)
-print(f"\nExpected cross-ratios for V=1 (N=21):")
+outer_exp, inner_exp = expected_cross_ratio_by_N(N_best)
+print(f"\nExpected cross-ratios for V={V_best} (N={N_best}):")
 print(f"  outer: {outer_exp:.6f}")
 print(f"  inner: {inner_exp:.6f}")
+
+# %%
+# Step E — Homography estimation (DLT + RANSAC + LM)
+
+from qr_reader.homography import (
+    compute_qr_corners,
+    ransac_homography,
+    refine_homography_lm,
+)
+from qr_reader.landmarks import build_named_landmarks, canonical_grid_landmarks
+
+# Build correspondences: canonical grid landmarks → detected image landmarks
+# N_best was computed in the version-estimation step above.
+grid_lm = canonical_grid_landmarks(N_best)
+image_lm = build_named_landmarks(triplet, fps)
+
+
+def rc_to_xy(pts: np.ndarray) -> np.ndarray:
+    """Convert (row, col) → (x, y) by swapping columns."""
+    return pts[:, ::-1]
+
+
+# Gather the 24 correspondences (up to 24 if all inner corners available)
+src_xy = []  # grid (canonical)
+dst_xy = []  # image (detected)
+for attr in ["A", "B", "C", "D", "E", "F"]:
+    g = getattr(grid_lm, attr)
+    i = getattr(image_lm, attr)
+    if g is not None and i is not None:
+        src_xy.append(rc_to_xy(g))
+        dst_xy.append(rc_to_xy(i))
+src_xy = np.vstack(src_xy)
+dst_xy = np.vstack(dst_xy)
+print(f"Built {len(src_xy)} correspondences for homography.")
+
+# RANSAC homography
+H_ransac, inliers = ransac_homography(src_xy, dst_xy, threshold=3.0, iters=2000)
+inlier_count = np.sum(inliers)
+print(f"RANSAC inliers: {inlier_count} / {len(src_xy)}")
+
+# LM refinement
+H_refined = refine_homography_lm(H_ransac, src_xy, dst_xy, loss="linear")
+
+# Compute QR corners
+corners_xy = compute_qr_corners(H_refined, N_best)
+print(f"\nQR corners (x, y):")
+for i, label in enumerate(["TL", "TR", "BR", "BL"]):
+    print(f"  {label}: ({corners_xy[i, 0]:.1f}, {corners_xy[i, 1]:.1f})")
+
+# --- Plot: overlay QR corners and boundary on the image ---
+fig, ax = plt.subplots(figsize=(10, 10))
+ax.imshow(img_gray, cmap="gray")
+
+# Draw the quadrangular QR boundary
+quad_closed = np.vstack([corners_xy, corners_xy[0:1]])
+ax.plot(quad_closed[:, 0], quad_closed[:, 1], "r-", linewidth=2, label="QR boundary")
+ax.scatter(
+    corners_xy[:, 0],
+    corners_xy[:, 1],
+    s=200,
+    marker="X",
+    c="red",
+    edgecolors="white",
+    linewidths=2.0,
+    zorder=10,
+)
+
+# Also overlay all inlier landmark correspondences
+ax.scatter(
+    dst_xy[inliers, 0],
+    dst_xy[inliers, 1],
+    s=40,
+    c="lime",
+    edgecolors="black",
+    linewidths=0.5,
+    alpha=0.6,
+    label=f"RANSAC inliers ({inlier_count})",
+)
+if inlier_count < len(src_xy):
+    ax.scatter(
+        dst_xy[~inliers, 0],
+        dst_xy[~inliers, 1],
+        s=60,
+        marker="o",
+        facecolors="none",
+        edgecolors="red",
+        linewidths=1.5,
+        alpha=0.6,
+        label=f"Outliers ({len(src_xy) - inlier_count})",
+    )
+
+for i, label in enumerate(["TL", "TR", "BR", "BL"]):
+    ax.annotate(
+        label,
+        (corners_xy[i, 0], corners_xy[i, 1]),
+        textcoords="offset pixels",
+        xytext=(10, 10),
+        fontsize=10,
+        color="red",
+        fontweight="bold",
+    )
+
+ax.legend(fontsize=8, loc="upper right")
+ax.set_title(f"QR corners via homography (V={V_best}, N={N_best})")
+ax.set_xlabel("x (col)")
+ax.set_ylabel("y (row)")
+plt.show()
+
+# %%
+# Step F — Decode the QR code using OpenCV
+
+from qr_reader.decode import decode_qr
+
+decoded_text, ok = decode_qr(img_gray, corners_xy)
+
+if ok:
+    print(f'✓ Decoded: "{decoded_text}"')
+else:
+    print(f"✗ Decode failed")
+
+# Final assertion: decoded text matches the generated content
+assert ok, f"Decode failed for V={V_best}"
+assert decoded_text == QR_CONTENT, (
+    f"Content mismatch: expected '{QR_CONTENT}', got '{decoded_text}'"
+)
+print(
+    f"✓ Content check passed: decoded '{decoded_text}' matches generator's '{QR_CONTENT}'"
+)
