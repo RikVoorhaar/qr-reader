@@ -230,7 +230,7 @@ Each step is independently testable.
 
 ---
 
-### Phase 4 — Codeword Extraction
+### Phase 4 — Codeword Extraction ✅ COMPLETED
 
 **Files**: `src/qr_reader/decoder/codeword_extractor.py`
 
@@ -248,11 +248,21 @@ Each step is independently testable.
 
 5. Return `bytes` of total codewords.  Verify length matches `total_codewords` for version.
 
+**Key implementation details**:
+- Finder patterns occupy 8×8 modules (not 9×9) because the encoder clamps the
+  separator row/col at the matrix boundary.
+- Alignment patterns whose centre module overlaps a finder pattern are skipped
+  by the encoder; our mask replicates this skip.
+- **Remainder bits**: some versions have 0–7 extra data modules that don't form
+  a complete byte. The encoder leaves them as 0; our extractor stops reading
+  after collecting `total_codewords × 8` bits to avoid padding artifacts.
+
 **Tests**:
 
 - Generate a QR code, extract codewords, verify they match the encoder's output codewords.
 - Test with all 8 mask patterns.
 - Test zigzag order correctness on small versions.
+- Full pipeline: extract → deinterleave → RS decode → bitstream decode.
 
 **References**:
 - `zxing QRBitMatrixParser.cpp: ReadQRCodewords()`
