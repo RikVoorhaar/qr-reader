@@ -1,25 +1,34 @@
-import numpy as np
 from dataclasses import dataclass
-from typing import List, Tuple, Optional
-from qr_reader.geometry import angular_distance, max_offset, polygon_area, segments_intersect
+from typing import List, Optional, Tuple
+
+import numpy as np
+
+from qr_reader.geometry import (
+    angular_distance,
+    max_offset,
+    polygon_area,
+    segments_intersect,
+)
+
 
 @dataclass
 class FinderPattern:
     cluster_idx: int
-    outer_corners: np.ndarray  # shape (4, 2)
+    outer_corners: np.ndarray  # shape (4, 2), the outer 7×7 square in (row, col)
+    inner_corners: np.ndarray | None = (
+        None  # shape (4, 2), the inner white-ring square (offset 1) or None
+    )
     # Segment definitions: 0-1, 1-2, 2-3, 3-0
 
     def segments(self):
         """Returns 4 segments of the outer corners."""
         c = self.outer_corners
-        return [
-            (c[0], c[1]),
-            (c[1], c[2]),
-            (c[2], c[3]),
-            (c[3], c[0])
-        ]
+        return [(c[0], c[1]), (c[1], c[2]), (c[2], c[3]), (c[3], c[0])]
 
-def extract_finder_patterns(all_corners: List[Tuple[int, np.ndarray]]) -> List[FinderPattern]:
+
+def extract_finder_patterns(
+    all_corners: List[Tuple[int, np.ndarray]],
+) -> List[FinderPattern]:
     """
     Groups corners by cluster_idx and selects the one with the maximum area
     as the outer_corners for the FinderPattern.
@@ -32,28 +41,38 @@ def extract_finder_patterns(all_corners: List[Tuple[int, np.ndarray]]) -> List[F
 
     fps = []
     for ci, corners_list in cluster_groups.items():
-        best_corners = None
-        max_a = -1
-        for corners in corners_list:
-            a = polygon_area(corners)
-            if a > max_a:
-                max_a = a
-                best_corners = corners
+        # Sort candidate quads by area descending
+        areas = [(polygon_area(c), c) for c in corners_list]
+        areas.sort(key=lambda x: x[0], reverse=True)
 
-        # Orient corners to be clockwise or consistent? We assume they are ordered.
-        if best_corners is not None:
-            fps.append(FinderPattern(cluster_idx=ci, outer_corners=np.array(best_corners)))
+        if len(areas) == 0:
+            continue
+
+        outer_corners = np.array(areas[0][1])
+        inner_corners = np.array(areas[1][1]) if len(areas) >= 2 else None
+
+        fps.append(
+            FinderPattern(
+                cluster_idx=ci,
+                outer_corners=outer_corners,
+                inner_corners=inner_corners,
+            )
+        )
 
     return fps
+
 
 @dataclass
 class Association:
     fp1_idx: int
     fp2_idx: int
-    colinear_segments_1: List[int] # Indices of segments in fp1
-    colinear_segments_2: List[int] # Indices of segments in fp2
+    colinear_segments_1: List[int]  # Indices of segments in fp1
+    colinear_segments_2: List[int]  # Indices of segments in fp2
 
-def check_association(fp1: FinderPattern, fp2: FinderPattern, angle_tol=0.1, offset_tol=0.15) -> Optional[Association]:
+
+def check_association(
+    fp1: FinderPattern, fp2: FinderPattern, angle_tol=0.1, offset_tol=0.15
+) -> Optional[Association]:
     """
     Checks if fp1 and fp2 are associated (aligned).
     Returns an Association if they are, else None.
@@ -91,7 +110,10 @@ def check_association(fp1: FinderPattern, fp2: FinderPattern, angle_tol=0.1, off
         )
     return None
 
-def find_all_associations(fps: List[FinderPattern], angle_tol=0.1, offset_tol=0.15) -> List[Association]:
+
+def find_all_associations(
+    fps: List[FinderPattern], angle_tol=0.1, offset_tol=0.15
+) -> List[Association]:
     associations = []
     for i in range(len(fps)):
         for j in range(i + 1, len(fps)):
@@ -100,19 +122,24 @@ def find_all_associations(fps: List[FinderPattern], angle_tol=0.1, offset_tol=0.
                 associations.append(assoc)
     return associations
 
+
 @dataclass
 class Triplet:
     top_left_idx: int
     top_right_idx: int
     bottom_left_idx: int
 
-def find_triplets(fps: List[FinderPattern], associations: List[Association]) -> List[Triplet]:
+
+def find_triplets(
+    fps: List[FinderPattern], associations: List[Association]
+) -> List[Triplet]:
     """
     Finds triplets of finder patterns that form an L-shape, identifying the top-left corner.
     Returns a list of Triplets.
     """
     # Build an adjacency list
     from collections import defaultdict
+
     adj = defaultdict(list)
     for a in associations:
         adj[a.fp1_idx].append((a.fp2_idx, a))
@@ -135,7 +162,9 @@ def find_triplets(fps: List[FinderPattern], associations: List[Association]) -> 
                 # A and C should not be associated directly
                 ac_associated = False
                 for a in associations:
-                    if (a.fp1_idx == a_idx and a.fp2_idx == c_idx) or (a.fp1_idx == c_idx and a.fp2_idx == a_idx):
+                    if (a.fp1_idx == a_idx and a.fp2_idx == c_idx) or (
+                        a.fp1_idx == c_idx and a.fp2_idx == a_idx
+                    ):
                         ac_associated = True
                         break
 
@@ -194,6 +223,12 @@ def find_triplets(fps: List[FinderPattern], associations: List[Association]) -> 
                     top_right = c_idx
                     bottom_left = a_idx
 
-                triplets.append(Triplet(top_left_idx=b_idx, top_right_idx=top_right, bottom_left_idx=bottom_left))
+                triplets.append(
+                    Triplet(
+                        top_left_idx=b_idx,
+                        top_right_idx=top_right,
+                        bottom_left_idx=bottom_left,
+                    )
+                )
 
     return triplets

@@ -1,17 +1,21 @@
 # %%
 """dev3.py — QR code reader using modular components."""
 
+from socket import VM_SOCKETS_INVALID_VERSION
+
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib import cm
 
-from qr_reader.qr_gen import binarize_image, generate_test_image
 from qr_reader.alignment import (
     find_alignment_patterns,
     find_alignment_patterns_2d,
 )
 from qr_reader.clustering import cluster_candidates
+from qr_reader.corner import angular_nms_top_radial_indices
+from qr_reader.geometry import polygon_area
+from qr_reader.qr_gen import binarize_image, generate_test_image
 from qr_reader.region import (
     boundary_connected_components_ndimage,
     boundary_connected_components_networkx,
@@ -19,12 +23,14 @@ from qr_reader.region import (
     region_boundary_8,
     region_fill_wave_front,
 )
-from qr_reader.corner import angular_nms_top_radial_indices
 
 # %%
 # Generate test image (grayscale)
+QR_VERSION=3
+QR_CONTENT="https://www.rikvoorhaar.com"
 
-img_gray = generate_test_image()
+
+img_gray = generate_test_image(version=QR_VERSION, content=QR_CONTENT)
 
 plt.imshow(img_gray, cmap="gray")
 plt.title("Noisy QR Code (grayscale)")
@@ -106,7 +112,8 @@ while queue:
     for neighbor in get_neighbors(pixel, img_binary.shape):
         if (
             not region_mask_queue[neighbor[0], neighbor[1]]
-            and img_binary[neighbor[0], neighbor[1]] == img_binary[seed_pixel[0], seed_pixel[1]]
+            and img_binary[neighbor[0], neighbor[1]]
+            == img_binary[seed_pixel[0], seed_pixel[1]]
         ):
             region_mask_queue[neighbor[0], neighbor[1]] = True
             queue.add(neighbor)
@@ -207,7 +214,9 @@ for ci, cluster in enumerate(clusters):
 
     # Flood fill the outer black ring
     region_mask = region_fill_wave_front(
-        np.asarray(img_binary), seed_row, seed_col,
+        np.asarray(img_binary),
+        seed_row,
+        seed_col,
     )
 
     # Boundary → connected components
@@ -220,12 +229,13 @@ for ci, cluster in enumerate(clusters):
             continue
         centroid_i = comp_arr.mean(axis=0)
         rd = np.linalg.norm(comp_arr - centroid_i, axis=1)
-        ang = np.arctan2(
-            comp_arr[:, 1] - centroid_i[1], comp_arr[:, 0] - centroid_i[0]
-        )
+        ang = np.arctan2(comp_arr[:, 1] - centroid_i[1], comp_arr[:, 0] - centroid_i[0])
         try:
             idx = angular_nms_top_radial_indices(
-                rd, ang, angular_nms_rad=angular_distance_nms, k=4,
+                rd,
+                ang,
+                angular_nms_rad=angular_distance_nms,
+                k=4,
             )
         except ValueError:
             print("ValueError: angular_nms_top_radial_indices failed")
@@ -241,12 +251,17 @@ ax.imshow(np.clip(rgb_all, 0, 1))
 for ci, corners in all_corners:
     color = cmap[ci % len(cmap)]
     ax.scatter(
-        corners[:, 1], corners[:, 0],
-        s=250, marker="X",
+        corners[:, 1],
+        corners[:, 0],
+        s=250,
+        marker="X",
         c=[color[:3]],
-        edgecolors="white", linewidths=2.0,
+        edgecolors="white",
+        linewidths=2.0,
         zorder=10,
-        label=f"cluster {ci}" if ci == 0 or ci not in {c for c, _ in all_corners[:ci]} else "",
+        label=f"cluster {ci}"
+        if ci == 0 or ci not in {c for c, _ in all_corners[:ci]}
+        else "",
     )
 
 ax.set_title(f"All corners across {len(clusters)} clusters")
@@ -255,14 +270,21 @@ plt.show()
 
 # %%
 all_corners
+
+
 def area(corners):
     diag1 = corners[0] - corners[2]
     diag2 = corners[1] - corners[3]
     return np.abs(np.linalg.det(np.vstack([diag1, diag2])))
 
+
 for ci, corners in all_corners:
     print(f"Cluster {ci} area: {area(corners)}")
-from qr_reader.finder_pattern import extract_finder_patterns, find_all_associations, find_triplets
+from qr_reader.finder_pattern import (
+    extract_finder_patterns,
+    find_all_associations,
+    find_triplets,
+)
 
 fps = extract_finder_patterns(all_corners)
 print(f"Extracted {len(fps)} finder patterns.")
@@ -270,52 +292,186 @@ print(f"Extracted {len(fps)} finder patterns.")
 associations = find_all_associations(fps)
 print(f"Found {len(associations)} associations:")
 for a in associations:
-    print(f" - FP {a.fp1_idx} <-> FP {a.fp2_idx}: segs {a.colinear_segments_1} and {a.colinear_segments_2}")
+    print(
+        f" - FP {a.fp1_idx} <-> FP {a.fp2_idx}: segs {a.colinear_segments_1} and {a.colinear_segments_2}"
+    )
 
 triplets = find_triplets(fps, associations)
 print(f"Found {len(triplets)} triplets:")
 for t in triplets:
-    print(f" - Top-Left: FP {t.top_left_idx}, Top-Right: FP {t.top_right_idx}, Bottom-Left: FP {t.bottom_left_idx}")
-"""
-Next we can use the correspondences to put all the 24 corners of each triplet into the right order. 
-We use CCW ordering, and the top-left corner is always the first corner. I.e., we have ordering
- 0 3
- 1 2
+    print(
+        f" - Top-Left: FP {t.top_left_idx}, Top-Right: FP {t.top_right_idx}, Bottom-Left: FP {t.bottom_left_idx}"
+    )
 
-If we arange this furhter,  we have ordering
+# %%
+# Step A — Verify inner corners are carried on FinderPattern
 
-A0 - - A3       C0 - - C3
-| B0 B3 |       | D0 D3 |
-| B1 B2 |       | D1 D2 |
-A1 - - A2       C1 - - C2
+for fp in fps:
+    has_inner = fp.inner_corners is not None
+    print(
+        f"FP {fp.cluster_idx}: outer area={polygon_area(fp.outer_corners):.1f}, "
+        f"{'has inner' if has_inner else 'no inner'}"
+    )
 
-E0 - - E3
-| F0 F3 |
-| F1 F2 |
-E1 - - E2
+# %%
+# Step B — Build named landmarks from the first triplet
 
+from qr_reader.landmarks import (
+    build_named_landmarks,
+    get_colinear_quadruples,
+)
 
-Now we use the fact that N = 4V+17 is the number of cells in the QR code, with V the version number.
+triplet = triplets[0]
+landmarks = build_named_landmarks(triplet, fps)
 
-If we look at e.g. the left-edge we have points A0, A1, E0, E1 at positions 0, 7, N-7, N. 
-They are colinear, but have been perspective transformed. But they should still satisfy the cross ratio rule:
+print("Named landmarks built:")
+for name, pts in [("A", landmarks.A), ("C", landmarks.C), ("E", landmarks.E)]:
+    print(f"  {name}: {pts.tolist()}")
+for name, pts in [("B", landmarks.B), ("D", landmarks.D), ("F", landmarks.F)]:
+    has = pts is not None
+    print(f"  {name}: {'present' if has else 'None'}")
 
-(A0, A1; E0, E1) = ||A0-E0|| ||A1-E1|| / ||A0-E1|| ||E1-A0|| = (N-7)(N-7)/(N)(N-14)
+# %%
+# Plot the 6 ordered squares on the image
 
-Thus we get two ratios: r_measured and r(N). We can then find the value of V that minimizes
-abs(log(r_measured/r(N)))
+fig, ax = plt.subplots(figsize=(10, 10))
+ax.imshow(img_gray, cmap="gray")
 
-The neat thing is, that we get the exact same result for (A3, A2; E3, E2), (A0,A3;C0,C3), (A1,A2;C1,C2)
+colors = {
+    "A": "red",
+    "B": "orange",
+    "C": "blue",
+    "D": "cyan",
+    "E": "green",
+    "F": "lime",
+}
+for name, pts in [
+    ("A", landmarks.A),
+    ("B", landmarks.B),
+    ("C", landmarks.C),
+    ("D", landmarks.D),
+    ("E", landmarks.E),
+    ("F", landmarks.F),
+]:
+    if pts is None:
+        continue
+    # Close the quad for plotting: 0-1-2-3-0
+    quad = np.vstack([pts, pts[0:1]])
+    ax.plot(
+        quad[:, 1], quad[:, 0], color=colors.get(name, "white"), linewidth=2, label=name
+    )
+    # Label the corners
+    for i, (label, offset) in enumerate(
+        [("TL", (-8, -8)), ("BL", (5, -8)), ("BR", (5, 5)), ("TR", (-8, 5))]
+    ):
+        ax.annotate(
+            f"{name}{i} ({label})",
+            (pts[i, 1], pts[i, 0]),
+            textcoords="offset pixels",
+            xytext=offset,
+            fontsize=6,
+            color=colors.get(name, "white"),
+        )
 
-In fact, we also get a similar relation for (B0, B1; F0, F1), but they are at positions 
-2,5,N-5,N-2; with cross ratio (N-7)(N-7)/(N-10)(N-4).
-This also applies to (B3, B2; F3, F2), (B0, B3; D0, D3), (B1, B2; D1, D2)
+ax.legend(fontsize=7, loc="upper right")
+ax.set_title("Ordered finder-pattern squares (A-F)")
+plt.show()
 
-Thus we get 8 expected cross ratio relations
+# %%
+# Step C — Get colinear quadruples from image landmarks
 
-Then finally we also have diagonal cross ratio relations with the set of 8 colinear points E1,F1,F3,C1,D1,D3,C3
-but I'm not sure what to do with those exactly.
+quads = get_colinear_quadruples(landmarks)
+print(
+    f"Colinear quadruples: {len(quads)} total "
+    f"({sum(1 for q in quads if q.type == 'outer')} outer, "
+    f"{sum(1 for q in quads if q.type == 'inner')} inner)"
+)
 
-Anyway, we can find the value of V that minimizes the e.g. mean or weighted sum of all these cross ratio errors.
-Especially for smaller version numbers that should give a very good estimate of V.
-"""
+# Plot quadruples on the image
+fig, ax = plt.subplots(figsize=(10, 10))
+ax.imshow(img_gray, cmap="gray")
+for q in quads:
+    pts = q.points
+    style = "--" if q.type == "inner" else "-"
+    color = "cyan" if q.type == "inner" else "yellow"
+    ax.plot(pts[:, 1], pts[:, 0], style, color=color, linewidth=1.5, alpha=0.8)
+    ax.scatter(
+        pts[:, 1],
+        pts[:, 0],
+        s=30,
+        c=color,
+        edgecolors="black",
+        linewidths=0.5,
+        zorder=10,
+    )
+ax.set_title("Colinear quadruples (yellow=outer, cyan=inner)")
+plt.show()
+
+# %%
+# Step D — Version estimation via cross-ratios
+
+from qr_reader.version import (
+    build_constraints,
+    estimate_version,
+    expected_cross_ratio_by_N,
+    filter_constraints,
+)
+
+constraints = build_constraints(landmarks)
+print(f"Built {len(constraints)} constraints:")
+for c in constraints:
+    print(
+        f"  {c.label} ({c.type}): r={c.r_measured:.4f}, line_error={c.line_error:.4f}, span={c.span:.1f}"
+    )
+
+# Filter and estimate
+usable = filter_constraints(constraints, k=4, min_span=1.0)
+print(f"\nAfter filtering: {len(usable)} constraints kept")
+
+V_best, scores = estimate_version(usable)
+N_best = 4 * V_best + 17
+print(f"\nInferred version: V={V_best}  (N={N_best})")
+
+# Show top-5 scores
+sorted_idx = np.argsort(scores)
+print("\nTop 5 version scores (lower is better):")
+for rank, idx in enumerate(sorted_idx[:5]):
+    V = idx + 1  # v_range starts at 1
+    print(f"  #{rank + 1}: V={V} (N={4 * V + 17}), score={scores[idx]:.6f}")
+
+# Plot constraints colored by line_error / filter status
+fig, ax = plt.subplots(figsize=(10, 10))
+ax.imshow(img_gray, cmap="gray")
+kept_labels = {c.label for c in usable}
+for c in constraints:
+    pts = next(q.points for q in quads if q.label == c.label)
+    kept = c.label in kept_labels
+    color = "lime" if kept else "red"
+    alpha = 1.0 if kept else 0.3
+    ax.plot(pts[:, 1], pts[:, 0], "-", color=color, linewidth=2, alpha=alpha)
+    ax.scatter(
+        pts[:, 1],
+        pts[:, 0],
+        s=40,
+        c=color,
+        edgecolors="black",
+        linewidths=0.5,
+        zorder=10,
+        alpha=alpha,
+    )
+ax.set_title(
+    f"Constraints for version estimation: kept={len(usable)}/{len(constraints)}  →  V={V_best}"
+)
+plt.show()
+
+# %%
+# Smoke check: inferred version matches generator's version (1)
+
+assert V_best == QR_VERSION, f"Expected V={QR_VERSION}, got V={V_best}"
+print(f"✓ Version check passed: inferred V={V_best} matches generator's V={QR_VERSION}")
+
+# Show expected cross-ratios for reference
+outer_exp, inner_exp = expected_cross_ratio_by_N(21)
+print(f"\nExpected cross-ratios for V=1 (N=21):")
+print(f"  outer: {outer_exp:.6f}")
+print(f"  inner: {inner_exp:.6f}")
