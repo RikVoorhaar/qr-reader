@@ -1,7 +1,6 @@
 # %%
 """dev3.py — QR code reader using modular components."""
 
-import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib import cm
@@ -49,11 +48,10 @@ plt.show()
 max_error = np.log(1.3)  # 30% error
 rows_x, cols_x_all = find_alignment_patterns(img_binary, max_error)
 
-img_plot = img_binary.copy().astype(np.uint8) * 255
-img_plot = cv2.cvtColor(img_plot, cv2.COLOR_GRAY2BGR)
+img_plot = np.stack([img_binary] * 3, axis=-1) * 255
 for row, cols in zip(rows_x, cols_x_all):
-    img_plot[row, cols[0] : cols[-1]] = (255, 0, 0)
-    img_plot[row, cols[2] : cols[3]] = (255, 150, 0)
+    img_plot[row, cols[0] : cols[-1]] = (0, 0, 255)
+    img_plot[row, cols[2] : cols[3]] = (0, 150, 255)
 
 plt.imshow(img_plot)
 plt.title("Candidate alignment patterns (horizontal)")
@@ -64,11 +62,10 @@ plt.show()
 
 rows_valid, cols_valid_all = find_alignment_patterns_2d(img_binary, max_error)
 
-img_plot = img_binary.copy().astype(np.uint8) * 255
-img_plot = cv2.cvtColor(img_plot, cv2.COLOR_GRAY2BGR)
+img_plot = np.stack([img_binary] * 3, axis=-1) * 255
 for row, cols in zip(rows_valid, cols_valid_all):
-    img_plot[row, cols[0] : cols[-1]] = (255, 0, 0)
-    img_plot[row, cols[2] : cols[3]] = (255, 150, 0)
+    img_plot[row, cols[0] : cols[-1]] = (0, 0, 255)
+    img_plot[row, cols[2] : cols[3]] = (0, 150, 255)
 
 plt.imshow(img_plot)
 plt.title("Candidate alignment patterns (2-D validated)")
@@ -79,16 +76,15 @@ plt.show()
 
 clusters = cluster_candidates(rows_valid, cols_valid_all)
 
-img_plot = img_binary.copy().astype(np.uint8) * 255
-img_plot = cv2.cvtColor(img_plot, cv2.COLOR_GRAY2BGR)
+img_plot = np.stack([img_binary] * 3, axis=-1) * 255
 for cluster in clusters:
     row = int(cluster.row)
     cols = cluster.cols.astype(int)
-    img_plot[row - 2 : row + 2, cols[0] : cols[1]] = (255, 0, 0)
+    img_plot[row - 2 : row + 2, cols[0] : cols[1]] = (0, 0, 255)
     img_plot[row - 2 : row + 2, cols[1] : cols[2]] = (0, 255, 0)
-    img_plot[row - 2 : row + 2, cols[2] : cols[3]] = (0, 0, 255)
+    img_plot[row - 2 : row + 2, cols[2] : cols[3]] = (255, 0, 0)
     img_plot[row - 2 : row + 2, cols[3] : cols[4]] = (0, 255, 0)
-    img_plot[row - 2 : row + 2, cols[4] : cols[5]] = (255, 0, 0)
+    img_plot[row - 2 : row + 2, cols[4] : cols[5]] = (0, 0, 255)
 
 plt.imshow(img_plot)
 plt.title("Clustered alignment patterns")
@@ -116,8 +112,7 @@ while queue:
             region_mask_queue[neighbor[0], neighbor[1]] = True
             queue.add(neighbor)
 
-img_plot = img_binary.copy().astype(np.uint8) * 255
-img_plot = cv2.cvtColor(img_plot, cv2.COLOR_GRAY2BGR)
+img_plot = np.stack([img_binary] * 3, axis=-1) * 255
 img_plot[region_mask_queue] = (0, 255, 0)
 plt.imshow(img_plot)
 plt.title("Region mask (queue-based)")
@@ -133,8 +128,7 @@ region_mask_wf = region_fill_wave_front(
     np.asarray(img_binary), seed_pixel[0], seed_pixel[1]
 )
 
-img_plot = img_binary.copy().astype(np.uint8) * 255
-img_plot = cv2.cvtColor(img_plot, cv2.COLOR_GRAY2BGR)
+img_plot = np.stack([img_binary] * 3, axis=-1) * 255
 img_plot[np.asarray(region_mask_wf)] = (0, 255, 0)
 plt.imshow(img_plot)
 plt.title("Region mask (NumPy wave front)")
@@ -145,10 +139,9 @@ plt.show()
 
 boundary_mask = region_boundary_8(region_mask_wf)
 
-img_plot = img_binary.copy().astype(np.uint8) * 255
-img_plot = cv2.cvtColor(img_plot, cv2.COLOR_GRAY2BGR)
-img_plot[np.asarray(boundary_mask)] = (0, 0, 255)
-plt.imshow(cv2.cvtColor(img_plot, cv2.COLOR_BGR2RGB))
+img_plot = np.stack([img_binary] * 3, axis=-1) * 255
+img_plot[np.asarray(boundary_mask)] = (255, 0, 0)
+plt.imshow(img_plot)
 plt.title("Region boundary (8-neighbor)")
 plt.show()
 
@@ -582,8 +575,8 @@ ax.set_ylabel("y (row)")
 plt.show()
 
 # %%
-# Step G — Supersample QR bits from grayscale & decode via OpenCV
-from qr_reader.decode import decode_qr
+# Step G — Supersample QR bits from grayscale & decode with project decoder
+from qr_reader.decoder.decoder import DecodeError, decode
 from qr_reader.sample import sample_qr_bits
 
 bits = sample_qr_bits(img_gray, H_refined, N_best)
@@ -595,53 +588,23 @@ ax.imshow(bits, cmap="gray", interpolation="nearest")
 ax.set_title(f"Sampled QR bits (V={V_best}, N={N_best})")
 plt.show()
 
-# Build a clean uint8 image for OpenCV
-# Up-scale with box_size=10 and add a white quiet-zone border (4 modules)
-box_size = 10
-border = 4
-img_clean = np.full(
-    ((N_best + 2 * border) * box_size, (N_best + 2 * border) * box_size),
-    255,
-    dtype=np.uint8,
-)
-for r in range(N_best):
-    for c in range(N_best):
-        val = 255 if bits[r, c] else 0
-        img_clean[
-            (r + border) * box_size : (r + border + 1) * box_size,
-            (c + border) * box_size : (c + border + 1) * box_size,
-        ] = val
+# The sampler returns True=white/light, but the decoder expects True=dark/black.
+# Invert before decoding.
+matrix = (~bits).T
 
-decoded_text, ok = decode_qr(img_clean, corners_xy=None)  # let OpenCV find corners
+try:
+    decoded_text = decode(matrix)
+    ok = True
+except DecodeError as e:
+    decoded_text = ""
+    ok = False
+    print(f"✗ Decode failed from sampled bits: {e}")
 
 if ok:
     print(f'✓ Decoded from sampled bits: "{decoded_text}"')
-else:
-    print("✗ Decode failed from sampled bits")
 
 assert ok, f"Decode failed for V={V_best}"
 assert decoded_text == QR_CONTENT, (
     f"Content mismatch: expected '{QR_CONTENT}', got '{decoded_text}'"
 )
 print(f"✓ Content check passed: '{decoded_text}' == '{QR_CONTENT}'")
-
-# %%
-# Step F — Decode the QR code using OpenCV (with corners)
-
-from qr_reader.decode import decode_qr
-
-decoded_text, ok = decode_qr(img_gray, corners_xy)
-
-if ok:
-    print(f'✓ Decoded: "{decoded_text}"')
-else:
-    print(f"✗ Decode failed")
-
-# Final assertion: decoded text matches the generated content
-assert ok, f"Decode failed for V={V_best}"
-assert decoded_text == QR_CONTENT, (
-    f"Content mismatch: expected '{QR_CONTENT}', got '{decoded_text}'"
-)
-print(
-    f"✓ Content check passed: decoded '{decoded_text}' matches generator's '{QR_CONTENT}'"
-)
