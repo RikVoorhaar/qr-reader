@@ -444,9 +444,11 @@ class BitBuffer(data: list[int])
 
 ---
 
-### Phase 8 — Top-level Decoder
+### Phase 8 — Top-level Decoder ✅ COMPLETED
 
-**Files**: `src/qr_reader/decoder/decoder.py`
+**Status**: Done. All 85 tests pass (400 total across decoder suite). `decode(matrix)` orchestrates the full pipeline end-to-end.
+
+**Files**: `src/qr_reader/decoder/decoder.py`, `tests/decoder/test_decoder.py`
 
 **What**: Orchestrate all phases.
 
