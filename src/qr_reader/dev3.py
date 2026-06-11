@@ -253,36 +253,69 @@ ax.set_title(f"All corners across {len(clusters)} clusters")
 ax.legend(loc="upper right", fontsize=7)
 plt.show()
 
-# %% 
+# %%
 all_corners
 def area(corners):
-    diag1 = corners[0] - corners[1]
-    diag2 = corners[2] - corners[3]
+    diag1 = corners[0] - corners[2]
+    diag2 = corners[1] - corners[3]
     return np.abs(np.linalg.det(np.vstack([diag1, diag2])))
 
 for ci, corners in all_corners:
     print(f"Cluster {ci} area: {area(corners)}")
-all_corners[0][1]
-"""We need a primitive that checks how far two line segments are from being co-linear. 
+from qr_reader.finder_pattern import extract_finder_patterns, find_all_associations, find_triplets
 
-Naive way: we have (p1,p2), (q1,q2) line segments. then the P line is given by p1+t*(p2-p1), and the Q line is given by q1+s*(q2-q1). 
+fps = extract_finder_patterns(all_corners)
+print(f"Extracted {len(fps)} finder patterns.")
 
-You could like take the max distance between the P line and q1/q2 for example as a colinearity test. 
+associations = find_all_associations(fps)
+print(f"Found {len(associations)} associations:")
+for a in associations:
+    print(f" - FP {a.fp1_idx} <-> FP {a.fp2_idx}: segs {a.colinear_segments_1} and {a.colinear_segments_2}")
 
-Yeah, so we want to compute the anglular distance _and_ the max offset. The latter is basically: max(d(q1,P), d(q2,P), d(p1,Q), d(p2,Q)) / L, where L is the distance between (p1+p2)/2 and (q1+q2)/2. To avoid pathological situations, we filter out associations where the finder patterns intersect. 
+triplets = find_triplets(fps, associations)
+print(f"Found {len(triplets)} triplets:")
+for t in triplets:
+    print(f" - Top-Left: FP {t.top_left_idx}, Top-Right: FP {t.top_right_idx}, Bottom-Left: FP {t.bottom_left_idx}")
+"""
+Next we can use the correspondences to put all the 24 corners of each triplet into the right order. 
+We use CCW ordering, and the top-left corner is always the first corner. I.e., we have ordering
+ 0 3
+ 1 2
 
-So TOOD:
-    - angular distnace
-    - distance between point and line
-    - intersection test
-    - move area computation above to a module
+If we arange this furhter,  we have ordering
+
+A0 - - A3       C0 - - C3
+| B0 B3 |       | D0 D3 |
+| B1 B2 |       | D1 D2 |
+A1 - - A2       C1 - - C2
+
+E0 - - E3
+| F0 F3 |
+| F1 F2 |
+E1 - - E2
 
 
-The idea is then:
-    - take all the finder patterns. For each pair, compute an 'association score' or threshold
-    - Use area to find the _outer_ corners in each case, and only compare the outer part of the finder patterns
-    - For each pair of finder patterns, compute the angular distnaces between all pairs of segments. We should find that each segment is roughly parallel to 2 others, so 8 pairs of parallel segments. For those, compute the offset, and we should find exactly two pairs with low offset -> this tells us how they are alligned. Record the pair of colinear segments
-    - Find situations where e.g. A is similar to B, and B is similar to C, and A is not colinear to C, and the colinear segments of A-B are not the same as the colinear segments of B-C. Then B must be the top left corner
-    - Extract the 24 landmarks, and map them to the QR code grid. Each finder pattern has 4 outer corners and 4 inner corners.
-    - Compute the homography, use some simplified RANSAC to filter outliers.
+Now we use the fact that N = 4V+17 is the number of cells in the QR code, with V the version number.
+
+If we look at e.g. the left-edge we have points A0, A1, E0, E1 at positions 0, 7, N-7, N. 
+They are colinear, but have been perspective transformed. But they should still satisfy the cross ratio rule:
+
+(A0, A1; E0, E1) = ||A0-E0|| ||A1-E1|| / ||A0-E1|| ||E1-A0|| = (N-7)(N-7)/(N)(N-14)
+
+Thus we get two ratios: r_measured and r(N). We can then find the value of V that minimizes
+abs(log(r_measured/r(N)))
+
+The neat thing is, that we get the exact same result for (A3, A2; E3, E2), (A0,A3;C0,C3), (A1,A2;C1,C2)
+
+In fact, we also get a similar relation for (B0, B1; F0, F1), but they are at positions 
+2,5,N-5,N-2; with cross ratio (N-7)(N-7)/(N-10)(N-4).
+This also applies to (B3, B2; F3, F2), (B0, B3; D0, D3), (B1, B2; D1, D2)
+
+Thus we get 8 expected cross ratio relations
+
+Then finally we also have diagonal cross ratio relations with the set of 8 colinear points E1,F1,F3,C1,D1,D3,C3
+but I'm not sure what to do with those exactly.
+
+Anyway, we can find the value of V that minimizes the e.g. mean or weighted sum of all these cross ratio errors.
+Especially for smaller version numbers that should give a very good estimate of V.
 """
