@@ -5,7 +5,7 @@ import numpy as np
 
 from qr_reader.detector.geometry import (
     angular_distance,
-    max_offset,
+    local_offset,
     polygon_area,
     segments_intersect,
 )
@@ -45,7 +45,7 @@ def extract_finder_patterns(
         areas = [(polygon_area(c), c) for c in corners_list]
         areas.sort(key=lambda x: x[0], reverse=True)
 
-        #TODO: a check that the inner pattern is contained in the outer pattern is nice as method to reject false positives
+        # TODO: a check that the inner pattern is contained in the outer pattern is nice as method to reject false positives
 
         if len(areas) == 0:
             continue
@@ -73,7 +73,7 @@ class Association:
 
 
 def check_association(
-    fp1: FinderPattern, fp2: FinderPattern, angle_tol=0.1, offset_tol=0.15
+    fp1: FinderPattern, fp2: FinderPattern, angle_tol=0.1, offset_tol=0.30
 ) -> Optional[Association]:
     """
     Checks if fp1 and fp2 are associated (aligned).
@@ -89,32 +89,61 @@ def check_association(
             if segments_intersect(s1[0], s1[1], s2[0], s2[1]):
                 return None
 
-    colinear_pairs = []
+    candidates = []
+    axes = ((0, 2), (1, 3))
 
-    for i, s1 in enumerate(segs1):
-        for j, s2 in enumerate(segs2):
-            ang_dist = angular_distance(s1[0], s1[1], s2[0], s2[1])
-            # Lines could be parallel or anti-parallel.
-            # angular_distance returns acute angle, so it's between 0 and pi/2.
-            if ang_dist < angle_tol:
-                # They are roughly parallel. Check offset.
-                off = max_offset(s1[0], s1[1], s2[0], s2[1])
-                if off < offset_tol:
-                    colinear_pairs.append((i, j))
+    for axis1 in axes:
+        for axis2 in axes:
+            # Try both one-to-one pairings between opposite sides. Corner ordering
+            # may differ between finder patterns, so matching segment indices is
+            # not guaranteed to be the best valid pairing.
+            pairings = (
+                ((axis1[0], axis2[0]), (axis1[1], axis2[1])),
+                ((axis1[0], axis2[1]), (axis1[1], axis2[0])),
+            )
 
-    # We expect exactly 2 pairs of colinear segments if they are properly aligned
-    if len(colinear_pairs) == 2:
-        return Association(
-            fp1_idx=fp1.cluster_idx,
-            fp2_idx=fp2.cluster_idx,
-            colinear_segments_1=[p[0] for p in colinear_pairs],
-            colinear_segments_2=[p[1] for p in colinear_pairs],
-        )
-    return None
+            for pairing in pairings:
+                angles = []
+                offsets = []
+                scores = []
+                pairing_ok = True
+
+                for i, j in pairing:
+                    s1 = segs1[i]
+                    s2 = segs2[j]
+                    ang_dist = float(angular_distance(s1[0], s1[1], s2[0], s2[1]))
+                    off = float(local_offset(s1[0], s1[1], s2[0], s2[1]))
+
+                    if ang_dist >= angle_tol or off >= offset_tol:
+                        pairing_ok = False
+                        break
+
+                    angles.append(ang_dist)
+                    offsets.append(off)
+                    scores.append(ang_dist + off)
+
+                if pairing_ok:
+                    candidates.append(
+                        (
+                            max(offsets),
+                            sum(scores),
+                            Association(
+                                fp1_idx=fp1.cluster_idx,
+                                fp2_idx=fp2.cluster_idx,
+                                colinear_segments_1=[p[0] for p in pairing],
+                                colinear_segments_2=[p[1] for p in pairing],
+                            ),
+                        )
+                    )
+
+    if not candidates:
+        return None
+
+    return min(candidates, key=lambda candidate: (candidate[0], candidate[1]))[2]
 
 
 def find_all_associations(
-    fps: List[FinderPattern], angle_tol=0.1, offset_tol=0.15
+    fps: List[FinderPattern], angle_tol=0.1, offset_tol=0.30
 ) -> List[Association]:
     associations = []
     for i in range(len(fps)):

@@ -1,7 +1,9 @@
 import numpy as np
 
+
 def segment_vector(p1, p2):
     return np.array(p2) - np.array(p1)
+
 
 def angular_distance(p1, p2, q1, q2):
     """Computes the acute angle (in radians) between two line segments P(p1, p2) and Q(q1, q2)."""
@@ -19,6 +21,7 @@ def angular_distance(p1, p2, q1, q2):
         angle = np.pi - angle
     return angle
 
+
 def point_line_distance(pt, line_p1, line_p2):
     """Computes the orthogonal distance from point `pt` to the infinite line defined by `line_p1` and `line_p2`."""
     pt = np.array(pt)
@@ -33,6 +36,19 @@ def point_line_distance(pt, line_p1, line_p2):
         return np.linalg.norm(pt - p1)
     return num / den
 
+
+def max_abs_line_distance(p1, p2, q1, q2):
+    """Computes the maximum endpoint-to-opposite-line distance between two segments."""
+    p1, p2, q1, q2 = np.array(p1), np.array(p2), np.array(q1), np.array(q2)
+
+    return max(
+        point_line_distance(q1, p1, p2),
+        point_line_distance(q2, p1, p2),
+        point_line_distance(p1, q1, q2),
+        point_line_distance(p2, q1, q2),
+    )
+
+
 def max_offset(p1, p2, q1, q2):
     """
     Computes the max offset between two line segments as:
@@ -43,27 +59,33 @@ def max_offset(p1, p2, q1, q2):
     """
     p1, p2, q1, q2 = np.array(p1), np.array(p2), np.array(q1), np.array(q2)
 
-    d_q1_P = point_line_distance(q1, p1, p2)
-    d_q2_P = point_line_distance(q2, p1, p2)
-    d_p1_Q = point_line_distance(p1, q1, q2)
-    d_p2_Q = point_line_distance(p2, q1, q2)
-
-    max_d = max(d_q1_P, d_q2_P, d_p1_Q, d_p2_Q)
+    max_d = max_abs_line_distance(p1, p2, q1, q2)
 
     mid_P = (p1 + p2) / 2
     mid_Q = (q1 + q2) / 2
     L = np.linalg.norm(mid_Q - mid_P)
 
     if L == 0:
-        return float('inf')  # Prevent division by zero
+        return float("inf")  # Prevent division by zero
 
     return max_d / L
+
+
+def local_offset(p1, p2, q1, q2):
+    """Offset normalized by local segment size instead of inter-segment distance."""
+    p1, p2, q1, q2 = np.array(p1), np.array(p2), np.array(q1), np.array(q2)
+    local_scale = (np.linalg.norm(p2 - p1) + np.linalg.norm(q2 - q1)) / 2
+    if local_scale == 0:
+        return float("inf")
+    return max_abs_line_distance(p1, p2, q1, q2) / local_scale
+
 
 def segments_intersect(p1, p2, q1, q2):
     """
     Checks if line segment p1p2 intersects with line segment q1q2.
     Uses the cross product orientation method.
     """
+
     def orientation(a, b, c):
         # > 0: counterclockwise, < 0: clockwise, == 0: colinear
         val = (b[1] - a[1]) * (c[0] - b[0]) - (b[0] - a[0]) * (c[1] - b[1])
@@ -72,8 +94,9 @@ def segments_intersect(p1, p2, q1, q2):
         return 1 if val > 0 else 2
 
     def on_segment(a, b, c):
-        return (min(a[0], c[0]) <= b[0] <= max(a[0], c[0]) and
-                min(a[1], c[1]) <= b[1] <= max(a[1], c[1]))
+        return min(a[0], c[0]) <= b[0] <= max(a[0], c[0]) and min(a[1], c[1]) <= b[
+            1
+        ] <= max(a[1], c[1])
 
     p1, p2, q1, q2 = np.array(p1), np.array(p2), np.array(q1), np.array(q2)
 
@@ -87,12 +110,17 @@ def segments_intersect(p1, p2, q1, q2):
         return True
 
     # Colinear cases
-    if o1 == 0 and on_segment(p1, q1, p2): return True
-    if o2 == 0 and on_segment(p1, q2, p2): return True
-    if o3 == 0 and on_segment(q1, p1, q2): return True
-    if o4 == 0 and on_segment(q1, p2, q2): return True
+    if o1 == 0 and on_segment(p1, q1, p2):
+        return True
+    if o2 == 0 and on_segment(p1, q2, p2):
+        return True
+    if o3 == 0 and on_segment(q1, p1, q2):
+        return True
+    if o4 == 0 and on_segment(q1, p2, q2):
+        return True
 
     return False
+
 
 def polygon_area(corners):
     """

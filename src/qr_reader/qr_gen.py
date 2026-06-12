@@ -10,7 +10,6 @@ import cv2
 import numpy as np
 import qrcode
 
-
 # ---------------------------------------------------------------------------
 # Individual pipeline steps
 # ---------------------------------------------------------------------------
@@ -46,8 +45,12 @@ def rotate_image(
     h, w = img.shape[:2]
     angle_deg = np.rad2deg(angle_rad)
     M = cv2.getRotationMatrix2D(((w - 1) / 2.0, (h - 1) / 2.0), angle_deg, 1.0)
-    return cv2.warpAffine(img, M, (w, h), borderValue=(border_value,) * img.shape[-1]
-                          if img.ndim == 3 else border_value)
+    return cv2.warpAffine(
+        img,
+        M,
+        (w, h),
+        borderValue=(border_value,) * img.shape[-1] if img.ndim == 3 else border_value,
+    )
 
 
 def random_perspective_warp(
@@ -73,7 +76,9 @@ def random_perspective_warp(
 
     M = cv2.getPerspectiveTransform(src_pts, dst_pts)
     return cv2.warpPerspective(
-        img, M, (w, h),
+        img,
+        M,
+        (w, h),
         borderValue=(border_value,) * img.shape[-1] if img.ndim == 3 else border_value,
     )
 
@@ -89,7 +94,9 @@ def add_gaussian_noise(
     """Add spatially smoothed Gaussian noise to *img*, scaled and clamped to [0, 255]."""
     noise = rng.normal(0, std, img.shape).astype(np.float32)
     spatial_noise = cv2.GaussianBlur(noise, (blur_kernel, blur_kernel), 0)
-    return np.clip(img.astype(np.float32) * intensity_scale + spatial_noise, 0, 255).astype(np.uint8)
+    return np.clip(
+        img.astype(np.float32) * intensity_scale + spatial_noise, 0, 255
+    ).astype(np.uint8)
 
 
 def gaussian_blur(img: np.ndarray, kernel_size: int = 5) -> np.ndarray:
@@ -103,7 +110,9 @@ def binarize_image(img: np.ndarray, threshold: int | None = None) -> np.ndarray:
     If *threshold* is ``None`` (default), Otsu's method is used.
     """
     if threshold is None:
-        threshold, binary = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+        threshold, binary = cv2.threshold(
+            img, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU
+        )
         return binary.astype(bool)
     return cv2.threshold(img, threshold, 255, cv2.THRESH_BINARY)[1].astype(bool)
 
@@ -123,6 +132,7 @@ def generate_test_image(
     box_size: int = 10,
     border: int = 4,
     # Transforms
+    rotation_angle_deg: float | None = None,
     perspective_max_shift: float = 50.0,
     # Noise / blur
     noise_std: float = 50.0,
@@ -147,15 +157,22 @@ def generate_test_image(
         border=border,
     )
 
-    rotation_amount=rng.uniform(0, 2 * np.pi)
+    if rotation_angle_deg is None:
+        rotation_amount = rng.uniform(0, 2 * np.pi)
+    else:
+        rotation_amount = np.deg2rad(rotation_angle_deg)
     img = rotate_image(img, rotation_amount, border_value=border_value)
 
     img = random_perspective_warp(
-        img, rng, max_shift=perspective_max_shift, border_value=border_value,
+        img,
+        rng,
+        max_shift=perspective_max_shift,
+        border_value=border_value,
     )
 
     img = add_gaussian_noise(
-        img, rng,
+        img,
+        rng,
         std=noise_std,
         blur_kernel=noise_blur_kernel,
         intensity_scale=intensity_scale,
@@ -163,5 +180,3 @@ def generate_test_image(
 
     img = gaussian_blur(img, kernel_size=final_blur_kernel)
     return img
-
-

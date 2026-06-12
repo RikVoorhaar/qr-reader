@@ -89,15 +89,15 @@ def generate_synthetic_finder_patterns(
     image_corners = [corners * module_size for corners in module_corners]
 
     # Apply uniform scale and rotation
+    cos_r = np.cos(rotation_rad)
+    sin_r = np.sin(rotation_rad)
+    rot_scale = np.array(
+        [
+            [cos_r * scale, -sin_r * scale],
+            [sin_r * scale, cos_r * scale],
+        ]
+    )
     if scale != 1.0 or rotation_rad != 0.0:
-        cos_r = np.cos(rotation_rad)
-        sin_r = np.sin(rotation_rad)
-        rot_scale = np.array(
-            [
-                [cos_r * scale, -sin_r * scale],
-                [sin_r * scale, cos_r * scale],
-            ]
-        )
         image_corners = [corners @ rot_scale.T for corners in image_corners]
 
     # Apply perspective transform by perturbing the four QR-code corners
@@ -232,26 +232,29 @@ def _assert_true_triplet_found(fps, associations, triplets):
 
 
 # ---------------------------------------------------------------------------
-# Tests that should PASS with current production code (guard existing behavior)
+# Association tests
 # ---------------------------------------------------------------------------
 
 
-def test_low_version_finds_associations():
-    """Version 4 synthetic FPs should associate correctly (baseline)."""
-    fps = generate_synthetic_finder_patterns(version=4)
+@pytest.mark.parametrize("version", range(1, 13))
+def test_synthetic_versions_find_associations(version):
+    """Synthetic FPs should associate correctly across QR versions 1-12."""
+    fps = generate_synthetic_finder_patterns(version=version)
     associations = find_all_associations(fps)
     triplets = find_triplets(fps, associations)
     _assert_true_triplet_found(fps, associations, triplets)
 
 
-def test_low_version_with_bogus_finds_true_triplet():
-    """Version 4 with false positives should still recover the true triplet."""
-    true_fps = generate_synthetic_finder_patterns(version=4)
+@pytest.mark.parametrize("version", [1, 4, 8, 12])
+@pytest.mark.parametrize("seed", range(9))
+def test_synthetic_versions_with_bogus_find_true_triplet(version, seed):
+    """False positives should not prevent recovery of the true triplet."""
+    true_fps = generate_synthetic_finder_patterns(version=version)
     extent = (
         max(fp.outer_corners[:, 0].max() for fp in true_fps),
         max(fp.outer_corners[:, 1].max() for fp in true_fps),
     )
-    bogus_fps = generate_bogus_finder_patterns(count=3, seed=42, image_extent=extent)
+    bogus_fps = generate_bogus_finder_patterns(count=3, seed=seed, image_extent=extent)
     fps = true_fps + bogus_fps
     associations = find_all_associations(fps)
     triplets = find_triplets(fps, associations)
@@ -304,43 +307,12 @@ def test_axis_mismatch_pairing_find_triplets():
     _assert_true_triplet_found(fps, associations, triplets)
 
 
-# ---------------------------------------------------------------------------
-# Tests that should FAIL with current production code (document the bug)
-# ---------------------------------------------------------------------------
-
-
-def test_high_version_finds_associations():
-    """Version 12 synthetic FPs should associate; current code returns 0.
-
-    At high versions the inter-finder-pattern distance grows while FP size
-    stays fixed.  ``max_offset()`` normalises by that distance, so extra
-    cross-pairs fall below ``offset_tol``.  The ``len(colinear_pairs)==2``
-    rule then rejects the true adjacent pairs.
-    """
-    fps = generate_synthetic_finder_patterns(version=12)
-    associations = find_all_associations(fps)
-    triplets = find_triplets(fps, associations)
-    _assert_true_triplet_found(fps, associations, triplets)
-
-
-def test_high_version_with_bogus_finds_true_triplet():
-    """Version 12 with false positives should still recover the true triplet."""
-    true_fps = generate_synthetic_finder_patterns(version=12)
-    extent = (
-        max(fp.outer_corners[:, 0].max() for fp in true_fps),
-        max(fp.outer_corners[:, 1].max() for fp in true_fps),
-    )
-    bogus_fps = generate_bogus_finder_patterns(count=3, seed=42, image_extent=extent)
-    fps = true_fps + bogus_fps
-    associations = find_all_associations(fps)
-    triplets = find_triplets(fps, associations)
-    _assert_true_triplet_found(fps, associations, triplets)
-
-
-def test_high_version_with_perspective_and_jitter():
-    """Version 12 with moderate perspective and jitter should still work."""
+@pytest.mark.parametrize("version", [8, 12])
+@pytest.mark.parametrize("seed", range(9))
+def test_high_versions_with_perspective_and_jitter(version, seed):
+    """High versions with moderate perspective and jitter should still work."""
     fps = generate_synthetic_finder_patterns(
-        version=12, perspective_amount=0.3, jitter_std=0.2
+        version=version, seed=seed, perspective_amount=0.3, jitter_std=0.2
     )
     associations = find_all_associations(fps)
     triplets = find_triplets(fps, associations)
