@@ -5,7 +5,7 @@ import pytest
 from qrcode import QRCode
 from qrcode.constants import ERROR_CORRECT_L
 
-from qr_reader.sample import (
+from qr_reader.detector.sample import (
     compute_adaptive_threshold,
     finder_pattern_known_cells,
     sample_qr_bits,
@@ -578,9 +578,9 @@ def _full_pipeline_decode(
             ] = val
 
     # Decode
-    from qr_reader.detector.decode import decode_qr
+    from qr_reader.tests.detector.helpers import decode_qr_cv2
 
-    text, ok = decode_qr(img_clean, corners_xy=None)
+    text, ok = decode_qr_cv2(img_clean, corners_xy=None)
     return text, ok
 
 

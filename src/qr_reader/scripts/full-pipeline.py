@@ -27,7 +27,7 @@ QR_VERSION = 3
 QR_CONTENT = "https://www.rikvoorhaar.com"
 
 
-img_gray = generate_test_image(version=QR_VERSION, content=QR_CONTENT)
+img_gray = generate_test_image(version=QR_VERSION, content=QR_CONTENT, border=10)
 
 plt.imshow(img_gray, cmap="gray")
 plt.title("Noisy QR Code (grayscale)")
@@ -577,7 +577,7 @@ plt.show()
 # %%
 # Step G — Supersample QR bits from grayscale & decode with project decoder
 from qr_reader.decoder.decoder import DecodeError, decode
-from qr_reader.sample import sample_qr_bits
+from qr_reader.detector.sample import sample_qr_bits
 
 matrix = sample_qr_bits(img_gray, H_refined, N_best)
 print(f"Sampled matrix shape: {matrix.shape}, dark fraction: {matrix.mean():.3f}")

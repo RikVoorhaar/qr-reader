@@ -39,11 +39,12 @@ def make_qr_image(
 
 def rotate_image(
     img: np.ndarray,
-    angle_deg: float,
+    angle_rad: float,
     border_value: int = 255,
 ) -> np.ndarray:
     """Rotate *img* around its centre by *angle_deg* degrees."""
     h, w = img.shape[:2]
+    angle_deg = np.rad2deg(angle_rad)
     M = cv2.getRotationMatrix2D(((w - 1) / 2.0, (h - 1) / 2.0), angle_deg, 1.0)
     return cv2.warpAffine(img, M, (w, h), borderValue=(border_value,) * img.shape[-1]
                           if img.ndim == 3 else border_value)
@@ -122,7 +123,6 @@ def generate_test_image(
     box_size: int = 10,
     border: int = 4,
     # Transforms
-    rotation_angle_deg: float = 20.0,
     perspective_max_shift: float = 50.0,
     # Noise / blur
     noise_std: float = 50.0,
@@ -147,7 +147,8 @@ def generate_test_image(
         border=border,
     )
 
-    img = rotate_image(img, rotation_angle_deg, border_value=border_value)
+    rotation_amount=rng.uniform(0, 2 * np.pi)
+    img = rotate_image(img, rotation_amount, border_value=border_value)
 
     img = random_perspective_warp(
         img, rng, max_shift=perspective_max_shift, border_value=border_value,
