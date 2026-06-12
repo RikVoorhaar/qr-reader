@@ -101,7 +101,7 @@ def polygon_area(corners):
     """
     corners = np.array(corners)
     if len(corners) == 4:
-        # Use the formula from dev3.py for 4 corners (diagonals cross product)
+        # Use the formula from full-pipeline.py for 4 corners (diagonals cross product)
         # 0.5 * |d1 x d2|
         diag1 = corners[0] - corners[2]
         diag2 = corners[1] - corners[3]

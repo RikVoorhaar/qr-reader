@@ -1,9 +1,8 @@
 """Tests for homography module: normalization, DLT, projection, RANSAC, LM."""
 
 import numpy as np
-import pytest
 
-from qr_reader.homography import (
+from qr_reader.detector.homography import (
     compute_qr_corners,
     estimate_homography_dlt,
     normalization_transform,

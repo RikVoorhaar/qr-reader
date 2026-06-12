@@ -7,11 +7,10 @@ Coordinate convention:
 """
 
 from dataclasses import dataclass
-from typing import List, Tuple
 
 import numpy as np
 
-from qr_reader.finder_pattern import FinderPattern, Triplet
+from qr_reader.detector.finder_pattern import FinderPattern, Triplet
 
 # ---------------------------------------------------------------------------
 # Step B — local basis + corner ordering

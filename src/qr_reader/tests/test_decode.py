@@ -1,7 +1,7 @@
 """Tests for decode module: OpenCV QR decode wrapper."""
 
 import numpy as np
-from qr_reader.decode import decode_qr
+from qr_reader.detector.decode import decode_qr
 
 from qr_reader.qr_gen import make_qr_image
 

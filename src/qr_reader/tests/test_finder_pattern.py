@@ -1,5 +1,5 @@
 import numpy as np
-from qr_reader.finder_pattern import (
+from qr_reader.detector.finder_pattern import (
     FinderPattern,
     extract_finder_patterns,
     check_association,

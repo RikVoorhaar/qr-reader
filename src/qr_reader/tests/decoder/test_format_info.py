@@ -14,14 +14,10 @@ from qr_reader.decoder.format_info import (
     decode_format_info,
 )
 from qr_reader.decoder.tables import (
-    ECL_H,
-    ECL_L,
-    ECL_M,
     ECL_NAMES,
-    ECL_Q,
     VALID_FORMAT_PATTERNS,
 )
-from tests.decoder.helpers import make_qr_bitmatrix
+from qr_reader.tests.decoder.helpers import make_qr_bitmatrix
 
 
 class TestHammingDistance:

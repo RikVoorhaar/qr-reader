@@ -438,31 +438,29 @@ def _full_pipeline_decode(
     4. Build a clean uint8 image with quiet zone.
     5. Decode with OpenCV ``detectAndDecode``.
     """
-    import cv2
 
-    from qr_reader.alignment import (
-        find_alignment_patterns,
+    from qr_reader.detector.alignment import (
         find_alignment_patterns_2d,
     )
-    from qr_reader.clustering import cluster_candidates
-    from qr_reader.corner import angular_nms_top_radial_indices
-    from qr_reader.finder_pattern import (
+    from qr_reader.detector.clustering import cluster_candidates
+    from qr_reader.detector.corner import angular_nms_top_radial_indices
+    from qr_reader.detector.finder_pattern import (
         extract_finder_patterns,
         find_all_associations,
         find_triplets,
     )
-    from qr_reader.homography import ransac_homography, refine_homography_lm
-    from qr_reader.landmarks import (
+    from qr_reader.detector.homography import ransac_homography, refine_homography_lm
+    from qr_reader.detector.landmarks import (
         build_named_landmarks,
         canonical_grid_landmarks,
     )
     from qr_reader.qr_gen import binarize_image, generate_test_image
-    from qr_reader.region import (
+    from qr_reader.detector.region import (
         boundary_connected_components_ndimage,
         region_boundary_8,
         region_fill_wave_front,
     )
-    from qr_reader.version import (
+    from qr_reader.detector.version import (
         build_constraints,
         estimate_version,
         filter_constraints,
@@ -580,7 +578,7 @@ def _full_pipeline_decode(
             ] = val
 
     # Decode
-    from qr_reader.decode import decode_qr
+    from qr_reader.detector.decode import decode_qr
 
     text, ok = decode_qr(img_clean, corners_xy=None)
     return text, ok

@@ -3,7 +3,7 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 
-from qr_reader.geometry import (
+from qr_reader.detector.geometry import (
     angular_distance,
     max_offset,
     polygon_area,

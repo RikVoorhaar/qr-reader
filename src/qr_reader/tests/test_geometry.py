@@ -1,6 +1,5 @@
 import numpy as np
-import pytest
-from qr_reader.geometry import (
+from qr_reader.detector.geometry import (
     angular_distance,
     point_line_distance,
     max_offset,

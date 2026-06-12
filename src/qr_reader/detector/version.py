@@ -2,11 +2,10 @@
 constraint building/filtering, and version inference."""
 
 from dataclasses import dataclass
-from typing import List
 
 import numpy as np
 
-from qr_reader.landmarks import NamedLandmarks, Quadruple, get_colinear_quadruples
+from qr_reader.detector.landmarks import NamedLandmarks, get_colinear_quadruples
 
 # ---------------------------------------------------------------------------
 # Cross-ratio measurement

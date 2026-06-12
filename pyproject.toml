@@ -25,5 +25,10 @@ dev = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.pytest.ini_options]
+norecursedirs = [
+    "third_party",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/qr_reader"]

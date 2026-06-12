@@ -1,14 +1,12 @@
 """Tests for version.py: cross-ratio measurement and version estimation."""
 
 import numpy as np
-import pytest
 
-from qr_reader.landmarks import (
+from qr_reader.detector.landmarks import (
     NamedLandmarks,
     canonical_grid_landmarks,
-    get_colinear_quadruples,
 )
-from qr_reader.version import (
+from qr_reader.detector.version import (
     Constraint,
     build_constraints,
     estimate_version,

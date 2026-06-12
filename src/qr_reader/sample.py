@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.ndimage import map_coordinates
 
-from qr_reader.homography import project_points
+from qr_reader.detector.homography import project_points
 
 
 def supersample_cell(

@@ -1,19 +1,19 @@
 # %%
-"""dev3.py — QR code reader using modular components."""
+"""full-pipeline.py — QR code reader using modular components."""
 
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib import cm
 
-from qr_reader.alignment import (
+from qr_reader.detector.alignment import (
     find_alignment_patterns,
     find_alignment_patterns_2d,
 )
-from qr_reader.clustering import cluster_candidates
-from qr_reader.corner import angular_nms_top_radial_indices
-from qr_reader.geometry import polygon_area
+from qr_reader.detector.clustering import cluster_candidates
+from qr_reader.detector.corner import angular_nms_top_radial_indices
+from qr_reader.detector.geometry import polygon_area
 from qr_reader.qr_gen import binarize_image, generate_test_image
-from qr_reader.region import (
+from qr_reader.detector.region import (
     boundary_connected_components_ndimage,
     boundary_connected_components_networkx,
     get_neighbors,
@@ -271,7 +271,7 @@ def area(corners):
 
 for ci, corners in all_corners:
     print(f"Cluster {ci} area: {area(corners)}")
-from qr_reader.finder_pattern import (
+from qr_reader.detector.finder_pattern import (
     extract_finder_patterns,
     find_all_associations,
     find_triplets,
@@ -307,7 +307,7 @@ for fp in fps:
 # %%
 # Step B — Build named landmarks from the first triplet
 
-from qr_reader.landmarks import (
+from qr_reader.detector.landmarks import (
     build_named_landmarks,
     get_colinear_quadruples,
 )
@@ -401,7 +401,7 @@ plt.show()
 # %%
 # Step D — Version estimation via cross-ratios
 
-from qr_reader.version import (
+from qr_reader.detector.version import (
     build_constraints,
     estimate_version,
     expected_cross_ratio_by_N,
@@ -470,12 +470,12 @@ print(f"  inner: {inner_exp:.6f}")
 # %%
 # Step E — Homography estimation (DLT + RANSAC + LM)
 
-from qr_reader.homography import (
+from qr_reader.detector.homography import (
     compute_qr_corners,
     ransac_homography,
     refine_homography_lm,
 )
-from qr_reader.landmarks import build_named_landmarks, canonical_grid_landmarks
+from qr_reader.detector.landmarks import build_named_landmarks, canonical_grid_landmarks
 
 # Build correspondences: canonical grid landmarks → detected image landmarks
 # N_best was computed in the version-estimation step above.

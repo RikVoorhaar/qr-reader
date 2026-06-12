@@ -1,13 +1,10 @@
 """Tests for landmarks module: corner ordering and named landmarks."""
 
 import numpy as np
-import pytest
 
-from qr_reader.finder_pattern import FinderPattern, Triplet
-from qr_reader.landmarks import (
+from qr_reader.detector.finder_pattern import FinderPattern, Triplet
+from qr_reader.detector.landmarks import (
     NamedLandmarks,
-    Quadruple,
-    build_named_landmarks,
     canonical_grid_landmarks,
     get_colinear_quadruples,
     local_basis,
