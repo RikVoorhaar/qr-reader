@@ -8,15 +8,15 @@ from qr_reader.decoder.decoder import decode
 from matplotlib import pyplot as plt
 
 content = "https://www.rikvoorhaar.com"
-version = 3
+version = 12
 image = generate_test_image(content=content, version=version, border=10, noise_std=100, seed=None)
 img = make_qr_image(content=content, version=version, border=0)
-bits_correct = ~(img[5::10, 5::10].astype(bool)).T
+bits_correct = ~(img[5::10, 5::10].astype(bool))
 
 homography_det, version_det = detect_homography(image)
 N = 4 * version_det + 17
 corners_det = compute_qr_corners(homography_det, N)
-bits_det = sample_qr_bits(image, homography_det, N)
+bits_det = sample_qr_bits(image, homography_det, N).T
 assert np.all(bits_det == bits_correct)
 text_det = decode(bits_correct)
 # %%

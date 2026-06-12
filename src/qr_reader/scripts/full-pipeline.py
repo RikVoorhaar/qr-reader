@@ -23,11 +23,11 @@ from qr_reader.detector.region import (
 
 # %%
 # Generate test image (grayscale)
-QR_VERSION = 3
+QR_VERSION = 12
 QR_CONTENT = "https://www.rikvoorhaar.com"
 
 
-img_gray = generate_test_image(version=QR_VERSION, content=QR_CONTENT, border=10)
+img_gray = generate_test_image(version=QR_VERSION, content=QR_CONTENT, border=15)
 
 plt.imshow(img_gray, cmap="gray")
 plt.title("Noisy QR Code (grayscale)")
@@ -232,7 +232,6 @@ for ci, cluster in enumerate(clusters):
             print("ValueError: angular_nms_top_radial_indices failed")
             continue
         all_corners.append((ci, comp_arr[idx]))
-
 # ——— Plot ——————————————————————————————————————————————————————————————————
 
 rgb_all = np.stack([img_binary.astype(np.float32)] * 3, axis=-1) / 255.0

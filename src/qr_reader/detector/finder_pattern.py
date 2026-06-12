@@ -45,6 +45,8 @@ def extract_finder_patterns(
         areas = [(polygon_area(c), c) for c in corners_list]
         areas.sort(key=lambda x: x[0], reverse=True)
 
+        #TODO: a check that the inner pattern is contained in the outer pattern is nice as method to reject false positives
+
         if len(areas) == 0:
             continue
 
