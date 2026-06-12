@@ -268,6 +268,8 @@ Remaining caution:
 
 The production fix should start with more aggressive unit tests around the association step, before changing `check_association()` itself. The main risk is that a more permissive association rule could recover true high-version pairs while also admitting false-positive pairs. Tests should lock down both sides.
 
+> **Status update (2026-06-12):** The unit tests described below have been implemented in `src/qr_reader/tests/detector/test_finder_pattern_association.py`.  Three tests currently **pass** (guarding existing low-version behaviour) and three tests intentionally **fail** (documenting the high-version bug).  The next agent should implement the production fix and then verify that all six tests pass.
+
 ### Step 1: add association-focused unit tests
 
 Add tests close to the existing finder-pattern tests, e.g. in `src/qr_reader/tests/detector/test_finder_pattern.py` or a new dedicated file such as `src/qr_reader/tests/detector/test_finder_pattern_association.py`.
@@ -477,9 +479,12 @@ The false-positive middle cluster is real and should eventually be filtered, but
 
 ## Suggested next investigation steps
 
-No production fix was attempted here. If we continue, the next useful steps are:
+The unit-test scaffolding is now in place.  The next useful steps are:
 
-1. Add the association-focused unit tests above.
-2. Prototype production logic using local-scale offset and best compatible pair selection.
-3. Verify `find_triplets()` still receives segment-index data in a shape it can reason about when pairings are not same-index, e.g. `(0, 1), (2, 3)`.
-4. Separately add a filter for false-positive finder patterns, e.g. area/inner-corner sanity checks, but treat that as separate from the high-version association failure.
+1. **Implement the production fix** in `src/qr_reader/detector/finder_pattern.py`:
+   - Introduce a local-scale offset metric (offset divided by mean segment length) inside `check_association()`.
+   - Replace the brittle `len(colinear_pairs) == 2` rule with a best-compatible-two-pair selection that considers all opposite-side axis combinations and both one-to-one pairings.
+   - Preserve compatibility with `find_triplets()`; the `Association` dataclass may need to evolve from parallel segment-index lists to explicit pair tuples.
+2. **Run the new unit tests** (`uv run pytest src/qr_reader/tests/detector/test_finder_pattern_association.py -v`) and confirm all six cases pass.
+3. **Add image-based integration tests** using the deterministic reproductions from `debug_find_all_associations.py` (version 12 seed 0, version 12 seed 7, version 4 seed 0).
+4. **Separately add a filter for false-positive finder patterns** (area / inner-corner sanity checks), but treat that as a separate issue from the high-version association failure.
