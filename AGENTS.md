@@ -158,3 +158,40 @@ bit matrix (N×N bool)
 - The `qr_gen.py` pipeline: clean QR → rotate → perspective warp → Gaussian noise → blur.
 - Run tests: `pytest` from the repo root.
 - `third_party/` is excluded from pytest via `pyproject.toml`.
+
+## Issue Tracking
+
+Issues live in `issues/NNNN-slug.md` with YAML frontmatter. `issues/README.md` is
+ the canonical index — consult it before starting new work.
+
+### When to create an issue
+
+- You find a bug you cannot fix inline in the current task.
+- You complete work and identify a necessary follow-up.
+- **Before filing a speculative enhancement**, ask the maintainer first.
+
+### Issue format
+
+```yaml
+---
+title: Short description of the problem or task
+tags: [bug | feature | enhancement | docs | chore]
+priority: blocking | high | medium | low
+status: open | in-progress | done | wontfix
+created: YYYY-MM-DD
+closed: YYYY-MM-DD  # only when done or wontfix
+---
+
+## Description
+
+...
+```
+
+### Status workflow
+
+`open` → `in-progress` → `done` / `wontfix`
+
+### Closing an issue
+
+Set `status: done` (or `wontfix`), add `closed: YYYY-MM-DD`, and move the row
+from the Open table to the Closed table in `issues/README.md`.
