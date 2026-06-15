@@ -90,6 +90,29 @@ Clean QR → Rotate → Perspective warp → Gaussian noise → Gaussian blur
 All randomness is seeded, so the same seed always produces the same image.
 Use this for benchmarking and regression testing.
 
+## Datasets
+
+### HomeObjects-3K
+
+A dataset of ~3 000 real-world images of household objects across multiple
+rooms (`living_room`, `kitchen`, `bedroom`, `bathroom`), from the Ultralytics
+model assets.
+
+```bash
+# Download and extract (skips if already present)
+python src/qr_reader/scripts/download_homeobjects.py
+```
+
+The dataset lands in `data/` (gitignored):
+
+```
+data/
+├── images/          # train/, val/, test/ splits
+├── labels/          # YOLO-format annotations per split
+├── HomeObjects-3K.yaml
+└── LICENSE.txt
+```
+
 ## Project Status
 
 - ✅ Detection: finder patterns, alignment patterns, version estimation, homography

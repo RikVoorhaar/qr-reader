@@ -90,3 +90,64 @@ _Avoid_: Serpentine scan, swizzle
 An 18-bit pattern encoding the QR version number (6 bits) and its complement,
 present only in versions ≥ 7.
 _Avoid_: Version bits
+
+### Synthesis
+
+**Synthetic Image**:
+A composited image produced by the augmentation pipeline: a QR code (patch)
+blended onto a natural background with controlled degradation.
+_Avoid_: Augmented image, fake image, generated image
+
+**Patch**:
+The QR code image rendered with its quiet zone, in isolation, before compositing.
+Always a square RGB uint8 array.
+_Avoid_: QR image, QR bitmap, sticker
+
+**Mask**:
+A single-channel float32 image, same dimensions as the patch, with value 1.0
+inside the patch rectangle and 0.0 outside. Used as the alpha channel for
+compositing and as input to feathering.
+_Avoid_: Alpha mask, blend mask
+
+**Quiet Zone**:
+The 4-module blank border around the QR code proper, required by the QR spec.
+Included in the patch but excluded from QR corner ground truth.
+_Avoid_: Margin, border, padding
+
+**QR Corners**:
+The 4 image-space [x, y] coordinates (TL, TR, BR, BL) of the QR code proper
+(excluding quiet zone). Serves as ground truth for the detector.
+_Avoid_: Patch corners, sticker corners, bounding-box corners
+
+**Feathering**:
+Gaussian blur applied to the mask boundary only, creating a smooth alpha
+transition at the patch edge so it blends into the background.
+_Avoid_: Edge softening, alpha blur
+
+**Placement**:
+Scaling and translating the augmented patch onto the background canvas such
+that the full patch (including quiet zone) stays within the image bounds.
+_Avoid_: Positioning, pasting
+
+**Placement Scale**:
+The uniform scale factor computed from `target_ppm` such that the QR code
+modules in the final image have approximately the desired pixel density.
+_Avoid_: Zoom factor, resize ratio
+
+**Global Degradation**:
+Post-composite image-wide augmentations applied to the entire synthetic image:
+Gaussian blur, sensor noise, JPEG compression. Simulates camera pipeline
+artifacts.
+_Avoid_: Post-processing, image corruption, camera simulation
+
+**Augmentation Config**:
+A pydantic model capturing all tuneable parameters for the pipeline:
+ppm ranges, jitter fraction, feather sigma, blur/noise/JPEG ranges,
+and difficulty presets.
+_Avoid_: Config dict, parameter set, settings
+
+**Corner Jitter**:
+Small random perturbation applied to each corner of the source quad before
+computing the perspective homography. The primary mechanism for introducing
+perspective distortion.
+_Avoid_: Corner noise, corner perturbation, projective jitter
