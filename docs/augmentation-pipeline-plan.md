@@ -9,8 +9,8 @@
 
 | Phase | Name | State | Depends on |
 |-------|------|-------|------------|
-| 1 | QR Patch & Mask Generation | not-implemented | — |
-| 2 | Perspective Augmentation | not-implemented | Phase 1 |
+| 1 | QR Patch & Mask Generation | implemented | — |
+| 2 | Perspective Augmentation | implemented | Phase 1 |
 | 3 | Placement & Scale | not-implemented | Phase 2 |
 | 4 | Compositing | not-implemented | Phase 3 |
 | 5 | Global Degradation | not-implemented | Phase 4 |
@@ -164,6 +164,18 @@ Run a smoke script that generates patches at versions 1, 5, 15 and ppm 5, 10, 20
 
 ---
 
+### Implementation notes
+
+- **`ppm` is typed as `int`**, not `float`, because `qrcode.QRCode(box_size=...)` requires an integer.  The plan spec says `ppm` should be `int`; Phase 2's `sample_patch_ppm` will produce a `float` that gets rounded when calling `generate_qr_patch`.
+- **`fit=False`** is used in `generate_qr_patch` so the specified version is honoured exactly, rather than letting `qrcode` auto-upgrade.  The caller must ensure content fits at that version+ECL.
+- **`_resolve_ecl`** helper converts the one-letter ECL string to a `qrcode.constants` int.  Exposed as `VALID_ECL` frozenset for test parametrisation.  Raises `ValueError` for invalid strings.
+- **`compute_qr_corners_patch_space`** returns `float64` corners in **(x, y)** order (OpenCV convention).  Downstream phases consume these directly for `cv2.getPerspectiveTransform`.
+- **`_N(version)`** is duplicated in tests rather than exported; it's a trivial formula (`17 + 4 * version`).  Downstream phases will need it too — consider extracting to a shared utility if used in more than one place.
+- **Patch file structure**: `src/qr_reader/synth/patch.py` exports `generate_qr_patch` and `compute_qr_corners_patch_space`.  All Phase 2 code goes in `src/qr_reader/synth/augment.py`.
+- **No new dependencies** beyond what `pyproject.toml` already declares (`numpy`, `qrcode`).
+
+---
+
 ## Phase 2 — Perspective Augmentation (isolated patch)
 
 **Depends on:** Phase 1 (needs `generate_qr_patch` and `compute_qr_corners_patch_space`)  
@@ -261,6 +273,18 @@ Run a script that:
 2. Applies augmentation with varying rotation and jitter.
 3. Saves the warped patch rgb, warped mask, and overlays the 4 QR corners as colored dots.
 4. Human inspection: QR code is readable, corners align to module boundaries, mask aligns to patch.
+
+---
+
+### Implementation notes
+
+- **`AugmentationConfig` lives in `config.py`** (not in Phase 2's `augment.py`) so that all phases can import it without circular dependencies. It is a plain `@dataclass`, not pydantic, to avoid adding a dependency. The plan mentions pydantic in the design decisions; if serialisation validation is needed later, swapping is a localised change.
+- **Aspect scaling uses reciprocal y-scaling** (`y *= 1/aspect_scale`) so that the overall area is roughly preserved. `aspect_scale_range=(0.8, 1.2)` produces mild anamorphic distortion without exploding the bounding box.
+- **`jitter_corners` computes `side` as the average** of the four side lengths (top, bottom, left, right), then the average of width and height. This is robust to slightly non-square inputs.
+- **Padding in `apply_augmentation`**: the output bounding box is padded by 5 % of its extent (min 4 px) to prevent the feathered mask edge from being clipped during Phase 4 compositing. A more principled approach would use `ppm_patch * quiet_zone_modules`, but the ppm isn't available in `apply_augmentation`'s signature.
+- **`sample_patch_ppm` returns a `float`**, consistent with the plan. The caller must round/truncate when passing to `generate_qr_patch(ppm=...)` which requires `int`. This happens at the orchestration layer (Phase 6).
+- **`apply_augmentation` recomputes the homography** twice (once inside `perspective_warp`, once for transforming QR corners). This is slightly redundant but keeps the function boundary clean. Optimisation can happen later by returning `H_mat` from `perspective_warp`.
+- **`qr_corners_patch` must be in (x, y) order** (OpenCV convention) as produced by `compute_qr_corners_patch_space`. The homography in `apply_augmentation` maps from patch-space `src_quad` to the shifted destination quad, so the QR corners are correctly transformed.
 
 ---
 
