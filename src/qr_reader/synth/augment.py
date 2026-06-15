@@ -52,11 +52,17 @@ class AugmentedPatch:
     warped_corners_qr : np.ndarray, shape ``(4, 2)``, dtype ``float64``
         Four corners of the QR code proper (TL, TR, BR, BL) in warped-patch
         space coordinates.
+    rotation_deg : float
+        The rotation angle sampled and applied during augmentation.
+    aspect_scale : float
+        The aspect scale sampled and applied during augmentation.
     """
 
     warped_patch: np.ndarray
     warped_mask: np.ndarray
     warped_corners_qr: np.ndarray
+    rotation_deg: float = 0.0
+    aspect_scale: float = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -368,4 +374,6 @@ def apply_augmentation(
         warped_patch=warped_patch,
         warped_mask=warped_mask,
         warped_corners_qr=warped_corners_qr,
+        rotation_deg=rotation_deg,
+        aspect_scale=aspect_scale,
     )

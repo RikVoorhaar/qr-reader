@@ -30,6 +30,9 @@ class AugmentationConfig:
     ----------
     version : int
         QR code version (1–40).  Default ``5``.
+    global_seed : int
+        Base seed for dataset generation; each sample uses ``global_seed + index``.
+        Default ``42``.
     content : str
         Text payload to encode.  Default ``"QR Reader v1"``.
     error_correction : str
@@ -56,6 +59,9 @@ class AugmentationConfig:
     feather_sigma_range : tuple[float, float]
         Range for Gaussian feather (blur) sigma on the mask edge (Phase 4).
         Default ``(0.5, 2.5)``.
+    global_seed : int
+        Base seed for dataset generation; each sample uses ``global_seed + index``.
+        Default ``42``.
     blur_sigma_range : tuple[float, float]
         Range for post-composite Gaussian blur sigma (Phase 5).
         Default ``(0.0, 1.5)``.
@@ -85,7 +91,10 @@ class AugmentationConfig:
     target_ppm_range: tuple[float, float] = (4.0, 12.0)
 
     # Feathering
-    feather_sigma_range: tuple[float, float] = (0.5, 2.5)
+    feather_sigma_range: tuple[float, float] = (0.5, 2.5)  # px
+
+    # Dataset generation
+    global_seed: int = 42  # base seed for dataset iteration
 
     # Global degradation (post-composite)
     blur_sigma_range: tuple[float, float] = (0.0, 1.5)

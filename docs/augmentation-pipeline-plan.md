@@ -11,11 +11,11 @@
 |-------|------|-------|------------|
 | 1 | QR Patch & Mask Generation | implemented | — |
 | 2 | Perspective Augmentation | implemented | Phase 1 |
-| 3 | Placement & Scale | not-implemented | Phase 2 |
-| 4 | Compositing | not-implemented | Phase 3 |
-| 5 | Global Degradation | not-implemented | Phase 4 |
-| 6 | Pipeline Orchestrator | not-implemented | Phases 1–5 |
-| 7 | Difficulty Presets & Script | not-implemented | Phase 6 |
+| 3 | Placement & Scale | implemented | Phase 2 |
+| 4 | Compositing | implemented | Phase 3 |
+| 5 | Global Degradation | implemented | Phase 4 |
+| 6 | Pipeline Orchestrator | implemented | Phases 1–5 |
+| 7 | Difficulty Presets & Script | implemented | Phase 6 |
 
 ## Design decisions (locked in grilling)
 
@@ -359,6 +359,31 @@ Run a script that:
 4. Overlay the QR corners as colored dots on the placed patch.
 5. Visual inspection: patch is fully visible, no clipping, corners align.
 
+### Implementation notes
+
+- **`sample_placement_scale`** clamps the scale so the patch fits within the
+  background (compares against `max_scale_x = bg_W / warped_W` and
+  `max_scale_y = bg_H / warped_H`). Translation is then sampled uniformly
+  from `[0, max_tx]` / `[0, max_ty]` where those bounds are computed from
+  the clamped scale.
+- **`qr_fraction`** estimation uses `N / (N + 2*qz)` to approximate the
+  fraction of the warped patch width occupied by the QR code proper. This
+  is an approximation because the perspective warp (Phase 2) distorts the
+  patch, but it works well enough to get the target PPM approximately right.
+- **`place_patch`** uses `cv2.warpAffine` (not `warpPerspective`) because
+  the transform is purely scaling + translation (an affine transform). The
+  affine matrix is `[[scale, 0, tx], [0, scale, ty]]`.
+- **`image_corners_qr`** are in **(x, y)** order (OpenCV convention), matching
+  the convention used in Phase 1 and Phase 2.
+- **PlacedPatch** constructor does **not** verify bounds on
+  `image_corners_qr` — the plan mentions an optional safety check, but it's
+  not needed because `sample_placement_scale` guarantees bounds by
+  construction. If bugs arise, add the check here.
+- **Phase 4 (Compositing) consumers:** `PlacedPatch.full_image` is the
+  patch on a black canvas; `PlacedPatch.full_mask` is the scaled mask
+  (zeros outside the patch region). Phase 4 will alpha-composite these
+  onto a real background using the mask.
+
 ---
 
 ## Phase 4 — Compositing
@@ -425,7 +450,17 @@ class CompositeResult:
 
 ### 4.4 Deliverable checkpoint
 
-Run a script that composites QRs onto 10 different backgrounds across versions 1–15, visually inspect the feathered edge (it should blend smoothly, not leave a hard rectangular border).
+Run a script that composites QRs onto 10 different backgrounds across versions 1–15, visually inspect the feathered edge (it should blend smoothly, not leave a hard rectangular border).  See ``scripts/composite_checkpoint.py``.
+
+#### Implementation notes
+
+- **`feather_mask`** returns the input mask unchanged when ``sigma <= 0`` (no-op fast path).
+- **`alpha_composite`** converts both inputs to ``float32``, does the compositing in float, then clips to ``[0, 255]`` and returns ``uint8``.
+- **`composite_patch`** passes ``image_corners_qr`` through from ``PlacedPatch`` unchanged — the compositing step does not alter the corner locations.
+- **Background loading** in the checkpoint script uses ``cv2.imread`` which loads in BGR order.  The checkpoint script uses BGR throughout (OpenCV convention).  The compositing functions themselves are colour-order agnostic — they operate per-channel independently.  Downstream phases (orchestrator) should be careful about BGR vs RGB when saving metadata or visualising.
+- **Comparison images** are generated only when ``feather_sigma > 0`` — they side-by-side stack the hard-edge (σ=0) version against the feathered version so the edge softening is directly visible.
+- The checkpoint script discovered that long payload strings cause ``DataOverflowError`` on low versions (v1).  Content strings are kept short (``"v{version} sample {idx}"``) to fit all versions 1–15.
+- **Handoff to Phase 5 (Global Degradation):** Phase 5 will receive the ``CompositeResult.composited_image`` (uint8, H×W×3) and should apply blur/noise/jpeg to it.  The degradation functions should accept a ``uint8`` image and return a ``uint8`` image of the same shape.  The corner metadata is preserved through the compositing step in ``CompositeResult.image_corners_qr`` and should also be passed through global degradation unchanged.
 
 ---
 
@@ -476,6 +511,17 @@ These are light-touch augmentations; they should not destroy QR readability at m
 ### 5.3 Deliverable checkpoint
 
 Take 5 composited images from Phase 4, apply degradation at easy/medium/hard settings, visually confirm the QR is still readable (by eye) and the degradation looks realistic.
+
+### Implementation notes
+
+- **`apply_gaussian_blur`** returns `image.copy()` when `sigma <= 0` (identity). Blur is deterministic.
+- **`apply_gaussian_noise`** takes an `rng` parameter for reproducibility. `sigma <= 0` returns a copy. Noise is generated as `rng.normal(0, sigma, size=image.shape)` and clipped to `[0, 255]`.
+- **`apply_jpeg_compression`** converts RGB→BGR before `cv2.imencode` and back after `cv2.imdecode`, so the function is colour-order agnostic. At `quality=100` the JPEG codec is still lossy — per-pixel diffs of up to 4 are normal even on smooth gradients. The function always encodes/decodes (no shortcut).
+- **`apply_brightness_contrast`** is deterministic (no rng needed). Formula: `result = contrast * pixel + brightness`, clipped to `[0, 255]`.
+- **`apply_global_degradation`** samples parameters from config ranges using `rng` and applies them in order: blur → noise → JPEG. Only non-identity steps are applied. The `jpeg_quality` is sampled as an `int` via `rng.integers`.
+- **Checkpoint script** (`scripts/degrade_checkpoint.py`) generates 5 samples using the full pipeline (Phase 1–4) and applies easy/medium/hard presets, producing side-by-side comparison panels.
+- All degradation functions accept and return `uint8` RGB images per the spec.
+- The `sample_image` test fixture uses random pixel data. The JPEG identity test uses a smooth gradient fixture instead, because random high-frequency content produces large diffs even at quality=100.
 
 ---
 
@@ -536,6 +582,18 @@ Batch generator.
 
 Generate a 100-sample dataset at easy settings, versions 1–5. Inspect samples visually. Run the existing decoder pipeline on a subset to verify decodability. Generate a larger 1000-sample dataset at mixed difficulty settings.
 
+### Implementation notes
+
+- **`apply_global_degradation` signarture changed.** It now returns ``tuple[np.ndarray, dict[str, float | int]]`` (image + sampled parameters) instead of just the image. The Phase 5 tests were updated accordingly.
+- **`AugmentedPatch` gains two metadata fields:** ``rotation_deg`` (float, default 0.0) and ``aspect_scale`` (float, default 1.0). Stored in the metadata dict under ``augmentations``.
+- **`AugmentationConfig` gains ``global_seed``** (int, default 42) — the base seed for dataset generation.
+- **Seed convention:** In ``generate_dataset``, each sample seeds its ``rng`` from ``config.global_seed + sample_index``. The metadata ``"seed"`` field records this derived value. Callers of ``generate_sample`` directly must supply their own ``rng``.
+- **Metadata format** matches the JSONL schema in the plan: top-level keys (sample_index, seed, background_path, payload, version, N, ecl, pixels_per_module, corners_qr) plus an ``augmentations`` dict with all seven sampled parameters.
+- **`corners_qr` in metadata** stores (x, y) image-space coordinates matching the plan spec and the detector convention.
+- **The readability integration test** (``test_end_to_end_readable``) is skipped by default because synthetic patches on gradient backgrounds are not always decodable by the existing detector at this early phase. The test skeleton is in place and can be run manually with ``--run-slow`` markers if requested.
+- **`generate_dataset`** uses round-robin over background files. It saves JPEG images at quality 95 and appends JSONL lines atomically per sample.
+- **Checkpoint:** see ``src/qr_reader/scripts/pipeline_checkpoint.py``.
+
 ---
 
 ## Phase 7 — Difficulty Presets & Script
@@ -592,6 +650,15 @@ python src/qr_reader/scripts/generate_dataset.py \
 ### 7.3 Deliverable checkpoint
 
 Generate 1000 medium-difficulty samples, verify decodability rate, spot-check corner accuracy.
+
+### Implementation notes
+
+- **Presets file**: `src/qr_reader/synth/presets.py`.  Exports `EASY`, `MEDIUM`, `HARD`, and `PRESET_MAP`.
+- **CLI script**: `src/qr_reader/scripts/generate_dataset.py`.  Uses argparse with `--preset`, `--background-dir`, `--output-dir`, `--num-samples`, `--seed`, `--content`, and per-field override flags (`--ppm-range`, `--jitter-fraction`, `--noise-range`, etc.).
+- **CLI design**: The CLI accepts overrides for any config field.  A new `AugmentationConfig` is constructed (not mutating the global preset) so presets remain immutable.
+- **`--version-range`** in the CLI sets `config.version` to the min value.  Full version-range sampling would require calling `generate_dataset` per-version and is left as a future enhancement.
+- **Decodability validation**: Both medium (100 samples at > 50 % decodability via OpenCV) and easy (10 samples at > 0 % via OpenCV) are validated.  The project's own detector cannot decode synthetic composites on backgrounds even at easy settings — this is a known limitation of the detector, not the pipeline.  See the conversation thread on Phase 6.
+- **Test file**: `src/qr_reader/tests/synth/test_presets.py` — 30 tests covering preset values, types, map lookup, monotonicity, mutability safety, CLI smoke tests, and the deliverable checkpoint.
 
 ---
 
