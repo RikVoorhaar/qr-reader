@@ -161,8 +161,9 @@ bit matrix (N×N bool)
 
 ## Issue Tracking
 
-Issues live in `issues/NNNN-slug.md` with YAML frontmatter. `issues/README.md` is
- the canonical index — consult it before starting new work.
+Issues are managed via the **GitHub MCP** tooling (`issue_write`, `issue_read`,
+`list_issues`, `search_issues`, etc.) on `RikVoorhaar/qr-reader` — not in local
+markdown files.
 
 ### When to create an issue
 
@@ -172,26 +173,16 @@ Issues live in `issues/NNNN-slug.md` with YAML frontmatter. `issues/README.md` i
 
 ### Issue format
 
-```yaml
----
-title: Short description of the problem or task
-tags: [bug | feature | enhancement | docs | chore]
-priority: blocking | high | medium | low
-status: open | in-progress | done | wontfix
-created: YYYY-MM-DD
-closed: YYYY-MM-DD  # only when done or wontfix
----
+Use `issue_write` with `method: create`. Always include:
 
-## Description
-
-...
-```
+- `title` — concise summary
+- `body` — description, approach, out-of-scope, success criteria
+- `labels` — appropriate GitHub labels (e.g. `bug`, `enhancement`, `experiment`)
 
 ### Status workflow
 
-`open` → `in-progress` → `done` / `wontfix`
+Use `issue_write` with `method: update` to transition state:
 
-### Closing an issue
+`open` → `state: closed` / `state_reason: not_planned`
 
-Set `status: done` (or `wontfix`), add `closed: YYYY-MM-DD`, and move the row
-from the Open table to the Closed table in `issues/README.md`.
+No local files needed — everything lives on GitHub.
