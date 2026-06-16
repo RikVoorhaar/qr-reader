@@ -35,6 +35,9 @@ QR_CONTENT = sample["payload"]
 QR_VERSION = sample["version"]
 IMG_BASE_PATH = Path("data/synth/images/")
 img_path = IMG_BASE_PATH / f"{sample['sample_index']:06d}.jpg"
+sample
+corners = sample["corners_qr"]
+corners_array = np.array([corners['TL'], corners['TR'], corners['BR'], corners['BL'], corners['TL']])
 # %%
 # Generate test image (grayscale)
 # QR_VERSION = 12
@@ -46,7 +49,10 @@ img = cv2.imread(str(img_path))
 img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
 plt.imshow(img_gray, cmap="gray")
-plt.title("Noisy QR Code (grayscale)")
+plt.title(f"QR Code (grayscale), version={QR_VERSION}, content='{QR_CONTENT}'")
+plt.plot(corners_array[:, 0], corners_array[:, 1], 'r-o')
+plt.axis('off')
+
 plt.show()
 
 # %%
