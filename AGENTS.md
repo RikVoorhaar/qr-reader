@@ -32,6 +32,7 @@ Every source file under `src/qr_reader/` and its role.
 | `region.py` | Wave-front fill, 8-connected boundary trace, connected-components on boundaries | `scipy`, `networkx` |
 | `sample.py` | Sample the module bit matrix from the rectified QR image using the homography | `homography.py`, `scipy` |
 | `version.py` | Cross-ratio measurement, constraint building/filtering, version estimation | `landmarks.py` |
+| `roi.py` | Compute padded bounding box from `CandidateCluster`, extract clamped sub-image cutout | `clustering.py` |
 
 ### Decoder (`decoder/`)
 
