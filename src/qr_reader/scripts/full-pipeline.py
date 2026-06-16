@@ -1,6 +1,8 @@
 # %%
 """full-pipeline.py — QR code reader using modular components."""
 
+from pathlib import Path
+
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib import cm
@@ -12,7 +14,6 @@ from qr_reader.detector.alignment import (
 from qr_reader.detector.clustering import cluster_candidates
 from qr_reader.detector.corner import angular_nms_top_radial_indices
 from qr_reader.detector.geometry import polygon_area
-from qr_reader.qr_gen import binarize_image, generate_test_image
 from qr_reader.detector.region import (
     boundary_connected_components_ndimage,
     boundary_connected_components_networkx,
@@ -20,14 +21,29 @@ from qr_reader.detector.region import (
     region_boundary_8,
     region_fill_wave_front,
 )
+from qr_reader.qr_gen import binarize_image, generate_test_image
+import json
+import cv2
 
 # %%
+metadata_path = Path("data/synth/metadata.jsonl")
+with open(metadata_path, "r") as f:
+    metadata = [json.loads(line.strip()) for line in f]
+
+sample = metadata[0]
+QR_CONTENT = sample["payload"]
+QR_VERSION = sample["version"]
+IMG_BASE_PATH = Path("data/synth/images/")
+img_path = IMG_BASE_PATH / f"{sample['sample_index']:06d}.jpg"
+# %%
 # Generate test image (grayscale)
-QR_VERSION = 12
-QR_CONTENT = "https://www.rikvoorhaar.com"
+# QR_VERSION = 12
+# QR_CONTENT = "https://www.rikvoorhaar.com"
 
 
-img_gray = generate_test_image(version=QR_VERSION, content=QR_CONTENT, border=15)
+# img_gray = generate_test_image(version=QR_VERSION, content=QR_CONTENT, border=15)
+img = cv2.imread(str(img_path))
+img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
 plt.imshow(img_gray, cmap="gray")
 plt.title("Noisy QR Code (grayscale)")
