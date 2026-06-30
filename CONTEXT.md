@@ -91,6 +91,19 @@ An 18-bit pattern encoding the QR version number (6 bits) and its complement,
 present only in versions ≥ 7.
 _Avoid_: Version bits
 
+**Thin Edges**:
+An edge image produced by Gaussian blur → Sobel gradient → L2 magnitude →
+interpolated non-maximum suppression. Returns per-pixel gradient magnitude
+(suppressed at non-edges) and edge-normal angle (atan2) for downstream Hough voting.
+_Avoid_: Canny edges, ridge, NMS edges
+
+**Hough Line**:
+A line detected via gradient-guided Hough voting on thin edges. Represented as
+a ``LineSegment`` with a unit normal, signed distance from ROI origin,
+segment endpoints (projected extent of the longest contiguous support run),
+and accumulator vote score.  Used for downstream finder-pattern corner extraction.
+_Avoid_: Hough peak, accumulator bin
+
 ### Synthesis
 
 **Synthetic Image**:
