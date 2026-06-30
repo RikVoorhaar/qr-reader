@@ -323,17 +323,21 @@ The four failure modes are not independent:
 ## Recommended fix order
 
 1. **Rho-bin smoothing** (addresses D + partially A) — highest impact, low
-   risk.  Implement in `hough_vote_peaks` after accumulator construction.
+    risk.  Implement in `hough_vote_peaks` after accumulator construction.
 2. **Adaptive `gap_tolerance`** (addresses A) — low risk, localised to
-   `refine_line`.
+    `refine_line`.
 3. **Minimum contiguous-run gate** (addresses B) — low risk, localised to
-   `refine_line`.
+    `refine_line`.
 4. **Angle-gated support collection / Hough-normal-based collection**
-   (addresses C) — medium risk, changes `refine_line` interface semantics.
+    (addresses C) — medium risk, changes `refine_line` interface semantics.
 
 Each fix has a corresponding isolation test that will fail (signalling the
 fix worked) when the bug is resolved.  The fixture tests provide
 end-to-end validation.
+
+> **Implementation plan:** [`plan-007-hough-phased-fixes.md`](plan-007-hough-phased-fixes.md)
+> details the exact code changes, isolation-test flips, accept/revert gates,
+> and validation commands for each phase.
 
 ## Files
 
