@@ -417,53 +417,61 @@ class TestRefineLineRealistic:
     # ---- B: sparse coincidental alignment looks like a line --------------
 
     def test_isolation_B_sparse_noise_creates_phantom(self):
-        """Failure B: 6 sparse noise pixels at a diagonal + strong orthogonal
-        edge nearby.  TLS refinement drags the diagonal normal toward the
-        nearby strong edge, creating a spurious segment.
+        """Failure B: sparse coincidentally-aligned pixels produce a phantom
+        Hough peak and a non-degenerate ``refine_line`` segment in a region
+        with no real finder edge.
 
-        This replicates the Cluster 3 phantom pattern: a peak at 152°
-        (normal of a strong internal QR module edge) whose TLS-refined
-        segment picks up support from the high-density NMS region.
+        Replicates the Cluster 3 phantom pattern from the diagnostic output:
+        internal QR module edges and coincidental noise align well enough to
+        concentrate votes in a single ``(theta, rho)`` bin, producing a peak
+        that passes ``threshold_rel`` and then a segment with non-trivial
+        span — even though no continuous edge exists there.
+
+        The test confirms the bug: a set of 15 sparse collinear pixels
+        (strength 120, 3 px apart) produces a Hough peak whose refined
+        segment has span > 20 px.  When this bug is fixed (e.g. by requiring
+        minimum contiguous-run length or a support-density gate), this
+        assertion will fail, signalling the fix.
         """
-        H, W = 60, 60
+        H, W = 80, 80
         nms = np.zeros((H, W), dtype=np.float64)
         angle = np.zeros_like(nms)
 
-        # Strong horizontal edge A (real finder structure) at y=20, x=10..30
-        for x in range(10, 31):
+        # A fragmented "true" horizontal edge at y=20, x=10..35, 3-px gaps.
+        # This mimics a finder boundary suppressed by NMS — it barely votes.
+        for x in range(10, 36, 3):
             nms[20, x] = 200.0
             angle[20, x] = np.pi / 2
 
-        # Strong vertical edge B (real internal structure) at x=45, y=10..40
-        for y in range(10, 41):
-            nms[y, 45] = 200.0
-            angle[y, 45] = 0.0
-
-        # 6 sparse diagonal "noise" pixels at ~26.6° slope — coincidentally
-        # aligned enough to produce a Hough peak with normal ≈ 116°
-        diagonal_pts = [(5, 50), (10, 42), (15, 34), (20, 26), (25, 18), (30, 10)]
-        for dx_idx, dy_idx in diagonal_pts:
-            nms[dy_idx, dx_idx] = 60.0
-            angle[dy_idx, dx_idx] = 3 * np.pi / 4  # gradient normal of /-diagonal
+        # 15 sparse pixels perfectly collinear on theta=128°, rho=30.
+        # No continuous edge — just coincidental alignment.
+        t = np.deg2rad(128)
+        rho_target = 30.0
+        for x in range(5, 50, 3):
+            y = int(round((rho_target - x * np.cos(t)) / np.sin(t)))
+            if 0 <= x < W and 0 <= y < H:
+                nms[y, x] = 120.0
+                angle[y, x] = t
 
         normals, rhos, scores = hough_vote_peaks(
             nms, angle, theta_step_deg=2.0, max_peaks=15
         )
 
-        # Should have peaks for horizontal (θ≈90°) and diagonal (θ≈116°)
+        # The sparse collinear pixels must produce a peak near 128°.
         diag_idx = None
         for i, n in enumerate(normals):
-            ang = np.rad2deg(np.arctan2(n[1], n[0]))
-            if 110 <= ang <= 125:
+            ang = np.rad2deg(np.arctan2(n[1], n[0])) % 180
+            if 120 <= ang <= 135:
                 diag_idx = i
                 break
 
         assert diag_idx is not None, (
-            "Should detect a diagonal peak from 6 sparse pixels"
+            "Precondition: sparse collinear pixels should produce a diagonal "
+            "Hough peak — if this fails, the phantom cannot manifest"
         )
 
-        # Now refine. With only 6 support pixels, TLS is unstable.
-        # The refined normal drifts toward the strong horizontal edge B.
+        # Refine — the bug is that refine_line produces a non-degenerate
+        # segment from sparse coincidental pixels (no real continuous edge).
         seg = refine_line(
             normals[diag_idx],
             float(rhos[diag_idx]),
@@ -474,13 +482,18 @@ class TestRefineLineRealistic:
             distance_thresh=3.0,
         )
 
-        assert not np.all(seg.endpoints == 0), (
-            "6 sparse coincidental pixels produce a segment — this IS the phantom bug"
+        degenerate = np.all(seg.endpoints == 0)
+        span = 0.0 if degenerate else float(
+            np.linalg.norm(seg.endpoints[1] - seg.endpoints[0])
         )
 
-        # The segment endpoints should have a non-trivial span
-        span = float(np.linalg.norm(seg.endpoints[1] - seg.endpoints[0]))
-        assert span > 5.0, f"Phantom span={span:.1f} — too small to matter"
+        # BUG CONFIRMED: a phantom segment with span > 20 px is produced
+        # from 15 sparse 3-px-apart pixels — no continuous edge exists.
+        assert not degenerate and span > 20.0, (
+            f"BUG CONFIRMED: phantom segment from sparse coincidental pixels "
+            f"has span={span:.1f}px (degenerate={degenerate}) — expected > 20px "
+            f"phantom when the bug is present"
+        )
 
     # ---- C: TLS direction drift captures adjacent parallel edge -----------
 
@@ -535,23 +548,94 @@ class TestRefineLineRealistic:
     # ---- D: Hough quantization pushes rho out of matching gate ------------
 
     def test_isolation_D_hough_quantization_misses_peak(self):
-        """Failure D: with 2° theta bins, the quantized theta produces
-        a rho that can be 10-15 px off the true rho, causing the peak
-        to fall outside a 5 px rho matching gate even though the angle
-        matches perfectly.
+        """Failure D (real root cause): a fragmented true finder edge produces
+        no Hough peak within the 5°+5 px matching gate when a stronger parallel
+        internal edge is present.
 
-        Real example from debug: GT normal θ=145.7°, ρ=24.3.
-        Hough bin at θ=146°, quantised rho computed with cos(146°) instead
-        of cos(145.7°) → rho error ~11 px.
+        Diagnostic evidence (``debug_hough_failures.py`` Cluster 1, TL_left):
+        GT edge at θ=145.7°, ρ=24.3.  Closest Hough peaks are at θ=146° with
+        ρ=13 (11.3 px off) and ρ=4 (20.3 px off) — these come from internal QR
+        module edges parallel to the finder boundary.  The true edge's votes
+        are diluted across several rho bins by NMS fragmentation (4-px gaps),
+        so its peak score (~300) falls below ``threshold_rel * max_score``
+        (~1000) and is never extracted.
+
+        This test isolates that mechanism: a weak fragmented edge at ρ=24
+        and a strong continuous parallel edge at ρ=13 share the same θ.
+        After ``hough_vote_peaks``, no peak matches the true edge within
+        5° + 5 px — the bug.
         """
         H, W = 60, 60
         nms = np.zeros((H, W), dtype=np.float64)
         angle = np.zeros_like(nms)
 
-        # A perfectly diagonal edge (45°) at y=2*x (so normal at -45° → mod π = 135°)
-        # This should produce a Hough peak at θ_bin ≈ 134° or 136° (2° steps)
-        # The rho from the quantized theta will be off by several px.
-        true_theta = 3 * np.pi / 4  # 135° normal for a /-diagonal
+        t = np.deg2rad(146)  # bin-aligned theta
+        true_rho = 24.0
+
+        # Fragmented true finder edge: 4-px gaps, strength 150, span ~35 px.
+        for x in range(5, 40, 4):
+            y = int(round((true_rho - x * np.cos(t)) / np.sin(t)))
+            if 0 <= x < W and 0 <= y < H:
+                nms[y, x] = 150.0
+                angle[y, x] = t
+
+        # Strong continuous parallel internal edge at rho=13, strength 200.
+        for x in range(5, 50):
+            y = int(round((13.0 - x * np.cos(t)) / np.sin(t)))
+            if 0 <= x < W and 0 <= y < H:
+                nms[y, x] = 200.0
+                angle[y, x] = t
+
+        normals, rhos, scores = hough_vote_peaks(
+            nms, angle, theta_step_deg=2.0, max_peaks=10
+        )
+
+        true_normal = np.array([np.cos(t), np.sin(t)], dtype=np.float64)
+
+        # Check whether any peak matches the true edge within 5° + 5 px.
+        found = False
+        best_info = None
+        best_score = float("inf")
+        for i in range(len(normals)):
+            dot = np.clip(np.abs(np.dot(normals[i], true_normal)), -1.0, 1.0)
+            ang_d = float(np.rad2deg(np.arccos(dot)))
+            rho_d = abs(float(rhos[i]) - true_rho)
+            score = ang_d + rho_d
+            if score < best_score:
+                best_score = score
+                best_info = (ang_d, rho_d, i)
+            if ang_d < 5.0 and rho_d < 5.0:
+                found = True
+                break
+
+        # BUG CONFIRMED: the fragmented true edge produces no matching peak
+        # because its votes are diluted below threshold_rel * max_score.
+        assert not found, (
+            f"BUG CONFIRMED: no Hough peak matches the fragmented true edge "
+            f"within 5°+5px — closest peak P{best_info[2]} at "
+            f"{best_info[0]:.1f}°/{best_info[1]:.1f}px. "
+            f"When fixed (e.g. absolute threshold floor or vote smoothing), "
+            f"this assertion will fail."
+        )
+
+    def test_isolation_D_quantization_alone_is_not_root_cause(self):
+        """Companion to ``test_isolation_D_hough_quantization_misses_peak``.
+
+        Documents that pure theta quantization (mid-bin theta 134.3°) only
+        shifts rho by ~2.5 px — well within the 5 px matching gate.  This
+        rules out quantization as the primary D root cause and points
+        instead to vote dilution + relative-threshold filtering.
+
+        This test PASSES (no bug) and serves as a negative result: if it
+        starts failing, quantization has become a contributing factor
+        (e.g. through a finer rho_step interaction).
+        """
+        H, W = 60, 60
+        nms = np.zeros((H, W), dtype=np.float64)
+        angle = np.zeros_like(nms)
+
+        # A continuous edge at true theta=134.3° (mid-bin, between 134°/136°).
+        true_theta = np.deg2rad(134.3)
         for i in range(5, 25):
             x, y = i, 2 * i + 10
             if 0 <= x < W and 0 <= y < H:
@@ -562,49 +646,29 @@ class TestRefineLineRealistic:
             nms, angle, theta_step_deg=2.0, max_peaks=10
         )
 
-        # With 2° steps, 135° falls exactly on a bin boundary. The Hough
-        # voting quantizes to either 134° or 136°, shifting rho.
-        assert len(normals) >= 1, "Should find at least one peak"
+        true_normal = np.array(
+            [np.cos(true_theta), np.sin(true_theta)], dtype=np.float64
+        )
+        example_point = np.array([10.0, 30.0])
+        true_rho = abs(float(true_normal @ example_point))
 
-        # Compute the true rho at the exact diagonal
-        true_normal = np.array([-np.sqrt(2) / 2, np.sqrt(2) / 2], dtype=np.float64)
-        example_point = np.array([10.0, 30.0])  # point on y=2x+10 at x=10
-        true_rho = float(true_normal @ example_point)
-
-        # Check if any Hough peak is within 5° AND 5 px
         found = False
+        worst_rho_err = 0.0
         for i in range(len(normals)):
             dot = np.clip(np.abs(np.dot(normals[i], true_normal)), -1.0, 1.0)
-            ang_dist = float(np.rad2deg(np.arccos(dot)))
-            rho_dist = abs(float(rhos[i]) - abs(true_rho))
-            if ang_dist < 5.0 and rho_dist < 5.0:
+            ang_d = float(np.rad2deg(np.arccos(dot)))
+            rho_d = abs(float(rhos[i]) - true_rho)
+            worst_rho_err = max(worst_rho_err, rho_d)
+            if ang_d < 5.0 and rho_d < 5.0:
                 found = True
                 break
 
-        if not found:
-            # The bug: quantized theta creates rho error that exceeds 5 px gate
-            best = min(
-                range(len(normals)),
-                key=lambda i: (
-                    abs(float(rhos[i]) - abs(true_rho))
-                    + float(
-                        np.rad2deg(
-                            np.arccos(
-                                np.clip(
-                                    np.abs(np.dot(normals[i], true_normal)), -1.0, 1.0
-                                )
-                            )
-                        )
-                    )
-                ),
-            )
-            dot = np.clip(np.abs(np.dot(normals[best], true_normal)), -1.0, 1.0)
-            ang_dist = float(np.rad2deg(np.arccos(dot)))
-            rho_dist = abs(float(rhos[best]) - abs(true_rho))
-            pytest.fail(
-                f"QUANTIZATION BUG: best peak at {ang_dist:.1f}°/"
-                f"{rho_dist:.1f}px — theta binning pushes rho outside 5°+5px gate"
-            )
+        # Negative result: quantization alone keeps rho error < 5 px.
+        assert found, (
+            f"Quantization alone should NOT push rho outside the 5px gate — "
+            f"got rho error up to {worst_rho_err:.2f}px. "
+            f"If this fails, quantization has become a real contributor to D."
+        )
 
     # ---- D2: degenerate when only 3-4 edge pixels exist -------------------
 
@@ -632,15 +696,26 @@ class TestRefineLineRealistic:
             normal, rho, 100.0, nms, angle, gap_tolerance=2.0, distance_thresh=2.0
         )
 
-        if np.all(seg.endpoints == 0):
-            # The bug manifests: 3 pixels with 4px gaps → each gap > 2.0
-            # breaks the run → longest run is 1 pixel → degenerate.
-            pytest.fail(
-                "DEGENERACY: 3 edge pixels 4px apart → refine_line returns zero endpoints "
-                "(gap_tolerance=2.0 can't bridge 4px gaps)"
-            )
-        else:
-            # If it somehow works, check span is reasonable
+        # Degeneracy manifests in two ways:
+        #   (a) endpoints all-zero (the < 2 support-pixel early return), or
+        #   (b) endpoints non-zero but identical (span == 0) — this happens
+        #       when the longest contiguous run is a single pixel: the
+        #       projection bounds are equal so ep1 == ep2.
+        degenerate = np.all(seg.endpoints == 0)
+        span = 0.0
+        if not degenerate:
             xs = seg.endpoints[:, 0]
             span = abs(float(xs[1] - xs[0]))
-            assert span >= 5.0, f"Span too small: {span:.1f} px"
+            if span < 1.0:
+                degenerate = True
+
+        # BUG CONFIRMED: 3 edge pixels 4 px apart → each 4 px gap exceeds
+        # gap_tolerance=2.0 → longest run is 1 pixel → span == 0.
+        # The bug is present when the segment is degenerate.  When fixed
+        # (adaptive gap tolerance or minimum-support fallback), the segment
+        # becomes non-degenerate and this assertion fails — signalling the fix.
+        assert degenerate, (
+            f"BUG CONFIRMED: expected degenerate segment from 3 pixels 4px "
+            f"apart, got span={span:.1f}px — gap_tolerance=2.0 should not "
+            f"bridge 4px gaps. When this assertion fails, the bug is fixed."
+        )

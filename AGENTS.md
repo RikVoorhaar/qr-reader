@@ -57,6 +57,7 @@ Every source file under `src/qr_reader/` and its role.
 | `full-pipeline.py` | End-to-end pipeline: generate test image → detect → decode, with visualization |
 | `qr_benchmark.py` | Benchmark detection/decoding across versions, seeds, and transforms |
 | `debug_find_all_associations.py` | Targeted debug script for the `find_all_associations` high-version failure |
+| `debug_hough_failures.py` | Hough failure-mode diagnostics: accumulator reconstruction, vote-fragmentation analysis, peak-suppression simulation |
 
 ### Tests (`tests/`)
 

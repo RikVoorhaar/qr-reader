@@ -597,7 +597,8 @@ class TestFixtureReal:
 
             if np.all(seg.endpoints == 0):
                 failures.append(
-                    f"[C{cluster_idx}] {gt['label']}: refined segment is degenerate — Failure A (span too short)"
+                    f"[C{cluster_idx}] {gt['label']}: refined segment is degenerate — Failure A (span too short)\n"
+                    + _describe_support(seg, nms, angle, distance_thresh)
                 )
                 continue
 
@@ -613,7 +614,8 @@ class TestFixtureReal:
             if seg_span < 0.8 * gt_span:
                 failures.append(
                     f"[C{cluster_idx}] {gt['label']}: span={seg_span:.1f} px "
-                    f"< 80% of gt_span={gt_span:.1f} px — Failure A (span too short)"
+                    f"< 80% of gt_span={gt_span:.1f} px — Failure A (span too short)\n"
+                    + _describe_support(seg, nms, angle, distance_thresh)
                 )
 
     def _assert_span_not_excessive(
@@ -659,7 +661,8 @@ class TestFixtureReal:
                         f"[C{cluster_idx}] {gt['label']}: refined endpoints "
                         f"({seg.endpoints[0][0]:.1f},{seg.endpoints[0][1]:.1f})→"
                         f"({seg.endpoints[1][0]:.1f},{seg.endpoints[1][1]:.1f}) "
-                        f"too far from gt — Failure C (span too long)"
+                        f"too far from gt — Failure C (span too long)\n"
+                        + _describe_support(seg, nms, angle, distance_thresh)
                     )
                     break
 
@@ -739,7 +742,8 @@ class TestFixtureReal:
                     f"[C{cluster_idx}] phantom peak {i}: mean NMS strength={mean_strength:.1f} "
                     f"on {np.sum(mask)} support pixels — "
                     f"normal=({normals[i][0]:.3f},{normals[i][1]:.3f}), rho={rhos[i]:.1f} — "
-                    f"Failure B (phantom in blank region)"
+                    f"Failure B (phantom in blank region)\n"
+                    + _describe_support(seg, nms, angle, distance_thresh)
                 )
 
     def _assert_non_degenerate(
@@ -775,7 +779,8 @@ class TestFixtureReal:
             if np.all(seg.endpoints == 0):
                 failures.append(
                     f"[C{cluster_idx}] {gt['label']}: peak exists but refine_line "
-                    f"returns degenerate — Failure D (edge missing / degeneracy)"
+                    f"returns degenerate — Failure D (edge missing / degeneracy)\n"
+                    + _describe_support(seg, nms, angle, distance_thresh)
                 )
 
     # --- Test cases ----------------------------------------------------------
