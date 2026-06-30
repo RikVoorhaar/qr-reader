@@ -447,17 +447,317 @@ Match rate: ≥ 83% (5/6 GT edges matched, from 4/6 = 67%)
 
 **Hypothesis for why D failures persisted:** The real D failures in v12-default (TL_left, BL_left) may not be caused by votes spread across adjacent rho bins. One possibility is that the true edge's votes are concentrated in a single rho bin but the total weight is below `0.25 * max_score` — rho-bin smoothing cannot help when there are no adjacent fragmented votes to merge. However, this is unconfirmed without dedicated tests that measure the vote distribution per bin for each failing GT edge.
 
-## Future work
+## Phase 2 — Adaptive gap tolerance (targets A)
 
-- **Confirm or rule out vote-scarcity hypothesis** — Add a test that, for each D-failing GT edge in the fixture data, dumps the per-bin vote count for its theta bin to confirm whether votes are concentrated (hypothesis) or spread (dilution). Only then can the right fix be chosen (absolute threshold floor vs. a different smoothing kernel / sigma).
-- **Explore σ < 1.0 or boxcar filter** — A weaker rho-axis smoothing (e.g. 3-tap uniform `[1,1,1]/3`) may avoid the parallel-line regression while still helping if vote dilution is present in other failure modes.
+### Result: REVERTED
+
+Date: 2026-06-30
+
+**Change:** In `refine_line`, replaced fixed `gap_tolerance` with
+`adaptive_tol = max(2.0, min(10.0, gap_tolerance * max_gap))` where
+`max_gap` is the maximum gap between consecutive support-point projections.
+Initial plan used `median_gap` but that was dominated by within-cluster 1 px
+gaps, so it never increased tolerance. Switched to `max_gap` to detect
+structural between-cluster gaps.
+
+**Isolation test:** `test_isolation_A_gap_tolerance_insufficient` flipped
+from `assert span < 20.0` → `assert span >= 20.0`. **Passed.** (Side-effect:
+`test_isolation_D2_few_pixels_become_degenerate` also flipped from
+`assert degenerate` → `assert not degenerate` — adaptive tolerance bridges
+4 px gaps between 3 sparse pixels.)
+
+**Fixture impact:** ✅ **A failures eliminated** (v12-default: 2→0, all
+span-too-short cases fixed). v12-default total dropped from 13 to 10.
+
+**Regressions:**
+- `test_fixture_version12_clean`: **0→4 C failures** (new C failures on
+  BL_bottom, TL_top, TL_left, TR_right). The adaptive tolerance bridged
+  7–9 px gaps separating finder edges from QR-internal edges in clean
+  axis-aligned images, causing span-excessive failures.
+- v5-default: 6→5 (marginal A improvement on BL_left, but still failing).
+
+**Full suite:** fixture regression alone violates gate's zero-regression
+requirement.
+
+**Hypothesis for C regressions:** `max_gap`-based scaling is too aggressive
+for clean images — a single large NMS gap (7–9 px) between the finder edge
+and an adjacent internal edge inflates `adaptive_tol` to ~10 px, merging
+distinct structures. A better approach may use a more robust statistic
+(e.g. 75th percentile of gaps, or gap count-weighted tolerance) to
+distinguish structural fragmentation (many moderate gaps) from a single
+large gap crossing into a different edge.
+
+## Phase 3 — Minimum contiguous-run gate (targets B)
+
+### Result: REVERTED
+
+Date: 2026-06-30
+
+**Change:** In `refine_line`, after the contiguous-run loop, added an
+average-gap density check: if `best_len / (n_run_pixels - 1) > 2.0`, return
+a degenerate segment (no phantom).  The initial plan specified a simple pixel
+count (`min_contiguous = 5`), but that was insufficient because with
+`gap_tolerance=5.0` in the test, all 15 noise pixels bridge into one run
+(15 > 5).  Switched to the average-gap density gate, which correctly rejects
+the isolation test's phantom (avg gap ≈ 3.8 px).
+
+**Isolation test:** `test_isolation_B_sparse_noise_creates_phantom` flipped
+from `assert not degenerate and span > 20.0` → `assert degenerate or span <= 20.0`.
+**Passed** — the density gate correctly rejects the 15 sparse collinear pixels
+(avg gap ≈ 3.8 px > 2.0 px).
+
+**Fixture impact:** ❌ **0 B failures eliminated** (v12-default: still 5 B
+failures).  No other failure mode changed.
+
+**Regressions:** None — v12-clean still 0, v5-default still 6.
+
+**Full suite:** 715 passed (same as baseline).
+
+**Hypothesis for why B failures persisted:** The real "phantom" peaks in
+v12-default (cluster 3) are not sparse coincidental noise — they have dense
+support (19–68 pixels, most gaps ≤ 2.0 px).  They are real QR-internal edges
+(module boundaries, timing patterns, alignment-pattern edges) whose normals are
+>12° from finder-boundary normals, so the angular skip in `_assert_no_phantom`
+does not catch them.  No density-based gate in `refine_line` can distinguish
+these from genuine finder edges — they are structurally indistinguishable at
+the pixel level.  Eliminating them likely requires a higher-level consistency
+check (e.g. spatial proximity to the expected finder-pattern layout, or
+requiring that each candidate edge participates in a valid finder-pattern
+triplet geometry).
+
+## D investigation — Vote-scarcity hypothesis DISCONFIRMED (2026-06-30)
+
+Running `debug_hough_failures.py` (baseline, no fixes applied):
+
+| D Edge | GT rho bin score | Vote spread | Strongest competitor | Gap from GT |
+|--------|-----------------|------------|---------------------|-------------|
+| C1 TL_left (ρ=24.3) | **0** | bins 9,13,14,18,19 | bin 13 @ 5803 (47%) | 11 px |
+| C2 BL_left (ρ=22.5) | **0** | bins 7,11,12,16 | bin 7 @ 7116 (71%) | 15 px |
+
+**Finding:** The vote-scarcity hypothesis is **wrong**. Both D edges have
+**zero votes at the GT rho bin**.  Votes exist at nearby bins (9–19 and
+7–16) but are spread across 4–5 bins with a stronger parallel edge
+dominating.  The root cause is **GT-vs-NMS displacement** (11–15 px shift
+from blur/noise/jitter in the augmentation pipeline) **plus vote dilution**
+(the few votes that DO exist at the correct angle are spread across 4–5
+rho bins).
+
+**Implication:** Rho-bin smoothing (Phase 1) and per-theta adaptive
+threshold are both non-starters for these D failures:
+- Smoothing can't create votes at a zero-vote bin
+- A per-theta threshold of `0.25 × 7116 = 1779` still exceeds the true
+  edge's per-bin scores (540–1201)
+
+What *might* help: an absolute threshold floor low enough to surface these
+weak clusters (~1200).  But we don't know yet whether the displaced votes
+(presumably from the finder boundary) produce valid refined segments, or
+whether they're from unrelated internal QR edges.
+
+---
+
+## Part 1: Information-gathering phases (run first)
+
+These phases require **test changes only** — no production code modified.
+They confirm or rule out hypotheses before we commit to fix designs.
+
+### I1 — Verify D displacement: widen rho tolerance
+
+**Rationale:** The two D failures have votes at the correct angle but
+displaced 11–15 px from the GT rho.  Are these votes actually from the
+finder boundary (just shifted by augmentation), or from unrelated
+internal QR edges?
+
+**Change:** In the fixture harness (`test_hough_harness.py`), widen the
+rho tolerance in `_match_peak` from 5 px to 20 px for D-failing edges
+only.  Then:
+- Check if the widened match now finds a peak for TL_left and BL_left.
+- If yes, run `refine_line` on the matched peak and inspect the segment
+  (span, endpoints, support dump).
+- If the segment is close to the GT span (±20%) and endpoints are near
+  GT, then **production-code fix is warranted** (the displaced votes are
+  real finder pixels).
+- If the segment is wildly wrong or `refine_line` produces garbage, then
+  the displaced votes are **not** from the finder boundary and the D
+  failures are a test artifact (GT matching needs widening, not Hough).
+
+**Success criteria:** For each D edge, we can answer:
+- Which Hough peak does a widened match capture?
+- What does `refine_line` produce from it?  Is the segment valid
+  (span ≥ 80% GT, endpoints ±5 px)?
+- Conclusion: displace votes are / are not finder-boundary pixels.
+
+**No production code changes.** This is a diagnostic-only phase.
+
+---
+
+### I2 — Identify B phantom sources
+
+**Rationale:** The 5 B phantoms in Cluster 3 are dense, real QR edges
+whose normals are >12° from finder normals.  We need to know *which*
+QR structure creates each one, to design a spatial consistency gate.
+
+**Change:** For each of the 5 phantoms in Cluster 3 (v12-default fixture):
+1. Compute the refined segment (`refine_line` + `_describe_support`).
+2. Look up the phantom's (θ, ρ) against known QR geometry:
+   - Finder boundaries (already checked, angles differ by >12°)
+   - Timing-pattern rows/columns
+   - Alignment-pattern edges
+   - Format-information / version-information module rows
+   - Data-module block boundaries
+3. Overlay the segment on the NMS image to visually verify.
+4. Dump the spatial position of the segment relative to the QR module grid
+   (if metadata gives us the model-view transform).
+
+**Success criteria:** For each of the 5 phantoms, we can say "this is the
+timing pattern row at col 6" or "this is the alignment-pattern edge at
+(row 30, col 30)".  This tells us whether a spatial-proximity gate (e.g.
+"reject edges > X px from the expected finder-pattern layout") would
+eliminate them.
+
+**Stretch goal:** Determine if any phantom corresponds to a *real
+finder boundary* that happens to be at a >12° angle due to perspective
+warp — in which case the B classification is a test artifact (the edge
+is real, the test just has an overly strict angular match).
+
+---
+
+### I3 — Profile A gap causes
+
+**Rationale:** The A-failing edges (TL_top in C1, BL_bottom in C2) have
+4.5–6.5 px NMS gaps.  Phase 2 (adaptive gap tolerance) fixed these but
+caused C regressions by bridging 7–9 px gaps to internal edges.  We need
+to understand *what* causes the gaps: are they genuine noise dropouts
+(fixable by morphological closing) or QR-internal structure aligned at a
+different angle (needs wider gap tolerance + angle gating)?
+
+**Change:** For each A-failing edge, inspect the NMS content in the gap
+region:
+1. Map the gap's projection interval to pixel coordinates on the refined
+   line.
+2. Check whether any NMS pixels exist within ±2 px of those coordinates
+   but at a different angle (e.g. module-edge boundary crossing the
+   finder line at 90°).
+3. If NMS pixels exist but are suppressed by angle gating → the gap is
+   structural (internal QR edge crossing) → wider gap tolerance is safe.
+4. If gap region has no NMS pixels at all → the gap is a noise dropout
+   in the edge-detection pipeline → morphological closing is the right fix.
+
+**Success criteria:** For each A failure, classify the largest gap as:
+- **Structural** (NMS pixels exist at wrong angle) → gap tolerance fix
+- **Dropout** (no NMS pixels, edge genuinely broken) → morphological fix
+- **Mixed** (some gaps structural, some dropout) → combined approach
+
+---
+
+## Part 2: Fix phases (with revert gates)
+
+### Phase 4 — Angle-gated support collection (targets C)
+
+*Carried over from the original plan.  Not yet attempted.*
+
+**Status:** The isolation test needs repair first — with current
+parameters (`distance_thresh=2.0`), the test doesn't actually reproduce
+C.  Fix: increase `distance_thresh` to 4.0 so the parallel edge IS
+captured, then angle-gate it away.
+
+### Phase I1-result-dependent D fixes
+
+The fix for D depends on I1's conclusion:
+
+- **If I1 shows displaced votes ARE finder pixels:**
+  - F5a: **Absolute threshold floor** — `max(rel * acc_max, floor)` where
+    `floor` is tuned (start at 1000) to surface the weak displaced clusters.
+  - F5b: **Per-theta threshold with floor** — `threshold = max(rel * acc_max,
+    rel * max_in_theta_band, floor)` — combines per-theta fairness with
+    a floor for sparse theta bands.
+
+- **If I1 shows displaced votes are NOT finder pixels:**
+  - F5c: **Widen GT matching tolerance** — the Hough pipeline is fine;
+    the 5 px rho tolerance in the fixture tests is too strict given known
+    augmentation-induced displacement.  This is a test-only change.
+
+**Gate for F5a:** Absolute floor surfaces ≥1 D-failing edge, zero
+regressions in fixture tests, full suite ≥ 715 passes.
+
+**Gate for F5c:** After widening rho tolerance in fixture tests,
+≥1 D failure resolved, segments are valid (span ≥ 80% GT, endpoints
+±5 px), zero regressions.
+
+---
+
+### Phase 6 — Multi-finder spatial consistency (targets B)
+
+**Rationale:** Phase 3 confirmed that B phantoms are dense QR-internal
+edges indistinguishable from finder edges at the pixel level.  A
+higher-level check is needed: if a candidate edge is a real finder
+boundary, it should be spatially close to the expected finder-pattern
+region (e.g. within the finder-pattern's 7×7 module zone).
+
+**Change:** After `refine_line` produces segments for all peaks, filter
+out segments whose endpoints are >X px from any expected finder boundary
+position (computed from the cluster's alignment-pattern positions and
+estimated version).
+
+*Exact change TBD — depends on I2 identifying what the phantoms are.
+If they're near the finder pattern but misaligned, the fix might be a
+geometric consistency check (e.g. "lines from a valid finder pattern
+should form an L-shape with ~90° corner").*
+
+**Isolation test:** Not applicable (B phantoms don't appear in the
+synthetic isolation tests — they only appear in real QR fixtures).
+Validation is via fixture test B tallies.
+
+**Gate:** ≥1 B failure eliminated, zero A/C/D regressions, full suite
+≥ 715 passes.
+
+---
+
+### Phase 7 — Morphological closing on NMS (targets A)
+
+**Rationale:** If I3 shows that A-failing gaps are genuine noise dropouts
+(no NMS pixels in the gap region), a morphological closing before Hough
+voting would bridge them.  This targets A at the input stage rather than
+in `refine_line`.
+
+**Change:** After `extract_thin_edges` returns `(nms, angle)`, apply a
+small closing kernel (e.g. 3×3 cross `[[0,1,0],[1,1,1],[0,1,0]]`) to
+`nms` before passing to `hough_vote_peaks`.  This preserves the thinned
+structure but bridges 1–2 px dropouts.
+
+**If I3 shows structural gaps** (NMS pixels exist at wrong angle), skip
+this phase — morphological closing won't help against crossing edges
+and may worsen C by creating false connections to parallel edges.
+
+**Isolation test:** New test needed — a synthetic NMS with 1–2 px gaps
+that currently fragments, which becomes contiguous after closing.
+
+**Gate:** ≥1 A failure eliminated, no extra C failures (closing may
+worsen drift bleed-through), full suite ≥ 715 passes.
+
+---
+
+## Execution order
+
+```
+Information-gathering (run first, no production changes):
+  I1 (D displacement)
+  I2 (B phantom sources)
+  I3 (A gap causes)
+
+Fix phases (in dependency order):
+  Phase 4 (angle-gated support) → targets C
+  Phase 5a/5b/5c (D fix, depends on I1) → targets D
+  Phase 6 (multi-finder consistency) → targets B
+  Phase 7 (morphological closing) → targets A
+```
 
 ## Files affected
 
 | File | Phases touching it |
 |------|-------------------|
-| `src/qr_reader/detector/hough.py` | All (production code) |
-| `src/qr_reader/tests/detector/test_hough.py` | All (isolation test flips) |
-| `src/qr_reader/tests/detector/test_hough_harness.py` | None (fixtures unchanged, just re-run) |
+| `src/qr_reader/detector/hough.py` | Phase 1–3 (reverted), 4–7 (production code) |
+| `src/qr_reader/tests/detector/test_hough.py` | Phase 1–3 (reverted), 4, 5a, 7 (isolation test flips) |
+| `src/qr_reader/tests/detector/test_hough_harness.py` | I1, I2, I3 (diagnostic changes), 6 (fixture validation) |
+| `src/qr_reader/scripts/debug_hough_failures.py` | I2, I3 (may add spatial / gap diagnostics) |
 | `docs/plan-007-hough-phased-fixes.md` | This document |
 | `docs/hough-failure-analysis.md` | Updated with fix results per phase |
