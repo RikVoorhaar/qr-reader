@@ -871,8 +871,6 @@ Fix phases:
   Phase 5  (boxcar rho smoothing)      → targets D — **REVERTED**, zero D fixed
   Phase 7  (angle-gated gap tolerance) → targets A — **ACCEPTED**, no fixture impact
   Phase 6  (multi-finder consistency)  → targets B — **REVERTED**, phantoms < 15 px from GT edges
-  Phase 7  (angle-gated gap tolerance) → targets A
-  Phase 6  (multi-finder consistency)  → targets B
 ```
 
 ## Files affected
@@ -888,3 +886,507 @@ Fix phases:
 | `src/qr_reader/scripts/phase_i3_gaps.py` | I3 diagnostic (retained as artifact) |
 | `docs/plan-007-hough-phased-fixes.md` | This document |
 | `docs/hough-failure-analysis.md` | Updated with fix results per phase |
+
+---
+
+## Part 3: Round 2 — New investigation + experiment phases
+
+> **Motivation:** Round 1 produced two accepted opt-in parameters
+> (`angle_gate_deg` for C, `gap_angle_gate_deg` for A) that have **zero
+> fixture impact** because the harness never passes them.  Additionally,
+> the B failure analysis revealed that all 5 phantoms come from C3, a
+> cluster with **no finder patterns** — Hough should not even be called
+> there.  Round 2 addresses these gaps: validate accepted fixes
+> end-to-end, close out B as a test artifact, and explore new avenues
+> for D and C that Round 1 didn't reach.
+
+### Summary of Round 2 phases
+
+| Phase | Target | Approach | Depends on |
+|-------|--------|----------|-------------|
+| I4 | D | Validate D is non-blocking via full detect→decode | — |
+| I5 | D | Measure if NMS radius suppresses true-edge votes | — |
+| I6 | D | Measure peak survival at lower threshold_rel | — |
+| I7 | C | Measure TLS-normal drift from Hough-normal | — |
+| I8 | B | Audit which clusters have finder patterns | — |
+| Phase 8 | A+C | Pass accepted params in harness `refine_line` calls | — |
+| Phase 9 | B | Skip non-finder clusters in harness | I8 |
+| Phase 10 | D | Reduce `nms_radius_rho` from 6 to 3 | I5 |
+| Phase 11 | D | Lower `threshold_rel` from 0.25 to 0.15 | I6 |
+| Phase 12 | C | Hough-normal-based support collection | I7 |
+| Phase 13 | C | Endpoint trimming by strength percentile | Phase 8 |
+| Phase 14 | D | Coarse-to-fine rho voting (rho_step=2→1) | I4 |
+
+---
+
+## Part 3a: Investigation phases (Round 2)
+
+These phases require **test/diagnostic changes only** — no production
+code modified.  They confirm or rule out hypotheses before committing
+to experiment designs.
+
+### I4 — D non-blocking validation
+
+**Question:** Do the 2 D failures (C1 TL_left, C2 BL_left) prevent the
+full detect→decode pipeline from succeeding on v12-default?
+
+**Rationale:** If the pipeline already decodes successfully despite 2
+missing Hough edges, D is truly non-blocking and we can deprioritise
+all D-fix experiments (Phase 10, 11, 14).  RANSAC needs 4+ points;
+the pipeline finds 6/8 finder boundaries — but this hasn't been
+verified end-to-end because `hough.py` isn't integrated into
+`detector.py` yet.
+
+**Method:** Run the existing full pipeline
+(`scripts/full-pipeline.py` or `detector.detect_corners` +
+`decoder.decode`) on the v12-default fixture image (seed=42).  Record
+whether decoding succeeds.  If it fails, note which stage fails and
+whether it's related to the missing finder boundaries.
+
+**Note:** Since `hough.py` is not yet integrated into `detector.py`,
+this investigation tests the **current** pipeline (without Hough).
+If the current pipeline succeeds, D is non-blocking for the current
+approach.  If it fails, we need to check whether Hough integration
+(with the other fixes) would fix it or whether the failure is
+upstream.
+
+**Deliverable:** Pass/fail status of full pipeline on v12-default,
+and which stage fails (if any).
+
+---
+
+### I5 — NMS radius sensitivity (targets D)
+
+**Question:** Are the true-edge votes for D failures being suppressed
+by `nms_radius_rho=6`?  If the true edge's votes concentrate in a bin
+within ±6 of the strong competitor's peak, NMS zeroes them before
+they can be detected.
+
+**Rationale:** From I1, the C1 TL_left competitor is at bin 13
+(score=5803).  True-edge votes are at bins 9, 14, 18, 19.  Bin 14 is
+within 6 of bin 13, so it's suppressed by NMS after the competitor
+peak is extracted.  Bins 9, 18, 19 are outside the radius, but their
+individual scores may be below `threshold_rel * max`.
+
+**Method:** Write a diagnostic script (`scripts/phase_i5_nms_radius.py`)
+that:
+1. Reconstructs the accumulator for each D-failure cluster.
+2. For each D edge, records the vote score at every rho bin (not just
+   the GT bin).
+3. Simulates NMS: extracts peaks with `nms_radius_rho=6`, then
+   re-runs with `nms_radius_rho=3` and `nms_radius_rho=2`.
+4. Reports whether any suppressed bin would pass `threshold_rel *
+   max_score` and produce a peak matching the GT edge.
+
+**Deliverable:** Table of (D edge, rho bin, vote score, suppressed by
+NMS?, would pass threshold?) for `nms_radius_rho` ∈ {2, 3, 6}.
+
+**Decision rule:** If any D edge has a bin within the current NMS
+radius that would pass threshold after NMS → Phase 10 (reduce
+`nms_radius_rho`) is worth trying.  If all D-edge bins are either
+outside the NMS radius or below threshold even without NMS → NMS
+radius reduction won't help; skip Phase 10.
+
+---
+
+### I6 — Threshold sensitivity (targets D)
+
+**Question:** Would a lower `threshold_rel` surface true-edge peaks
+for D failures without introducing new B phantoms?
+
+**Rationale:** The current `threshold_rel=0.25` filters peaks below
+25% of the max score.  For C2 BL_left, the strongest bin (bin 7) has
+score 7116 (71% of band).  A per-bin threshold of `0.25 * 7116 =
+1779` exceeds the true edge's per-bin scores (540–1201).  A lower
+global threshold might surface these — but it could also surface
+noise/phantoms.
+
+**Method:** Write a diagnostic script
+(`scripts/phase_i6_threshold.py`) that:
+1. Reconstructs the accumulator for each D-failure cluster.
+2. Extracts peaks with `threshold_rel` ∈ {0.10, 0.15, 0.20, 0.25}.
+3. For each threshold, reports:
+   - Number of peaks extracted.
+   - Whether any new peak matches a D-failure GT edge (within 5° + 5px).
+   - Whether any new peak is a B phantom (matches a non-finder
+     cluster or has wrong-angle normal).
+4. Also run on v12-clean to check for phantom regressions.
+
+**Deliverable:** Table of (threshold_rel, # peaks, # D matches,
+# B phantoms) per cluster.
+
+**Decision rule:** If any threshold surfaces D edges without new B
+phantoms → Phase 11 is worth trying.  If lowering threshold only
+surfaces phantoms → skip Phase 11.
+
+---
+
+### I7 — TLS drift measurement (targets C)
+
+**Question:** How much does the TLS-refined normal drift from the
+Hough peak normal in C-failure fixtures?  If the drift is significant
+(>2°), using the Hough peak normal for support collection (instead
+of the TLS-refined normal) could prevent the capture zone from
+shifting toward parallel edges.
+
+**Rationale:** The C failure mode is: TLS drifts the normal ~1° away
+from the Hough peak, widening the effective capture zone to include
+parallel edges 3–5 px away.  Phase 4 (angle gate) filters by gradient
+angle, but doesn't prevent the TLS normal itself from drifting.  A
+"collect with Hough normal, refine with TLS" approach would decouple
+these concerns.
+
+**Method:** Write a diagnostic script
+(`scripts/phase_i7_tls_drift.py`) that:
+1. For each C-failure cluster, extracts Hough peaks.
+2. For each peak, calls `refine_line` and records:
+   - Hough peak normal angle (degrees).
+   - TLS-refined normal angle (degrees).
+   - Angular drift (degrees, mod π).
+3. Also records the drift for C-success cases (clusters where C
+   doesn't fail) for comparison.
+4. Reports the distribution of drifts: failing vs. non-failing.
+
+**Deliverable:** Table of (cluster, edge label, Hough normal°, TLS
+normal°, drift°, C pass/fail).
+
+**Decision rule:** If C failures have systematically larger drift
+(>2°) than C successes → Phase 12 (Hough-normal-based collection) is
+worth trying.  If drift is similar for pass and fail → TLS drift is
+not the root cause; skip Phase 12.
+
+---
+
+### I8 — Cluster finder pattern audit (targets B)
+
+**Question:** Which clusters in the v12-default fixture contain
+finder patterns?  Specifically, does C3 (the cluster with all 5 B
+phantoms) have any finder patterns?
+
+**Rationale:** From I2, all 5 B phantoms are in C3, and "all 8 GT
+edges are outside the ROI" for C3.  This suggests C3 doesn't contain
+a finder pattern, and the B phantoms are an artifact of running
+Hough on a cluster where it shouldn't be called.  In the production
+pipeline, `extract_finder_patterns` runs before Hough, and only
+finder-pattern-containing clusters would proceed to Hough.
+
+**Method:** Write a diagnostic script
+(`scripts/phase_i8_cluster_audit.py`) that:
+1. Runs `_run_pipeline_to_rois` on v12-default.
+2. For each cluster, runs `extract_finder_patterns` on the cluster's
+   corners (via `region_boundary_8` + `corner.angular_nms_top_radial_indices`).
+3. Records: cluster index, # finder patterns found, # GT edges in
+   ROI, # Hough peaks, # B phantoms.
+4. Confirms C3 has 0 finder patterns.
+
+**Deliverable:** Table of (cluster, # finder patterns, # GT edges in
+ROI, # Hough peaks, # B phantoms).
+
+**Decision rule:** If C3 has 0 finder patterns and all B phantoms
+are in C3 → Phase 9 (skip non-finder clusters) is worth trying.  If
+C3 has finder patterns → the B phantoms are real pipeline failures;
+Phase 9 won't help.
+
+---
+
+## Part 3b: Experiment phases (Round 2)
+
+### Phase 8 — Harness integration of accepted params (targets A+C)
+
+**Rationale:** Phase 4 (`angle_gate_deg`) and Phase 7
+(`gap_angle_gate_deg`) are accepted opt-in parameters that the harness
+never passes.  This phase passes them in all harness `refine_line`
+calls and measures the actual fixture impact.  This is the critical
+end-to-end validation of Round 1's accepted work.
+
+**Change in `test_hough_harness.py`:**
+- Add `angle_gate_deg` and `gap_angle_gate_deg` parameters to all
+  `refine_line` calls in `_assert_span_adequate`,
+  `_assert_span_not_excessive`, `_assert_no_phantom`, and
+  `_assert_non_degenerate`.
+- Pass them from the test methods (default: `angle_gate_deg=15.0`,
+  `gap_angle_gate_deg=20.0`).
+
+**Gate:**
+- ≥1 A failure eliminated (target: 2 → ≤1)
+- ≥1 C failure eliminated (target: 4 → ≤3)
+- Zero new B failures
+- Zero regressions in v12-clean and v5-default
+- Full suite ≥ 715 passes
+
+**Revert if:**
+- A and C failures don't improve (accepted phases don't help in
+  fixture despite passing isolation tests)
+- Regressions in v12-clean (the angle gate or gap gate introduces
+  new failures on clean images)
+
+**Risk:**
+- The angle gate (15°) may be too tight for real finder edges with
+  noisy gradient angles — could cause A regressions (filtering out
+  real support pixels).
+- The gap angle gate (20°) may bridge structural gaps in clean
+  images, causing C regressions (same issue that killed Phase 2).
+- Mitigation: if regressions appear, try wider gates (20°, 25°)
+  before reverting.
+
+---
+
+### Phase 9 — Skip non-finder clusters in harness (targets B)
+
+**Rationale:** All 5 B phantoms are in C3, which has no finder
+patterns (per I2 and I8).  Running Hough on a cluster without finder
+patterns is a test artifact — in the production pipeline, only
+finder-pattern-containing clusters would proceed to Hough.  This
+phase skips clusters with no GT finder edges in the ROI.
+
+**Change in `test_hough_harness.py`:**
+- In each test method, skip clusters where no GT edges have
+  `segment is not None` (i.e., no GT finder edges fall within the
+  ROI).
+- Alternatively: add a `skip_no_finder=True` flag to the test methods
+  that filters clusters by `any(gt["segment"] is not None for gt in
+  gt_edges)`.
+
+**Gate:**
+- B failures eliminated (target: 5 → 0)
+- Zero A/C/D changes (the skipped cluster had no GT edges, so no A/C/D
+  counts change)
+- v12-clean and v5-default: same or better
+- Full suite ≥ 715 passes
+
+**Revert if:**
+- Any A/C/D regression appears (shouldn't happen — skipping a cluster
+  with no GT edges can't affect A/C/D tallies)
+- v5-default B failures don't improve (different cluster distribution)
+
+**Note:** This is a **test-only** change, not a production code
+change.  The production integration (when hough is wired into
+`detector.py`) should make this gating decision using
+`extract_finder_patterns`, not GT edges.  This phase validates the
+hypothesis that B is a test artifact.
+
+---
+
+### Phase 10 — Reduce `nms_radius_rho` (targets D)
+
+**Rationale:** `nms_radius_rho=6` suppresses peaks within ±6 rho bins
+of a detected peak.  For D failures, the true edge's votes may
+concentrate in a bin within 6 of the strong competitor, getting
+suppressed.  Reducing to 3 would allow the true-edge peak to survive
+(if its score passes `threshold_rel`).
+
+**Change in `hough.py`:**
+- `nms_radius_rho` default: 6 → 3.
+- Also try 4 as an intermediate value if 3 causes duplicate-peak
+  regressions.
+
+**Gate:**
+- ≥1 D failure eliminated
+- Zero new A/C/B failures (duplicate peaks should be caught by
+  downstream NMS, but may produce extra segments)
+- `test_horizontal_edges` and `test_vertical_edges` still pass
+  (these tests have parallel lines 3 px apart — reducing NMS radius
+  to 3 may cause duplicates)
+- Full suite ≥ 715 passes
+
+**Revert if:**
+- Duplicate-peak regressions (parallel lines 3 px apart get separate
+  peaks, inflating B counts)
+- D failures don't improve (true-edge bins are outside the NMS radius
+  or below threshold — confirmed by I5)
+
+**Depends on:** I5 (NMS radius sensitivity)
+
+---
+
+### Phase 11 — Lower `threshold_rel` (targets D)
+
+**Rationale:** `threshold_rel=0.25` filters peaks below 25% of the
+max score.  D-failure edges have per-bin scores of 540–1201, while
+the max is 5803–7116.  A threshold of 0.10–0.15 might surface these
+without introducing too many phantoms.
+
+**Change in `hough.py`:**
+- `threshold_rel` default: 0.25 → 0.15.
+- Also try 0.20 as a conservative intermediate.
+
+**Gate:**
+- ≥1 D failure eliminated
+- Zero new B phantoms (lower threshold may surface noise peaks)
+- Zero A/C regressions
+- v12-clean still passes (no new phantoms on clean images)
+- Full suite ≥ 715 passes
+
+**Revert if:**
+- New B phantoms appear (lower threshold surfaces noise/internal
+  edges that pass the angular filter)
+- D failures don't improve (true-edge bins are below even 0.10 *
+  max — confirmed by I6)
+
+**Risk:** This is the most fragile phase — a lower threshold directly
+increases the number of peaks, which directly increases B phantom
+risk.  If Phase 9 (skip non-finder clusters) is accepted first, the
+B phantom risk is mitigated because non-finder clusters are skipped.
+
+**Depends on:** I6 (threshold sensitivity).  Recommended: run after
+Phase 9 (to reduce B phantom risk).
+
+---
+
+### Phase 12 — Hough-normal-based support collection (targets C)
+
+**Rationale:** Currently `refine_line` uses the TLS-refined normal for
+both support collection and endpoint determination.  TLS drift (~1°)
+widens the effective capture zone, pulling in parallel edges 3–5 px
+away.  Using the Hough peak normal for support collection (which is
+coarser but doesn't drift) and TLS only for endpoint refinement
+would prevent the capture zone from shifting.
+
+**Change in `hough.py`:**
+- Split `refine_line` into two stages:
+  1. **Support collection:** use the original `normal` (Hough peak
+     normal) to compute `dists = |points @ normal - rho|` and filter
+     by `distance_thresh`.
+  2. **TLS refinement:** fit TLS to the collected support, producing
+     `refined_normal` and `refined_rho`.
+  3. **Endpoint determination:** project support onto the TLS
+     direction (as currently), but the support set was collected with
+     the Hough normal.
+- No new parameters — this changes the internal algorithm only.
+
+**Gate:**
+- ≥1 C failure eliminated
+- Zero new A failures (Hough normal is coarser, may miss some support
+  pixels that TLS would have captured — but `distance_thresh=1.5`
+  should be wide enough)
+- Zero new B failures
+- All isolation tests pass (update C isolation test if needed)
+- Full suite ≥ 715 passes
+
+**Revert if:**
+- C failures don't improve (TLS drift is not the root cause —
+  confirmed by I7)
+- A regressions (Hough normal misses support pixels that TLS would
+  have captured)
+
+**Depends on:** I7 (TLS drift measurement).  Can be combined with
+Phase 4 (angle gate) for compound effect.
+
+---
+
+### Phase 13 — Endpoint trimming by strength percentile (targets C)
+
+**Rationale:** C failures produce segments that extend past the GT
+endpoints into parallel-edge territory.  The parallel-edge support
+pixels are typically weaker (lower NMS magnitude) than the true-edge
+pixels.  Trimming the longest run's endpoints to the convex hull of
+high-strength support pixels (above a percentile, e.g. 75th) would
+cut the parallel-edge bleed.
+
+**Change in `hough.py`:**
+- After finding the longest contiguous run `[best_a, best_b]`:
+  1. Identify support pixels whose projection falls within
+     `[best_a, best_b]`.
+  2. Compute the strength percentile (e.g. 75th) of these pixels.
+  3. Find the min and max projection of pixels above this percentile.
+  4. Trim `best_a` and `best_b` to these bounds.
+
+**Gate:**
+- ≥1 C failure eliminated
+- Zero new A failures (trimming shouldn't shorten segments below
+  80% of GT span — if it does, lower the percentile)
+- Zero new B failures
+- All isolation tests pass
+- Full suite ≥ 715 passes
+
+**Revert if:**
+- C failures don't improve (parallel-edge pixels are as strong as
+  true-edge pixels)
+- A regressions (trimming cuts too aggressively)
+
+**Depends on:** Phase 8 (need to know if C is already fixed by the
+angle gate before adding more C fixes).
+
+---
+
+### Phase 14 — Coarse-to-fine rho voting (targets D)
+
+**Rationale:** D failures have true-edge votes spread across 4–5 rho
+bins (1-px bins).  A coarser initial pass with `rho_step=2` would
+concentrate these fragmented votes into fewer bins, producing a
+stronger peak.  After peak extraction at the coarse scale, refine
+with the original 1-px `rho_step`.
+
+**Change in `hough.py`:**
+- Add a `rho_step_coarse` parameter to `hough_vote_peaks` (default
+  `None` — no coarse pass).
+- When provided:
+  1. Build a coarse accumulator with `rho_step_coarse` (e.g. 2.0).
+  2. Extract coarse peaks.
+  3. For each coarse peak, build a fine accumulator (1-px bins) in
+     a ±3 bin neighborhood around the coarse rho.
+  4. Extract the fine peak within this neighborhood.
+
+**Gate:**
+- ≥1 D failure eliminated
+- Zero new A/C/B failures
+- `test_horizontal_edges` and `test_vertical_edges` still pass (3-px
+  parallel lines must remain distinct — coarse bins shouldn't merge
+  them if `rho_step_coarse=2`)
+- Full suite ≥ 715 passes
+
+**Revert if:**
+- D failures don't improve (fragmented votes are spread >2 bins even
+  at coarse scale)
+- Parallel-line merging (3-px lines fall in the same 2-px bin)
+
+**Depends on:** I4 (D non-blocking validation).  If D is non-blocking,
+this phase is low-priority and may be skipped.
+
+---
+
+## Round 2 execution order
+
+```
+Investigations (can run in parallel):
+  I4 (D non-blocking)      → decides if D fixes are needed
+  I5 (NMS radius)          → gates Phase 10
+  I6 (threshold)           → gates Phase 11
+  I7 (TLS drift)           → gates Phase 12
+  I8 (cluster audit)       → gates Phase 9
+
+Experiments (sequential, with gates):
+  Phase 8  (harness integration)     → validates A+C fixes — IMMEDIATE
+  Phase 9  (skip non-finder)         → eliminates B — after I8
+  Phase 10 (reduce nms_radius_rho)  → targets D — after I5
+  Phase 11 (lower threshold_rel)    → targets D — after I6, after Phase 9
+  Phase 12 (Hough-normal collection) → targets C — after I7
+  Phase 13 (endpoint trimming)       → targets C — after Phase 8
+  Phase 14 (coarse-to-fine rho)      → targets D — after I4
+```
+
+**Priority order:** Phase 8 > Phase 9 > Phase 10/11 > Phase 12/13 > Phase 14
+
+Phase 8 is the highest priority — it validates Round 1's accepted
+work with zero new production code.  Phase 9 is next — it may
+eliminate all 5 B failures with a test-only change.  D fixes (Phase
+10, 11, 14) are lower priority if I4 confirms D is non-blocking.
+
+---
+
+## Round 2 target end state
+
+After all accepted Round 2 phases, v12-default should show:
+
+```
+Failure A:  0 or 1    (from 2 — Phase 8 passes gap_angle_gate_deg)
+Failure B:  0         (from 5 — Phase 9 skips non-finder clusters)
+Failure C:  ≤ 2       (from 4 — Phase 8 passes angle_gate_deg + Phase 12/13)
+Failure D:  0 or 1    (from 2 — Phase 10 or 11, if not non-blocking)
+Total:      ≤ 4       (from 13 → ≥70% reduction)
+Match rate: ≥ 83%     (5/6 GT edges matched)
+```
+
+If I4 confirms D is non-blocking and Phase 9 eliminates B, the
+priority shifts to A+C (Phase 8, 12, 13) as the remaining
+improvement targets.
