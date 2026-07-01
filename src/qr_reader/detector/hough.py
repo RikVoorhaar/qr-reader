@@ -237,12 +237,16 @@ def refine_line(
     angle: np.ndarray,
     gap_tolerance: float = 2.0,
     distance_thresh: float = 1.5,
+    angle_gate_deg: float | None = None,
+    gap_angle_gate_deg: float | None = None,
 ) -> LineSegment:
     """Refine a Hough candidate line by weighted TLS fit to nearby edge pixels.
 
     Collects edge pixels within ``distance_thresh`` of the approximate line,
-    fits a weighted total-least-squares line, then finds the longest
-    contiguous support run with gap bridging to determine segment endpoints.
+    optionally filtered by gradient-angle consistency with the Hough peak
+    normal, then fits a weighted total-least-squares line, then finds the
+    longest contiguous support run with gap bridging to determine segment
+    endpoints.
 
     Parameters
     ----------
@@ -256,14 +260,24 @@ def refine_line(
     nms : ndarray, shape (H, W)
         NMS edge magnitudes.
     angle : ndarray, shape (H, W)
-        Edge-normal angles (not used during refinement, provided for
-        interface uniformity).
+        Edge-normal angles (gradient directions).  Zero where ``nms == 0``.
     gap_tolerance : float
         Maximum gap in pixels to bridge when finding the longest contiguous
         support run.  Default 2.0 px.
     distance_thresh : float
         Maximum perpendicular distance (pixels) for an edge pixel to be
         considered supporting this line.  Default 1.5 px.
+    angle_gate_deg : float, optional
+        If provided, only edge pixels whose gradient-normal angle is within
+        ``angle_gate_deg`` degrees (modulo π) of the Hough peak normal angle
+        are included in the support set.
+    gap_angle_gate_deg : float, optional
+        If provided, gaps exceeding ``gap_tolerance`` are still bridged if the
+        NMS content at the gap midpoint is at a gradient-normal angle
+        consistent with the segment normal (within ``gap_angle_gate_deg``
+        degrees).  This distinguishes structural gaps (wrong-angle crossing
+        edges) from noise dropouts and partial gaps.  Default ``None``
+        (always split at ``gap_tolerance``).
 
     Returns
     -------
@@ -279,6 +293,14 @@ def refine_line(
 
     dists = np.abs(points @ normal - rho)
     mask = dists < distance_thresh
+
+    # ---- angle gate --------------------------------------------------------
+    if angle_gate_deg is not None:
+        hough_theta = float(np.arctan2(normal[1], normal[0]))
+        edge_thetas = np.fmod(np.abs(angle[ys, xs]), np.pi)
+        theta_diff = np.abs(edge_thetas - (hough_theta % np.pi))
+        theta_diff = np.minimum(theta_diff, np.pi - theta_diff)
+        mask &= theta_diff < np.deg2rad(angle_gate_deg)
 
     support_pts = points[mask]
     support_strengths = strengths[mask]
@@ -314,6 +336,12 @@ def refine_line(
     proj = support_pts @ direction  # scalar projection onto line direction
     sort_idx = np.argsort(proj)
     proj_sorted = proj[sort_idx]
+    sorted_pts = support_pts[sort_idx]
+
+    # Precompute the segment normal angle (mod π) for gap angle-gating.
+    line_theta = None
+    if gap_angle_gate_deg is not None:
+        line_theta = float(np.arctan2(refined_normal[1], refined_normal[0])) % np.pi
 
     best_len = 0.0
     best_a = 0.0
@@ -325,6 +353,52 @@ def refine_line(
     for i in range(1, len(proj_sorted)):
         gap = float(proj_sorted[i] - proj_sorted[i - 1])
         if gap <= gap_tolerance:
+            run_b = float(proj_sorted[i])
+        elif gap_angle_gate_deg is not None:
+            # Check NMS pixels whose projection falls in this gap region
+            # and which are near the line.  If any have a consistent angle
+            # (or none exist at all — dropout), bridge the gap.
+            proj_a = float(proj_sorted[i - 1])
+            proj_b = float(proj_sorted[i])
+            gap_mid = (proj_a + proj_b) / 2.0
+            mp = refined_rho * refined_normal + gap_mid * direction  # (x, y)
+            cx, cy = int(round(float(mp[0]))), int(round(float(mp[1])))
+            bridge_gap = False
+            if 0 <= cy < H and 0 <= cx < W:
+                # Check 3x3 neighborhood around the gap midpoint.
+                y0, y1 = max(0, cy - 1), min(H, cy + 2)
+                x0, x1 = max(0, cx - 1), min(W, cx + 2)
+                patch_nms = nms[y0:y1, x0:x1]
+                patch_angle = angle[y0:y1, x0:x1]
+                has_consistent = False
+                has_nms = False
+                for dy in range(patch_nms.shape[0]):
+                    for dx in range(patch_nms.shape[1]):
+                        nv = float(patch_nms[dy, dx])
+                        if nv > 0:
+                            has_nms = True
+                            ang = np.fmod(np.abs(float(patch_angle[dy, dx])), np.pi)
+                            td = abs(ang - line_theta)
+                            td = min(td, np.pi - td)
+                            if td < np.deg2rad(gap_angle_gate_deg):
+                                has_consistent = True
+                                break
+                    if has_consistent:
+                        break
+                # Bridge if: dropout (no NMS at all) OR has consistent-angle NMS.
+                if not has_nms or has_consistent:
+                    bridge_gap = True
+            # NOTE: if gap midpoint falls outside image, we conservatively
+            # split (do not bridge).
+            if bridge_gap:
+                run_b = float(proj_sorted[i])
+                continue
+            run_len = run_b - run_a
+            if run_len > best_len:
+                best_len = run_len
+                best_a = run_a
+                best_b = run_b
+            run_a = float(proj_sorted[i])
             run_b = float(proj_sorted[i])
         else:
             run_len = run_b - run_a

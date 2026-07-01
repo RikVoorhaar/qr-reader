@@ -375,6 +375,10 @@ class TestRefineLineRealistic:
         (gradient leakage → intermittent dropouts). With gap_tolerance=2.0
         the longest contiguous run covers only one fragment (~8-12 px),
         not the full finder boundary (~30-40 px).
+
+        When gap_angle_gate_deg is provided, structural gaps with consistent-
+        angle or zero NMS content at the gap midpoint are bridged, restoring
+        the full span.
         """
         H, W = 20, 80
         nms = np.zeros((H, W), dtype=np.float64)
@@ -399,6 +403,7 @@ class TestRefineLineRealistic:
         normal = np.array([0.0, 1.0], dtype=np.float64)
         rho = 10.0
 
+        # --- Bug: without gap_angle_gate_deg, gaps split the run ---
         seg = refine_line(
             normal, rho, 100.0, nms, angle, gap_tolerance=2.0, distance_thresh=1.5
         )
@@ -412,6 +417,21 @@ class TestRefineLineRealistic:
         # THIS IS THE BUG: we should bridge at least the 3-4px gaps.
         assert span < 20.0, (
             f"BUG CONFIRMED: gap_tolerance=2.0 bridges 4+ px gaps — span={span:.1f} < 20"
+        )
+
+        # --- Fix: with gap_angle_gate_deg=20, all gaps are bridged ---
+        seg_fixed = refine_line(
+            normal, rho, 100.0, nms, angle,
+            gap_tolerance=2.0, distance_thresh=1.5,
+            gap_angle_gate_deg=20.0,
+        )
+        xs_fixed = seg_fixed.endpoints[:, 0]
+        span_fixed = abs(float(xs_fixed[1] - xs_fixed[0]))
+        # With angle-gated bridging, the 4, 7, and 3 px gaps are all
+        # recognised as dropouts (no crossing NMS), producing a span of ~40 px.
+        assert span_fixed > 30.0, (
+            f"FIX VERIFIED: expected span > 30 px with gap_angle_gate_deg=20, "
+            f"got span={span_fixed:.1f} px"
         )
 
     # ---- B: sparse coincidental alignment looks like a line --------------
@@ -502,29 +522,37 @@ class TestRefineLineRealistic:
         Hough peak direction, causing the segment to capture support from a
         parallel nearby edge.
 
-        Two horizontal edges at rho=25 (target) and rho=28 (pollution).
-        The TLS on the 25-pixel edge should not bridge across the 3-px
-        perpendicular gap to the 28-pixel edge. But with distance_thresh=2.0
-        and normal drift, it does.
+        Two parallel-but-separated edges with overlapping x-ranges at ρ=25
+        (target) and ρ=28 (pollution), 3 px apart perpendicularly.  The
+        polluting edge has a different gradient-normal angle (2.0 rad vs π/2),
+        so an angle-gated support collection can reject it.
+
+        With distance_thresh=4.0 the polluting edge is captured.  The edges
+        overlap in x (15..40 and 30..55), so the contiguous-run logic bridges
+        across the gap, producing span > 30 px.
+
+        When angle_gate_deg=15 is passed, edge B is filtered by its
+        inconsistent gradient angle, leaving only edge A — span ≤ 30 px.
         """
         H, W = 50, 80
         nms = np.zeros((H, W), dtype=np.float64)
         angle = np.zeros_like(nms)
 
-        # Edge A: horizontal at row 25, x=10..30 (strong, continuous)
-        for x in range(10, 31):
+        # Edge A: horizontal at row 25, x=15..40 (strong, continuous, θ=π/2)
+        for x in range(15, 41):
             nms[25, x] = 200.0
             angle[25, x] = np.pi / 2
 
-        # Edge B: horizontal at row 28, x=50..70 (strong, continuous)
-        # 3 px away perpendicularly — within distance_thresh depending on normal
-        for x in range(50, 71):
+        # Edge B: non-horizontal at row 28, x=30..55 (strong, continuous,
+        # angle=2.0 rad ≈ 115°, overlapping x-range with A)
+        for x in range(30, 56):
             nms[28, x] = 200.0
-            angle[28, x] = np.pi / 2
+            angle[28, x] = 2.0
 
         normal = np.array([0.0, 1.0], dtype=np.float64)
         rho = 25.0
 
+        # --- Bug: without angle gate, edge B is captured ---
         seg = refine_line(
             normal,
             rho,
@@ -532,17 +560,37 @@ class TestRefineLineRealistic:
             nms,
             angle,
             gap_tolerance=2.0,
-            distance_thresh=2.0,
+            distance_thresh=4.0,
         )
 
         assert not np.all(seg.endpoints == 0), "Should produce a segment"
 
         xs = seg.endpoints[:, 0]
         span = abs(float(xs[1] - xs[0]))
-        # Edge A alone spans x=10→30 = 20 px (plus TLS can slightly extend).
-        # With pollution from edge B (x=50→70), the span could jump to 60 px.
-        assert span <= 30.0, (
-            f"BUG CONFIRMED: TLS bridges 3 px rho gap to parallel edge B — span={span:.1f} > 30"
+        # Edge A alone spans x=15→40 = 25 px.  With pollution from edge B
+        # (x=30→55), the combined span is 15→55 = 40 px.
+        assert span > 30.0, (
+            f"BUG CONFIRMED: expected span > 30 px with pollution from edge B, "
+            f"got span={span:.1f} px — distance_thresh=4.0 should capture "
+            f"edge B at 3 px"
+        )
+
+        # --- Fix: with angle gate, edge B is filtered ---
+        seg_fixed = refine_line(
+            normal,
+            rho,
+            100.0,
+            nms,
+            angle,
+            gap_tolerance=2.0,
+            distance_thresh=4.0,
+            angle_gate_deg=15.0,
+        )
+        xs_fixed = seg_fixed.endpoints[:, 0]
+        span_fixed = abs(float(xs_fixed[1] - xs_fixed[0]))
+        assert span_fixed <= 30.0, (
+            f"FIX VERIFIED: expected span ≤ 30 px with angle gate (edge B filtered), "
+            f"got span={span_fixed:.1f} px"
         )
 
     # ---- D: Hough quantization pushes rho out of matching gate ------------

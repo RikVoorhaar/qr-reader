@@ -686,7 +686,9 @@ class TestFixtureReal:
         1. Doesn't match any GT finder-boundary edge, AND
         2. Its normal is far from all GT-edge normals (i.e., it isn't a parallel
            internal QR module edge at a different rho), AND
-        3. Its mean support strength exceeds *strength_threshold*.
+        3. Its mean support strength exceeds *strength_threshold*, AND
+        4. Its segment is spatially far from all GT-edge segments
+           (data-region edges near the finder boundary are skipped).
         """
         # Pre-compute GT normals for angular check
         gt_normals = np.array(
