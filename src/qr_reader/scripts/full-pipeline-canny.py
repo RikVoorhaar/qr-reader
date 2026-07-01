@@ -16,6 +16,7 @@ import numpy as np
 from qr_reader.detector.alignment import find_alignment_patterns_2d
 from qr_reader.detector.clustering import cluster_candidates
 from qr_reader.detector.edges import extract_thin_edges
+from qr_reader.detector.homography import estimate_homography_dlt, project_points
 from qr_reader.detector.hough import hough_vote_peaks, refine_line
 
 
@@ -60,45 +61,114 @@ def _normal_theta_deg(normal):
 
 
 def _compute_gt_edges(metadata, roi_offset, roi_shape):
-    """Project finder-pattern outer edges into ROI-local (x,y) coordinates."""
+    """Compute 36 GT finder-pattern edges via module-grid homography.
+
+    12 per finder (TL, TR, BL): 4 sides × 3 module boundaries.
+    Inner segments clipped: k_vis = min(k, 7-k) — visible feature span only.
+    Returns list of {label, normal, rho} in ROI-local coordinates.
+    """
     corners = metadata["corners_qr"]
     N = metadata["N"]
-    frac = 7.0 / N
-    TL = np.array(corners["TL"], dtype=np.float64)
-    TR = np.array(corners["TR"], dtype=np.float64)
-    BL = np.array(corners["BL"], dtype=np.float64)
-    specs = [
-        (TL, TR, "TL_top"), (TL, BL, "TL_left"),
-        (TR, TL, "TR_top"), (TR, BL, "TR_right"),
-        (BL, TL, "BL_left"), (BL, TR, "BL_bottom"),
-    ]
-    r0, c0 = int(roi_offset[0]), int(roi_offset[1])
-    H, W = int(roi_shape[0]), int(roi_shape[1])
-    offset_xy = np.array([c0, r0], dtype=np.float64)
+
+    src_xy = np.array(
+        [[0.0, 0.0], [float(N), 0.0], [float(N), float(N)], [0.0, float(N)]],
+        dtype=np.float64,
+    )
+    dst_xy = np.array(
+        [
+            [float(corners["TL"][0]), float(corners["TL"][1])],
+            [float(corners["TR"][0]), float(corners["TR"][1])],
+            [float(corners["BR"][0]), float(corners["BR"][1])],
+            [float(corners["BL"][0]), float(corners["BL"][1])],
+        ],
+        dtype=np.float64,
+    )
+    H = estimate_homography_dlt(src_xy, dst_xy)
+
+    def _grid_to_image(row: float, col: float) -> np.ndarray:
+        pt = np.array([[col, row]], dtype=np.float64)
+        return project_points(H, pt)[0]
+
+    finder_positions: dict[str, tuple[int, int]] = {
+        "TL": (0, 0),
+        "TR": (0, N - 7),
+        "BL": (N - 7, 0),
+    }
+
+    TOP = [0, 1, 2]
+    BOTTOM = [5, 6, 7]
+    LEFT = [0, 1, 2]
+    RIGHT = [5, 6, 7]
+
+    r0_off, c0_off = int(roi_offset[0]), int(roi_offset[1])
+    offset_xy = np.array([c0_off, r0_off], dtype=np.float64)
+
     results = []
-    for start, toward, label in specs:
-        a = start
-        b = start + frac * (toward - start)
-        d = b - a
-        length = np.linalg.norm(d)
-        if length < 1e-12:
-            normal = np.array([1.0, 0.0])
-        else:
-            direction = d / length
-            normal = np.array([direction[1], -direction[0]])
-        rho = float(normal @ a)
-        if rho < 0:
-            normal = -normal
-            rho = -rho
-        rho_local = float(rho - normal @ offset_xy)
-        if rho_local < 0:
-            rho_local = -rho_local
-            normal_local = -normal
-        else:
-            normal_local = normal.copy()
-        results.append({
-            "label": label, "normal": normal_local, "rho": rho_local,
-        })
+
+    for finder_name, (r0, c0) in finder_positions.items():
+
+        for side, offsets in [("top", TOP), ("bot", BOTTOM)]:
+            for k in offsets:
+                k_vis = min(k, 7 - k)
+                a = _grid_to_image(float(r0 + k), float(c0 + k_vis))
+                b = _grid_to_image(float(r0 + k), float(c0 + 7 - k_vis))
+                d = b - a
+                length = np.linalg.norm(d)
+                if length < 1e-12:
+                    normal = np.array([1.0, 0.0], dtype=np.float64)
+                    rho = 0.0
+                else:
+                    direction = d / length
+                    normal = np.array([direction[1], -direction[0]], dtype=np.float64)
+                    rho = float(normal @ a)
+                    if rho < 0:
+                        normal = -normal
+                        rho = -rho
+
+                rho_local = float(rho - normal @ offset_xy)
+                if rho_local < 0:
+                    rho_local = -rho_local
+                    normal_local = -normal
+                else:
+                    normal_local = normal.copy()
+
+                results.append({
+                    "label": f"{finder_name}_{side}{k}",
+                    "normal": normal_local,
+                    "rho": rho_local,
+                })
+
+        for side, offsets in [("left", LEFT), ("right", RIGHT)]:
+            for k in offsets:
+                k_vis = min(k, 7 - k)
+                a = _grid_to_image(float(r0 + k_vis), float(c0 + k))
+                b = _grid_to_image(float(r0 + 7 - k_vis), float(c0 + k))
+                d = b - a
+                length = np.linalg.norm(d)
+                if length < 1e-12:
+                    normal = np.array([1.0, 0.0], dtype=np.float64)
+                    rho = 0.0
+                else:
+                    direction = d / length
+                    normal = np.array([direction[1], -direction[0]], dtype=np.float64)
+                    rho = float(normal @ a)
+                    if rho < 0:
+                        normal = -normal
+                        rho = -rho
+
+                rho_local = float(rho - normal @ offset_xy)
+                if rho_local < 0:
+                    rho_local = -rho_local
+                    normal_local = -normal
+                else:
+                    normal_local = normal.copy()
+
+                results.append({
+                    "label": f"{finder_name}_{side}{k}",
+                    "normal": normal_local,
+                    "rho": rho_local,
+                })
+
     return results
 
 

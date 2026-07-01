@@ -34,6 +34,7 @@ from qr_reader.detector.alignment import find_alignment_patterns_2d
 from qr_reader.detector.clustering import CandidateCluster, cluster_candidates
 from qr_reader.detector.edges import extract_thin_edges
 from qr_reader.detector.edges import hysteresis_link
+from qr_reader.detector.homography import estimate_homography_dlt, project_points
 from qr_reader.detector.hough import LineSegment, build_hough_accumulator, hough_vote_peaks, refine_line
 from qr_reader.detector.roi import cluster_to_bbox, cutout
 from qr_reader.qr_gen import binarize_image
@@ -201,76 +202,124 @@ def _clip_segment(
 # ---------------------------------------------------------------------------
 
 
-def _edge_normal_from_points(a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, float]:
-    d = b - a
-    length = np.linalg.norm(d)
-    if length < 1e-12:
-        return np.array([1.0, 0.0], dtype=np.float64), 0.0
-    direction = d / length
-    normal = np.array([direction[1], -direction[0]], dtype=np.float64)
-    rho = float(normal @ a)
-    if rho < 0:
-        normal = -normal
-        rho = -rho
-    return normal, rho
-
-
 def _compute_finder_edges(
     metadata: dict,
     roi_offset: tuple[int, int] | None = None,
     roi_shape: tuple[int, int] | None = None,
 ) -> list[dict]:
+    """Compute 36 GT finder-pattern edges via module-grid homography.
+
+    12 per finder (TL, TR, BL): 4 sides × 3 module boundaries (k=0,1,2 and k=5,6,7).
+    Inner segments clipped: k_vis = min(k, 7-k) — visible feature span only.
+    """
     corners = metadata["corners_qr"]
     N = metadata["N"]
-    frac = 7.0 / N
-    TL = np.array(corners["TL"], dtype=np.float64)
-    TR = np.array(corners["TR"], dtype=np.float64)
-    BR = np.array(corners["BR"], dtype=np.float64)
-    BL = np.array(corners["BL"], dtype=np.float64)
-    edge_specs = [
-        (TL, TR, "TL_top"),
-        (TL, BL, "TL_left"),
-        (TR, TL, "TR_top"),
-        (TR, BR, "TR_right"),
-        (BL, TL, "BL_left"),
-        (BL, BR, "BL_bottom"),
-        (BR, TR, "BR_right"),
-        (BR, BL, "BR_bottom"),
-    ]
+
+    src_xy = np.array(
+        [[0.0, 0.0], [float(N), 0.0], [float(N), float(N)], [0.0, float(N)]],
+        dtype=np.float64,
+    )
+    dst_xy = np.array(
+        [
+            [float(corners["TL"][0]), float(corners["TL"][1])],
+            [float(corners["TR"][0]), float(corners["TR"][1])],
+            [float(corners["BR"][0]), float(corners["BR"][1])],
+            [float(corners["BL"][0]), float(corners["BL"][1])],
+        ],
+        dtype=np.float64,
+    )
+    H = estimate_homography_dlt(src_xy, dst_xy)
+
+    def _grid_to_image(row: float, col: float) -> np.ndarray:
+        pt = np.array([[col, row]], dtype=np.float64)
+        return project_points(H, pt)[0]
+
+    finder_positions: dict[str, tuple[int, int]] = {
+        "TL": (0, 0),
+        "TR": (0, N - 7),
+        "BL": (N - 7, 0),
+    }
+
+    TOP = [0, 1, 2]
+    BOTTOM = [5, 6, 7]
+    LEFT = [0, 1, 2]
+    RIGHT = [5, 6, 7]
+
     results: list[dict] = []
-    for start, toward, label in edge_specs:
-        a = start
-        b = start + frac * (toward - start)
-        normal, rho = _edge_normal_from_points(a, b)
-        if roi_offset is not None and roi_shape is not None:
-            row0, col0 = int(roi_offset[0]), int(roi_offset[1])
-            H, W = int(roi_shape[0]), int(roi_shape[1])
-            offset_xy = np.array([col0, row0], dtype=np.float64)
-            a_local = a - offset_xy
-            b_local = b - offset_xy
-            rho_local = float(rho - normal @ offset_xy)
-            if rho_local < 0:
-                rho_local = -rho_local
-                normal_local = -normal
-            else:
-                normal_local = normal.copy()
-            clipped = _clip_segment(
-                a_local, b_local, 0.0, float(W - 1), 0.0, float(H - 1)
-            )
-            segment = None if clipped is None else clipped
+
+    for finder_name, (r0, c0) in finder_positions.items():
+
+        for side, offsets in [("top", TOP), ("bot", BOTTOM)]:
+            for k in offsets:
+                k_vis = min(k, 7 - k)
+                a = _grid_to_image(float(r0 + k), float(c0 + k_vis))
+                b = _grid_to_image(float(r0 + k), float(c0 + 7 - k_vis))
+                _add_edge(results, finder_name, side, k, a, b, roi_offset, roi_shape)
+
+        for side, offsets in [("left", LEFT), ("right", RIGHT)]:
+            for k in offsets:
+                k_vis = min(k, 7 - k)
+                a = _grid_to_image(float(r0 + k_vis), float(c0 + k))
+                b = _grid_to_image(float(r0 + 7 - k_vis), float(c0 + k))
+                _add_edge(results, finder_name, side, k, a, b, roi_offset, roi_shape)
+
+    return results
+
+
+def _add_edge(
+    results: list[dict],
+    finder_name: str,
+    side: str,
+    k: int,
+    a: np.ndarray,
+    b: np.ndarray,
+    roi_offset: tuple[int, int] | None,
+    roi_shape: tuple[int, int] | None,
+) -> None:
+    d = b - a
+    length = np.linalg.norm(d)
+    if length < 1e-12:
+        normal = np.array([1.0, 0.0], dtype=np.float64)
+        rho = 0.0
+    else:
+        direction = d / length
+        normal = np.array([direction[1], -direction[0]], dtype=np.float64)
+        rho = float(normal @ a)
+        if rho < 0:
+            normal = -normal
+            rho = -rho
+
+    label = f"{finder_name}_{side}{k}"
+
+    if roi_offset is not None and roi_shape is not None:
+        row0, col0 = int(roi_offset[0]), int(roi_offset[1])
+        H_img, W_img = int(roi_shape[0]), int(roi_shape[1])
+        offset_xy = np.array([col0, row0], dtype=np.float64)
+        a_local = a - offset_xy
+        b_local = b - offset_xy
+        rho_local = float(rho - normal @ offset_xy)
+        if rho_local < 0:
+            rho_local = -rho_local
+            normal_local = -normal
         else:
             normal_local = normal.copy()
-            rho_local = rho
-            segment = np.array([a.copy(), b.copy()], dtype=np.float64)
-        results.append(
-            {
-                "label": label,
-                "normal": normal_local,
-                "rho": rho_local,
-                "segment": segment,
-            }
+        clipped = _clip_segment(
+            a_local, b_local, 0.0, float(W_img - 1), 0.0, float(H_img - 1)
         )
-    return results
+        segment = None if clipped is None else clipped
+    else:
+        normal_local = normal.copy()
+        rho_local = rho
+        segment = np.array([a.copy(), b.copy()], dtype=np.float64)
+
+    results.append(
+        {
+            "label": label,
+            "normal": normal_local,
+            "rho": rho_local,
+            "segment": segment,
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
