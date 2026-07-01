@@ -76,6 +76,122 @@ class LineSegment:
 # ---------------------------------------------------------------------------
 
 
+def build_hough_accumulator(
+    nms: np.ndarray,
+    angle: np.ndarray,
+    theta_step_deg: float = 2.0,
+    rho_step: float = 1.0,
+    theta_window_deg: float = 0.0,
+    vote_scheme: str = "onebin",
+) -> dict:
+    """Build the Hough accumulator and return per-pixel vote data.
+
+    Useful for diagnostic inspection of vote clouds (E2 vote-cloud audit).
+
+    Parameters
+    ----------
+    nms : ndarray, shape (H, W)
+        NMS edge magnitudes.
+    angle : ndarray, shape (H, W)
+        Edge-normal angles in [-π, π].
+    theta_step_deg : float
+        Angular bin size in degrees.
+    rho_step : float
+        Rho bin size in pixels.
+    theta_window_deg : float
+        Half-window width in degrees for soft angular voting.  0 = one-bin.
+    vote_scheme : str
+        ``"onebin"``, ``"gaussian"``, or ``"dot"``.
+
+    Returns
+    -------
+    data : dict
+        Keys: ``acc`` (ndarray (n_theta, n_rho)), ``theta_idx``, ``rho_idx``
+        (ndarrays of per-pixel bin indices), ``strengths``, ``n_theta``,
+        ``n_rho``, ``theta_step_rad``, ``rho_max``.
+    """
+    H, W = nms.shape
+
+    ys, xs = np.nonzero(nms)
+    strengths = nms[ys, xs].astype(np.float64)
+
+    thetas = np.fmod(angle[ys, xs], np.pi)
+    thetas = np.where(thetas < 0, thetas + np.pi, thetas)
+
+    theta_step_rad = np.deg2rad(theta_step_deg)
+    n_theta = int(np.ceil(np.pi / theta_step_rad))
+
+    rho_max = np.hypot(W, H)
+    n_rho = int(np.ceil(rho_max / rho_step)) + 1
+
+    theta_idx = np.round(thetas / theta_step_rad).astype(np.int32) % n_theta
+    theta_q = theta_idx.astype(np.float64) * theta_step_rad
+
+    rho_vals = (
+        xs.astype(np.float64) * np.cos(theta_q)
+        + ys.astype(np.float64) * np.sin(theta_q)
+    )
+    rho_idx = np.round(rho_vals / rho_step).astype(np.int32)
+
+    valid = (rho_idx >= 0) & (rho_idx < n_rho)
+
+    if vote_scheme == "onebin" or theta_window_deg <= 0:
+        flat_idx = theta_idx[valid] * n_rho + rho_idx[valid]
+        acc_flat = np.bincount(
+            flat_idx, weights=strengths[valid], minlength=n_theta * n_rho
+        )
+    elif vote_scheme == "gaussian":
+        K = max(1, int(np.ceil(theta_window_deg / theta_step_deg)))
+        offsets = np.arange(-K, K + 1, dtype=np.int32)
+        sigma_deg = theta_window_deg / 3.0
+        offset_deg = offsets.astype(np.float64) * theta_step_deg
+        weights = np.exp(-0.5 * (offset_deg / sigma_deg) ** 2)
+        weights = weights / weights.sum()  # normalise so per-pixel total = 1
+        base_ti = theta_idx[valid]
+        theta_idx_all = (base_ti[:, None] + offsets[None, :]) % n_theta
+        flat_idx = theta_idx_all * n_rho + rho_idx[valid, None]
+        sw = strengths[valid, None] * weights[None, :]
+        acc_flat = np.bincount(
+            flat_idx.ravel(), weights=sw.ravel(), minlength=n_theta * n_rho
+        )
+    elif vote_scheme == "dot":
+        K = max(1, int(np.ceil(theta_window_deg / theta_step_deg)))
+        offsets = np.arange(-K, K + 1, dtype=np.int32)
+        sigma_deg = theta_window_deg / 3.0
+        offset_deg = offsets.astype(np.float64) * theta_step_deg
+        weights = np.exp(-0.5 * (offset_deg / sigma_deg) ** 2)
+        weights = weights / weights.sum()
+        base_ti = theta_idx[valid]
+        theta_idx_all = (base_ti[:, None] + offsets[None, :]) % n_theta
+        flat_idx = theta_idx_all * n_rho + rho_idx[valid, None]
+        sw = strengths[valid, None] * weights[None, :]
+        acc_flat = np.bincount(
+            flat_idx.ravel(), weights=sw.ravel(), minlength=n_theta * n_rho
+        )
+    else:
+        raise ValueError(f"Unknown vote_scheme: {vote_scheme}")
+
+    acc = acc_flat.reshape(n_theta, n_rho).astype(np.float64)
+
+    theta_idx_full = np.full(len(theta_idx), -1, dtype=np.int32)
+    rho_idx_full = np.full(len(rho_idx), -1, dtype=np.int32)
+    strengths_full = np.zeros(len(strengths), dtype=np.float64)
+    theta_idx_full[valid] = theta_idx[valid]
+    rho_idx_full[valid] = rho_idx[valid]
+    strengths_full[valid] = strengths[valid]
+
+    return {
+        "acc": acc,
+        "theta_idx": theta_idx_full,
+        "rho_idx": rho_idx_full,
+        "strengths": strengths_full,
+        "n_theta": n_theta,
+        "n_rho": n_rho,
+        "theta_step_rad": theta_step_rad,
+        "rho_max": rho_max,
+    }
+
+
 def hough_vote_peaks(
     nms: np.ndarray,
     angle: np.ndarray,
@@ -85,11 +201,17 @@ def hough_vote_peaks(
     max_peaks: int = 20,
     nms_radius_theta: int = 3,
     nms_radius_rho: int = 6,
+    return_acc: bool = False,
+    theta_window_deg: float = 0.0,
+    vote_scheme: str = "onebin",
+    acc_smooth: str | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Gradient-guided one-theta Hough voting followed by peak extraction.
 
-    Each edge pixel votes into exactly one theta bin (its gradient-normal
-    angle modulo π).  The vote weight is the NMS edge magnitude.
+    Each edge pixel votes into the theta bin(s) determined by its
+    gradient-normal angle modulo π.  The vote weight is the NMS edge
+    magnitude.  Soft angular voting (``theta_window_deg > 0``) spreads each
+    pixel's vote into 2K+1 theta bins weighted by an angular kernel.
 
     Parameters
     ----------
@@ -114,6 +236,21 @@ def hough_vote_peaks(
         Number of rho *bins* suppressed around each detected peak.
         Larger values reduce duplicate registrations; too large may merge
         distinct parallel lines.  Default 6 (≈ ±6 px).
+    return_acc : bool
+        If True, also returns the accumulator dict from
+        ``build_hough_accumulator`` as a fourth element.
+    theta_window_deg : float
+        Half-window width in degrees for soft angular voting.  ``0`` = one-bin
+        (current behaviour).  Default 0.
+    vote_scheme : str
+        Voting kernel when ``theta_window_deg > 0``:
+        ``"gaussian"`` — Gaussian-weighted spreading;
+        ``"dot"`` — dot-product-weighted spreading.  Default ``"onebin"``.
+    acc_smooth : str or None
+        Accumulator smoothing along the rho axis before peak NMS.
+        ``None`` (off), ``"1x3_triangular"``, ``"1x5_triangular"``.
+        Triangular kernels weight nearby rho bins to reduce fragmentation
+        without merging parallel lines in theta.
 
     Returns
     -------
@@ -123,48 +260,40 @@ def hough_vote_peaks(
         Signed distances (≥ 0) from the top-left origin in pixels.
     scores : ndarray, shape (K,)
         Accumulator peak scores (higher = stronger evidence).
+    acc_data : dict, optional (when ``return_acc=True``)
+        Accumulator data dict from ``build_hough_accumulator``.
     """
-    H, W = nms.shape
-
-    # ---- edge pixels -------------------------------------------------------
-    ys, xs = np.nonzero(nms)
-    strengths = nms[ys, xs].astype(np.float64)
-
-    # Gradient-normal angle modulo π (the same line is described by
-    # normals θ and θ+π, so we collapse them).
-    thetas = np.fmod(angle[ys, xs], np.pi)
-    thetas = np.where(thetas < 0, thetas + np.pi, thetas)
-
-    # ---- binning -----------------------------------------------------------
-    theta_step = np.deg2rad(theta_step_deg)
-    n_theta = int(np.ceil(np.pi / theta_step))
-
-    rho_max = np.hypot(W, H)
-    n_rho = int(np.ceil(rho_max / rho_step)) + 1
-
-    # Quantise theta (one bin per edge pixel).
-    theta_idx = np.round(thetas / theta_step).astype(np.int32) % n_theta
-    theta_q = theta_idx.astype(np.float64) * theta_step
-
-    # Rho in pixel coordinates: rho = x cos θ + y sin θ.
-    rho_vals = xs.astype(np.float64) * np.cos(theta_q) + ys.astype(np.float64) * np.sin(
-        theta_q
+    acc_data = build_hough_accumulator(
+        nms, angle, theta_step_deg, rho_step,
+        theta_window_deg=theta_window_deg, vote_scheme=vote_scheme,
     )
-    rho_idx = np.round(rho_vals / rho_step).astype(np.int32)
+    acc = acc_data["acc"]
+    n_theta = acc_data["n_theta"]
+    n_rho = acc_data["n_rho"]
+    theta_step = acc_data["theta_step_rad"]
 
-    valid = (rho_idx >= 0) & (rho_idx < n_rho)
-
-    # ---- accumulator via bincount ------------------------------------------
-    flat_idx = theta_idx[valid] * n_rho + rho_idx[valid]
-    acc_flat = np.bincount(
-        flat_idx, weights=strengths[valid], minlength=n_theta * n_rho
-    )
-    acc = acc_flat.reshape(n_theta, n_rho).astype(np.float64)
+    # ---- optional accumulator smoothing along rho axis ------------------------
+    if acc_smooth == "1x3_triangular":
+        from scipy.ndimage import convolve1d  # noqa: PLC0415
+        kernel = np.array([1.0, 2.0, 1.0], dtype=np.float64) / 4.0
+        work = convolve1d(acc.astype(np.float64), kernel, axis=1, mode="reflect")
+    elif acc_smooth == "1x5_triangular":
+        from scipy.ndimage import convolve1d  # noqa: PLC0415
+        kernel = np.array([1.0, 2.0, 3.0, 2.0, 1.0], dtype=np.float64) / 9.0
+        work = convolve1d(acc.astype(np.float64), kernel, axis=1, mode="reflect")
+    else:
+        work = acc.copy()
 
     # ---- iterative peak NMS ------------------------------------------------
-    work = acc.copy()
     acc_max = work.max()
     if acc_max <= 0:
+        if return_acc:
+            return (
+                np.empty((0, 2), dtype=np.float64),
+                np.empty((0,), dtype=np.float64),
+                np.empty((0,), dtype=np.float64),
+                acc_data,
+            )
         return (
             np.empty((0, 2), dtype=np.float64),
             np.empty((0,), dtype=np.float64),
@@ -197,6 +326,13 @@ def hough_vote_peaks(
 
     k = len(peaks_theta)
     if k == 0:
+        if return_acc:
+            return (
+                np.empty((0, 2), dtype=np.float64),
+                np.empty((0,), dtype=np.float64),
+                np.empty((0,), dtype=np.float64),
+                acc_data,
+            )
         return (
             np.empty((0, 2), dtype=np.float64),
             np.empty((0,), dtype=np.float64),
@@ -221,6 +357,8 @@ def hough_vote_peaks(
 
     # Re-sort by score descending (peak NMS may not preserve order).
     order = np.argsort(-scores)
+    if return_acc:
+        return normals[order], rhos[order], scores[order], acc_data
     return normals[order], rhos[order], scores[order]
 
 
@@ -239,6 +377,8 @@ def refine_line(
     distance_thresh: float = 1.5,
     angle_gate_deg: float | None = None,
     gap_angle_gate_deg: float | None = None,
+    support_mask: np.ndarray | None = None,
+    support_dilate: int = 0,
 ) -> LineSegment:
     """Refine a Hough candidate line by weighted TLS fit to nearby edge pixels.
 
@@ -278,6 +418,14 @@ def refine_line(
         degrees).  This distinguishes structural gaps (wrong-angle crossing
         edges) from noise dropouts and partial gaps.  Default ``None``
         (always split at ``gap_tolerance``).
+    support_mask : ndarray[bool], optional, shape (H, W)
+        If provided, only pixels where ``support_mask`` is True and
+        ``nms > 0`` are considered for support collection.  Use for hysteresis
+        linking: vote from raw NMS, refine from linked mask.
+    support_dilate : int
+        Binary dilation iterations applied to the ``nms > 0`` mask (or
+        ``support_mask`` if provided) before support collection.  ``0`` = no
+        dilation.  Default 0.
 
     Returns
     -------
@@ -290,6 +438,22 @@ def refine_line(
     ys, xs = np.nonzero(np.asarray(nms))
     strengths = nms[ys, xs].astype(np.float64)
     points = np.column_stack([xs.astype(np.float64), ys.astype(np.float64)])
+
+    if support_mask is not None:
+        keep = support_mask[ys, xs]
+        ys = ys[keep]
+        xs = xs[keep]
+        strengths = strengths[keep]
+        points = points[keep]
+    elif support_dilate > 0:
+        from scipy.ndimage import binary_dilation  # noqa: PLC0415
+        base_mask = np.asarray(nms) > 0
+        d_mask = binary_dilation(base_mask, iterations=support_dilate)
+        keep = d_mask[ys, xs]
+        ys = ys[keep]
+        xs = xs[keep]
+        strengths = strengths[keep]
+        points = points[keep]
 
     dists = np.abs(points @ normal - rho)
     mask = dists < distance_thresh

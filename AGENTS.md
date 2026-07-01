@@ -59,6 +59,10 @@ Every source file under `src/qr_reader/` and its role.
 | `debug_find_all_associations.py` | Targeted debug script for the `find_all_associations` high-version failure |
 | `debug_hough_failures.py` | Hough failure-mode diagnostics: accumulator reconstruction, vote-fragmentation analysis, peak-suppression simulation |
 
+**Notebook-style scripts** (diagnostic/visual scripts with `# %%` cells):
+use default matplotlib backend and `plt.show()` — never save images to disk.
+These are human-inspectable; the user opens them interactively.
+
 ### Tests (`tests/`)
 
 | Path | Purpose |

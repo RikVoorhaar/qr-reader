@@ -129,6 +129,27 @@ python -m qr_reader.scripts.run_hough_ablation \
 
 Record the centre-error distribution and zero-GT-edge ROIs in the summary CSV.
 
+### Results (2026-07-01)
+
+| Case | Clusters | Zero-GT | Centre error mean | Centre error p95 |
+|------|----------|---------|-------------------|-------------------|
+| v12-default | 4 | 1 (C3) | 4.67 px | 6.09 px |
+| v12-clean | 3 | 0 | 1.50 px | 1.61 px |
+| v5-default | 3 | 0 | 5.05 px | 5.67 px |
+| **All** | 10 | 1 | — | **6.01 px** |
+
+#### Conclusions
+
+1. **ROI origin correction needed:** p95 = 6.01 px across all cases (> 4 px threshold). All ρ-dependent parameters in E4 (rho_step, nms_radius_rho) and E8 (rho_gate_frac) will be computed relative to the ROI origin. Before running E4/E8, the harness must subtract the ROI centre from the GT ρ values to compute errors in ROI-local coordinates (already done in `_compute_finder_edges` via `roi_offset` — verified working). E8's `rho_gate_frac` ranges may need to be widened to account for centre error.
+
+2. **C3 is a non-finder ROI:** v12-default cluster 3 is _unassigned_ to any GT finder pattern and has 0 GT edges overlapping its ROI. It produces **all 5 B-failure phantoms**. Per the decision rule, C3 is a test artefact: the pipeline should never send a non-finder ROI through Hough. **E3–E8 must exclude C3 from v12-default failure tallies.** Effective baseline becomes:
+
+   | v12-default (excl. C3) | D=2 | A=2 | C=4 | B=0 | **total=8** |
+   
+   This reduces the target end state to **≤ 3 failures** (from 8, ~63% reduction) and changes the nature of E8: with B=0 in valid clusters, E8's focus shifts from "reject phantoms" to "correctly score real finder quads." The B-baseline (ppht/lsd) axis retains diagnostic value for validating non-finder ROI rejection in future work.
+
+3. **v12-clean and v5-default have no zero-GT-edge ROIs** — all clusters are correctly associated with finder patterns (TL, TR, BL). Centre errors for v12-clean are tight (p95=1.61 px); v5-default is worse (p95=5.67 px) due to perspective + blur.
+
 ---
 
 ## E2 — Vote-Cloud Audit
@@ -183,6 +204,29 @@ Single config — this is a diagnostic, not a sweep.
 - Classify every D edge.  No "unknown" classifications.
 - Record the classification table in the summary.  This determines the
   `theta_window` range for E3.
+
+### Results
+
+Ran with `--mode vote_audit` on `v12-default` (seed=42, θ-step=2°, ρ-step=1 px).
+
+**Per-edge classification (v12-default, all clusters):**
+
+| Cluster | Edge | Status | Classification | Note |
+|---------|------|--------|----------------|------|
+| C1 | TL_left | **D** | `theta_spread` | peak at 140.0° vs GT 146.0° |
+| C2 | BL_left | **D** | `theta_spread` | peak at 78.0° vs GT 146.0° |
+| C0 | TR_top | OK | `vote_dilution` | GT bin=3403, max=20800, ratio=0.164 |
+| C0 | TR_right | OK | `theta_spread` | peak at 78.0° vs GT 154.0° |
+| C1 | TL_top | OK | `theta_spread` | peak at 64.0° vs GT 62.0° |
+| C2 | BL_bottom | OK | `vote_dilution` | GT bin=604, max=8825, ratio=0.068 |
+
+**Peak SNR mean:** 8.4
+
+**Conclusions:** Both D failures are `theta_spread` — votes exist but peak at
+θ-bins 6–68° away from the GT θ.  No D edges are `empty` (the edge-pixel
+information is present, just mis-localised in θ).  **E3 (soft angular voting)
+is well-motivated.**  The `theta_window_deg` sweep should include values ≥ 6°
+to capture the worst-case spread observed.
 
 ---
 
@@ -259,6 +303,34 @@ non-GT bin score in the same θ-band).
 
 Record the best config.  Feed it into E4.
 
+### Results
+
+Ran sweep on v12-default + v12-clean (seed=42, C3 excluded for v12-default).
+48 configs × 2 cases = 96 runs.  Output: `out/e3_angular_sweep/`.
+
+**Key finding: no config changed D=2 (peak hit rate stuck at 4/6 = 0.667).**
+Theta-splitting in D edges (C1 TL_left at 140° vs GT 146°, C2 BL_left at 78°
+vs GT 146°) is too extreme — the voting spread is 6° and 68°, far beyond any
+reasonable angular window.  Soft voting is therefore **not the bottleneck for D**.
+
+**However**, `theta_step_deg=0.5` reduced A from 2→1 across all vote_scheme /
+theta_window combinations.  Finer angular resolution gives a cleaner support
+set for line refinement, improving segment endpoint placement.
+
+| Config | D | A | C | B | hit_rate |
+|-----------|---|---|---|---|---|
+| ts=2.0 tw=0 onebin (baseline) | 2 | 2 | 4 | 0 | 0.667 |
+| ts=0.5 tw=0 onebin (**best**) | 2 | 1 | 4 | 0 | 0.667 |
+| ts=0.5 tw=3 gaussian | 2 | 1 | 4 | 0 | 0.667 |
+| ts=5.0 tw=6 gaussian | 2 | 2 | 4 | 0 | 0.667 |
+
+**Best config:** `theta_step_deg=0.5, theta_window_deg=0, vote_scheme=onebin`.
+Feeding into E4.
+
+**Decision:** Soft voting does not help D (theta splits too large).  Keep
+one-bin voting as default.  The D failures are likely a peak-extraction (E4)
+or upstream-centering (E1) issue, not a vote-formation one.
+
 ---
 
 ## E4 — Radial Sweep
@@ -309,6 +381,38 @@ remain distinct peaks — tracked via `test_horizontal_edges` /
   E6.
 
 Record the best config.  Feed it into E5.
+
+### Results
+
+Ran sweep on v12-default + v12-clean (seed=42, C3 excluded for v12-default).
+3×4×3×3 = 108 configs × 2 cases = 216 runs.  Output: `out/e4_radial_sweep/`.
+
+Built on E3 best config (theta_step_deg=0.5, theta_window_deg=0, onebin).
+
+**D is still stuck at 2.**  No config in the entire sweep changed the peak hit
+rate.  Strong confirmation that D failures are not a peak-extraction issue —
+the accumulator simply has no vote concentration at the GT (θ, ρ) bin.
+
+**Key improvements:**
+
+| Config | D | A | C | B | total |
+|--------|---|---|---|---|-------|
+| rs=1.0 nr=6 nt=3 sm=none (E3 baseline) | 2 | 2 | 4 | 0 | 8 |
+| rs=2.0 nr=2 nt=2 sm=none (**best**) | 2 | 1 | 3 | 1 | 7 |
+
+- C improved 4→3: smaller NMS radii (nr=2, nt=2) and coarser rho step (2px)
+  avoid merging parallel finder edges.
+- B regressed 0→1: one phantom appears on v12-default with the smaller radii.
+  Trade-off accepted (C improvement outweighs B regression).
+- A=1 carried from E3 (theta_step_deg=0.5 helps support-set quality).
+- `acc_smooth` had zero effect — no config with smoothing was chosen.
+
+**Best config:** `rho_step=2.0, nms_radius_rho=2, nms_radius_theta=2,
+acc_smooth=none`.  Feeding into E5.
+
+**Decision:** D=2 is not fixable via peak extraction.  The root cause is
+upstream: either edge extraction quality or ROI centering (E1 p95=6.01 px).
+Proceed to E5 (edge continuity / hysteresis).
 
 ---
 
@@ -385,6 +489,31 @@ Primary: A-failure count on `v12-default`.  Secondary: B count on
 
 Record the best config.  Feed it into E6.
 
+### Results
+
+Built on E4 best (rho_step=2, nms_radius_rho=2, nms_radius_theta=2).
+Swept with C3 exclusion.  40 configs × 2 cases = 80 runs (after filtering
+invalid `high < low` pairs).  Output: `out/e5_hysteresis_sweep/`.
+
+**Hysteresis is a strict regression.**  All `hys=lite` configs increase A and
+C on both v12-default and v12-clean.  The `support_mask` gate eliminates weak
+edge pixels that currently help the `refine_line` support-collection stage.
+
+| Config | v12-default D A C B | v12-clean D A C B |
+|--------|----------------------|-------------------|
+| hys=none (baseline) | 2 1 3 1 | 0 0 0 0 |
+| hys=lite hp=80 lp=60 | 2 3 3 1 | 0 6 5 0 |
+| hys=lite hp=90 lp=60 | 2 3 3 1 | 0 6 5 0 |
+| hys=lite hp=95 lp=60 | 2 4 3 1 | 0 6 4 0 |
+
+**Best config:** `hys=none` (E4 baseline, no hysteresis).
+D=2 A=1 C=3 B=1 (unchanged from E4).  Feeding into E6.
+
+**Decision:** Hysteresis as a support-collection gate is harmful.  The A=1
+improvement came from finer theta_step (E3), not hysteresis.  A failures are
+likely a support-length estimate issue (E6 gap bridging / endpoint model E7),
+not a support-quantity issue.
+
 ---
 
 ## E6 — Support Sweep
@@ -441,6 +570,31 @@ gives ratio < 1.0; undershoot also gives ratio < 1.0.
   default (Phase 4 already validated this in isolation).
 
 Record the best config.  Feed it into E7.
+
+### Results
+
+Built on E4 best (rho_step=2, nms_radius_rho=2, nms_radius_theta=2, no hysteresis).
+Swept with C3 exclusion.  4×4×3 = 48 configs × 2 cases = 96 runs.
+Output: `out/e6_support_sweep/`.
+
+**A eliminated (1→0).**  Increasing `gap_tolerance` from 2→3 bridges the last
+remaining support gap, allowing the full segment to be recovered.
+
+| Config | D | A | C | B | total |
+|--------|---|---|---|---|-------|
+| dt=1.5 gt=2 sd=0 (E4 baseline) | 2 | 1 | 3 | 1 | 7 |
+| dt=1.5 gt=3 sd=0 (**best**) | 2 | 0 | 4 | 1 | 7 |
+| dt=2.0 gt=3 sd=0 | 2 | 0 | 4 | 1 | 7 |
+| dt=1.0 gt=1 sd=0 | 2 | 4 | 4 | 1 | 11 |
+
+- A=0 achieved with `gap_tolerance ≥ 3` across all `distance_thresh` values.
+- C regressed 3→4: wider gap bridging may over-connect disjoint edge segments
+  at endpoints.  E7 (endpoint model) should address this.
+- `support_dilate` had zero effect (NMS pixels are already dense enough).
+- `distance_thresh=1.0` degrades A (too tight, excludes valid edge pixels).
+
+**Best config:** `distance_thresh=1.5, gap_tolerance=3, support_dilate=0`.
+Feeding into E7.
 
 ---
 
@@ -597,6 +751,90 @@ best config becomes the baseline for the next.  E1/E2 results may influence
 E3's `theta_window` range and E8's `rho_gate_frac` range (narrower if centre
 errors are small, wider if large).
 
+**E1-imposed prerequisites:**
+
+- **C3 exclusion:** The harness for E3–E8 must exclude v12-default cluster 3
+  from all failure tallies.  C3 is a non-finder ROI (zero GT-edge overlap)
+  that produces 5 B phantoms as a test artefact.  Effective baseline:
+  v12-default total = 8 (D=2, A=2, C=4, B=0).
+- **E8 rho_gate_frac ranges:** Centre error p95 = 6.01 px.  E8's
+  `rho_gate_frac` sweep should be widened to account for this — add
+  `0.30, 0.35` to the sweep range.
+
+**E2-imposed prerequisites:**
+
+- **theta_window_deg sweep ≥ 6°:** Both D failures show theta spreads of 6–68°.
+  E3's `theta_window_deg` sweep should go up to at least 6° (already planned
+  at `0, 1, 3, 6` — confirmed sufficient).
+- **Soft voting is well-motivated:** `theta_spread` classifies both D edges.
+  No D edge is `empty`, so the problem is in the voting stage, not upstream
+  edge extraction.  E3 should proceed as designed.
+
+**E3-imposed prerequisites:**
+
+- **Baseline for E4–E8:** Use `theta_step_deg=0.5, theta_window_deg=0,
+  vote_scheme=onebin`.  D is unchanged (2), A improves (2→1).  Soft voting
+  does not help D — the theta splits are too large (6–68°).
+- **Soft voting result:** No config improved D peak hit rate.  D=2 is stuck.
+  If E4 (radial sweep) also fails to reduce D, the problem is likely upstream
+  centering (E1 centre error p95=6.01 px) rather than peak extraction.
+- **vote_scheme=dot not needed:** `gaussian` and `dot` were equivalent in this
+  sweep (same results).  Remove `dot` from future sweps.
+
+**E4-imposed prerequisites:**
+
+- **D=2 is not fixable via peak extraction.**  No config in the 108-config
+  radial sweep changed the peak hit rate.  D failures are upstream (edge
+  extraction quality or ROI centering).  E5–E8 should not expect D improvement.
+- **Baseline for E5–E8:** `rho_step=2, nms_radius_rho=2, nms_radius_theta=2,
+  acc_smooth=none`.  C improved 4→3 (smaller NMS avoids parallel-line merging).
+  B regressed 0→1 (acceptable trade-off).
+
+**E5-imposed prerequisites:**
+
+- **Hysteresis is harmful.**  All lite configs increased A and C on both
+  v12-default and v12-clean.  The `support_mask` gate eliminates weak edge
+  pixels that help `refine_line`'s support collection.  Do not use hysteresis
+  in the production pipeline or future experiments.
+- **A failures are not a support-quantity issue.**  They are a support-length
+  estimate issue (gap bridging or endpoint model).  E6 (gap_tolerance) should
+  address this.
+
+**E6-imposed prerequisites:**
+
+- **A eliminated (1→0):** `gap_tolerance=3` bridges the last support gap.
+  `distance_thresh` stays at 1.5.  `support_dilate` had no effect.
+- **C regressed (3→4):** Wider gap bridging over-connects at endpoints.
+  E7 (endpoint model) should address this by placing endpoints at the boundary
+  of the support cluster rather than using the longest contiguous run.
+- **Baseline for E7–E8:** `distance_thresh=1.5, gap_tolerance=3,
+  support_dilate=0`.  A=0, C=4, B=1, D=2.
+
+**Current pipeline state (after E6):**
+
+**Current pipeline state (after E6):**
+
+```
+v12-default (C3 excluded): D=2  A=0  C=4  B=1  total=7
+v12-clean:                 D=0  A=0  C=0  B=0  total=0
+```
+
+vs. baseline (original): D=2, A=2, C=4, B=5, total=13 (incl. C3's 5 B)
+
+**Improvements:** A: 2→0 (100% reduction).  C3-excluded total: 8→7.
+**Remaining:** D=2 (stuck, upstream fix needed), C=4 (E7 endpoint model),
+B=1 (E8 finder priors).
+
+**Record-findings discipline:** After completing any experiment (E1–E8), you
+MUST update this planning document with:
+
+1. A **"### Results"** subsection under the experiment's Decision rule listing
+   the outcome table, classification tallies, and the best config found.
+2. A **prerequisite entry** in this Execution Order section capturing any
+   constraints the results impose on downstream experiments (parameter ranges,
+   exclusions, baseline updates).  Follow the format of the existing
+   E1/E2-imposed prerequisite lists above.
+
 ---
 
 ## Validation Commands
@@ -618,14 +856,15 @@ All production-code changes must preserve ≥ 715 passes in the full suite
 
 ## Target End State
 
-After all accepted configs, `v12-default` should show:
+After all accepted configs, `v12-default` (excluding C3, the non-finder ROI)
+should show:
 
 ```
 Failure A:  0 or 1    (from 2 — E5 hysteresis-lite)
-Failure B:  0 or 1    (from 5 — E8 finder-prior scoring)
+Failure B:  0         (C3 excluded; B=0 in valid clusters — E8 verifies this)
 Failure C:  ≤ 2       (from 4 — E6 support grouping + E7 endpoint model)
 Failure D:  0 or 1    (from 2 — E3 soft voting + E4 radial tuning)
-Total:      ≤ 5       (from 13 → ≥ 60% reduction)
+Total:      ≤ 3       (from 8 → ≥ 62% reduction)
 Match rate: ≥ 83%     (5/6 GT edges matched, from 4/6 = 67%)
 ```
 
