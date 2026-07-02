@@ -15,33 +15,20 @@ import numpy as np
 
 from qr_reader.detector.alignment import find_alignment_patterns_2d
 from qr_reader.detector.clustering import cluster_candidates
-from qr_reader.detector.corner import angular_nms_top_radial_indices
+from qr_reader.detector.edges import extract_thin_edges
+from qr_reader.detector.finder_fit import FinderFit, fit_finder_full
 from qr_reader.detector.finder_pattern import (
-    Triplet,
-    extract_finder_patterns,
+    FinderPattern,
     find_all_associations,
     find_triplets,
 )
 from qr_reader.detector.homography import (
     compute_qr_corners,
-    ransac_homography,
+    project_points,
     refine_homography_lm,
 )
-from qr_reader.detector.landmarks import (
-    build_named_landmarks,
-    canonical_grid_landmarks,
-)
-from qr_reader.detector.region import (
-    boundary_connected_components_ndimage,
-    region_boundary_8,
-    region_fill_wave_front,
-)
+from qr_reader.detector.roi import cluster_to_bbox, cutout
 from qr_reader.detector.sample import sample_qr_bits
-from qr_reader.detector.version import (
-    build_constraints,
-    estimate_version,
-    filter_constraints,
-)
 from qr_reader.qr_gen import binarize_image
 
 
@@ -54,102 +41,190 @@ def _run_detection(image: np.ndarray) -> tuple[np.ndarray, int]:
     Raises ``ValueError`` if no QR code is detected.
     """
     img_gray = np.asarray(image)
+    h_img, w_img = img_gray.shape[:2]
     if img_gray.ndim == 3:
         import cv2
 
         img_gray = cv2.cvtColor(img_gray, cv2.COLOR_BGR2GRAY)
 
-    # 1. Binarize
     img_binary = binarize_image(img_gray)
 
-    # 2. Find alignment-pattern candidates
     max_error = np.log(1.3)
     rows_valid, cols_valid_all = find_alignment_patterns_2d(img_binary, max_error)
     if len(rows_valid) == 0:
         raise ValueError("No alignment patterns found")
 
-    # 3. Cluster candidates
     clusters = cluster_candidates(rows_valid, cols_valid_all)
 
-    # 4. Per-cluster corner finding
-    angular_distance_nms = 10 * 2 * np.pi / 360  # 10 degrees
-    all_corners: list[tuple[int, np.ndarray]] = []
-
+    # 4. Per-cluster finder fitting
+    fps: list[FinderPattern] = []
+    fit_map: dict[int, FinderFit] = {}
+    global_corners_xy: dict[int, np.ndarray] = {}
     for ci, cluster in enumerate(clusters):
-        seed_row = int(cluster.row)
-        seed_col = int((cluster.cols[0] + cluster.cols[1]) // 2)
+        bbox = cluster_to_bbox(cluster, scale=1.5)
+        r0_orig, r1_orig, c0_orig, c1_orig = bbox
+        roi = cutout(img_gray, bbox)
+        if roi.size == 0:
+            continue
 
-        region_mask = region_fill_wave_front(np.asarray(img_binary), seed_row, seed_col)
-        boundary = region_boundary_8(region_mask)
-        components = boundary_connected_components_ndimage(np.asarray(boundary))
+        r0 = max(0, r0_orig)
+        c0 = max(0, c0_orig)
 
-        for comp in components:
-            comp_arr = np.asarray(comp, dtype=np.float64)
-            if comp_arr.shape[0] < 4:
+        nms, angle = extract_thin_edges(roi, blur_sigma=1.0)
+        if nms.size == 0 or np.count_nonzero(nms) == 0:
+            continue
+
+        c_col = float(cluster.cols[2] + cluster.cols[3]) / 2.0 - c0
+        c_row = float(cluster.row) - r0
+        center_xy = np.array([c_col, c_row], dtype=np.float64)
+        m_est = float(cluster.cols[5] - cluster.cols[0]) / 7.0
+
+        fit = fit_finder_full(nms, angle, roi, center_xy, m_est)
+
+        corners_xy_global = fit.corners + np.array([c0, r0], dtype=np.float64)
+        corners_rc = corners_xy_global[:, ::-1]
+        fps.append(FinderPattern(cluster_idx=ci, outer_corners=corners_rc))
+        fit_map[ci] = fit
+        global_corners_xy[ci] = corners_xy_global
+
+    if not fps:
+        raise ValueError("No finder patterns fitted")
+
+    # Deduplicate overlapping finder candidates (nearby clusters from the
+    # same physical finder).  Within 6× the smaller segment length, keep
+    # only the higher-scoring candidate.
+    keep_mask = np.ones(len(fps), dtype=bool)
+    for i in range(len(fps)):
+        if not keep_mask[i]:
+            continue
+        ci = fps[i].outer_corners.mean(axis=0)
+        seg_i = float(np.linalg.norm(fps[i].outer_corners[0] - fps[i].outer_corners[1]))
+        for j in range(i + 1, len(fps)):
+            if not keep_mask[j]:
                 continue
-            centroid_i = comp_arr.mean(axis=0)
-            rd = np.linalg.norm(comp_arr - centroid_i, axis=1)
-            ang = np.arctan2(
-                comp_arr[:, 1] - centroid_i[1], comp_arr[:, 0] - centroid_i[0]
-            )
-            try:
-                idx = angular_nms_top_radial_indices(
-                    rd, ang, angular_nms_rad=angular_distance_nms, k=4
-                )
-            except ValueError:
-                continue
-            all_corners.append((ci, comp_arr[idx]))
+            cj = fps[j].outer_corners.mean(axis=0)
+            seg_j = float(np.linalg.norm(fps[j].outer_corners[0] - fps[j].outer_corners[1]))
+            if float(np.linalg.norm(ci - cj)) < 6.0 * min(seg_i, seg_j):
+                if fit_map[fps[i].cluster_idx].score >= fit_map[fps[j].cluster_idx].score:
+                    keep_mask[j] = False
+                else:
+                    keep_mask[i] = False
+                    break
+    fps = [fp for fp, keep in zip(fps, keep_mask) if keep]
 
-    if not all_corners:
-        raise ValueError("No corners detected")
+    if not fps:
+        raise ValueError("No finder patterns after deduplication")
 
-    # 5. Extract finder patterns
-    fps = extract_finder_patterns(all_corners)
-    associations = find_all_associations(fps)
-    triplets = find_triplets(fps, associations)
-
-    if not triplets:
+    # 5. Find associations and triplets
+    associations = find_all_associations(fps, offset_tol=1.20)
+    raw_triplets = find_triplets(fps, associations)
+    if not raw_triplets:
         raise ValueError("No finder-pattern triplet found")
 
-    raw_triplet = triplets[0]
-    # The lower-level triplet finder reasons in xy-style coordinates, while the
-    # landmark code represents image points as (row, col). Convert its labels
-    # back to row/col semantics before building landmarks.
-    triplet = Triplet(
-        top_left_idx=raw_triplet.top_left_idx,
-        top_right_idx=raw_triplet.bottom_left_idx,
-        bottom_left_idx=raw_triplet.top_right_idx,
-    )
-    landmarks = build_named_landmarks(triplet, fps)
+    raw = raw_triplets[0]
+    tl_idx = raw.top_left_idx
 
-    # 6. Version estimation
-    constraints = build_constraints(landmarks)
-    usable = filter_constraints(constraints, k=4, min_span=1.0)
-    V_best, _scores = estimate_version(usable)
-    N_best = 4 * V_best + 17
+    # Determine TR and BL from the associations: the finder sharing
+    # horizontal (segments [0,2]) edges with TL is TR; the one sharing
+    # vertical ([1,3]) edges is BL.
+    tr_idx = bl_idx = -1
+    for a in associations:
+        if tl_idx in (a.fp1_idx, a.fp2_idx):
+            other = a.fp2_idx if a.fp1_idx == tl_idx else a.fp1_idx
+            tl_segs = set(a.colinear_segments_1 if a.fp1_idx == tl_idx else a.colinear_segments_2)
+            if {0, 2} <= tl_segs:
+                tr_idx = other
+            elif {1, 3} <= tl_segs:
+                bl_idx = other
+    if tr_idx < 0 or bl_idx < 0:
+        raise ValueError("Could not determine TR / BL from associations")
 
-    # 7. Homography estimation
-    grid_lm = canonical_grid_landmarks(N_best)
-    image_lm = build_named_landmarks(triplet, fps)
+    fp_map = {fp.cluster_idx: fp for fp in fps}
+    rows = {idx: float(fp_map[idx].outer_corners.mean(axis=0)[0]) for idx in [tl_idx, tr_idx, bl_idx]}
+    cols = {idx: float(fp_map[idx].outer_corners.mean(axis=0)[1]) for idx in [tl_idx, tr_idx, bl_idx]}
 
-    def rc_to_xy(pts: np.ndarray) -> np.ndarray:
-        return pts[:, ::-1]
+    # 6. Version estimation via inter-finder distance / module pitch
+    center_tl_xy = np.array([cols[tl_idx], rows[tl_idx]], dtype=np.float64)
+    c_tr = np.array([cols[tr_idx], rows[tr_idx]], dtype=np.float64)
+    c_bl = np.array([cols[bl_idx], rows[bl_idx]], dtype=np.float64)
+    m_avg = (fit_map[tl_idx].m + fit_map[tr_idx].m + fit_map[bl_idx].m) / 3.0
+    dx = float(np.linalg.norm(c_tr - center_tl_xy))
+    dy = float(np.linalg.norm(c_bl - center_tl_xy))
+    N_est = int(round((dx + dy) / (2.0 * m_avg) + 7))
 
-    src_xy = []
-    dst_xy = []
-    for attr in ("A", "B", "C", "D", "E", "F"):
-        g = getattr(grid_lm, attr)
-        i = getattr(image_lm, attr)
-        if g is not None and i is not None:
-            src_xy.append(rc_to_xy(g))
-            dst_xy.append(rc_to_xy(i))
-    src_xy = np.vstack(src_xy)
-    dst_xy = np.vstack(dst_xy)
+    # 7. Similarity initialised from 3 centres, then LM-refined on
+    #    12 corners (lets the anisotropic scale emerge while keeping
+    #    perspective parameters small).  Try N ∈ [N_est-2, N_est+2].
+    grid_offsets = np.array([[0, 0], [7, 0], [7, 7], [0, 7]], dtype=np.float64)
+    tl_c = global_corners_xy[tl_idx]
+    tr_c = global_corners_xy[tr_idx]
+    bl_c = global_corners_xy[bl_idx]
 
-    H_ransac, _inliers = ransac_homography(src_xy, dst_xy, threshold=3.0, iters=2000)
-    H_refined = refine_homography_lm(H_ransac, src_xy, dst_xy, loss="linear")
+    best_err = np.inf
+    best_H: np.ndarray | None = None
+    best_N = N_est
 
-    return H_refined, V_best
+    for N_cand in range(max(17, N_est - 2), min(177, N_est + 3)):
+        grid_centres = np.array(
+            [[3.5, 3.5], [N_cand - 3.5, 3.5], [3.5, N_cand - 3.5]],
+            dtype=np.float64,
+        )
+        img_centres = np.array(
+            [tl_c.mean(axis=0), tr_c.mean(axis=0), bl_c.mean(axis=0)],
+            dtype=np.float64,
+        )
+        gc = grid_centres.mean(axis=0)
+        ic = img_centres.mean(axis=0)
+        dg = grid_centres - gc
+        di = img_centres - ic
+        M = dg.T @ di
+        U, _, Vt = np.linalg.svd(M)
+        R = U @ Vt
+        if np.linalg.det(R) < 0:
+            R[:, -1] *= -1
+        m_scale = np.sum(di * (dg @ R.T)) / (np.sum(dg * dg) + 1e-12)
+
+        H_init = np.eye(3)
+        A_sim = m_scale * R
+        H_init[0, :2] = A_sim[0]
+        H_init[1, :2] = A_sim[1]
+        H_init[0, 2] = ic[0] - A_sim[0] @ gc
+        H_init[1, 2] = ic[1] - A_sim[1] @ gc
+
+        src_xy: list[list[float]] = []
+        dst_xy: list[list[float]] = []
+        for corners, origin in [
+            (tl_c, (0, 0)),
+            (tr_c, (N_cand - 7, 0)),
+            (bl_c, (0, N_cand - 7)),
+        ]:
+            for i in range(4):
+                src_xy.append([origin[0] + grid_offsets[i, 0], origin[1] + grid_offsets[i, 1]])
+                dst_xy.append(corners[i].tolist())
+        src_arr = np.array(src_xy, dtype=np.float64)
+        dst_arr = np.array(dst_xy, dtype=np.float64)
+
+        try:
+            H = refine_homography_lm(H_init, src_arr, dst_arr, loss="soft_l1")
+        except Exception:
+            H = H_init
+
+        proj = project_points(H, src_arr)
+        err = float(np.mean(np.linalg.norm(proj - dst_arr, axis=1)))
+
+        if err < best_err:
+            best_err = err
+            best_H = H
+            best_N = N_cand
+
+    if best_H is None:
+        raise ValueError("Homography estimation failed")
+
+    V_best = (best_N - 17) // 4
+    if V_best < 1 or V_best > 40:
+        raise ValueError(f"Implausible version {V_best}")
+
+    return best_H, V_best
 
 
 def detect_corners(image: np.ndarray) -> tuple[np.ndarray, int]:

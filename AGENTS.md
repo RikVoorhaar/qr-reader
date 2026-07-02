@@ -35,6 +35,7 @@ Every source file under `src/qr_reader/` and its role.
 | `roi.py` | Compute padded bounding box from `CandidateCluster`, extract clamped sub-image cutout | `clustering.py` |
 | `edges.py` | Thin edge extraction: Gaussian blur → Sobel → L2 magnitude → interpolated NMS → (magnitude, angle) | `scipy` |
 | `hough.py` | Gradient-guided Hough line detection: one-theta voting → peak extraction → weighted-TLS refinement → `LineSegment` | `edges.py` |
+| `hough_benchmark.py` | Standalone benchmark: generate images → ROIs → Hough → per-edge TP/FN/FP with 1-D IoU overlap quality, per-finder/side/k breakdown, Hough-accumulator visualization | All detector modules, `synth.pipeline.generate_sample` |
 
 ### Decoder (`decoder/`)
 
