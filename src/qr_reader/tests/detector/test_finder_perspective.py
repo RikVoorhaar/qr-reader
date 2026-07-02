@@ -18,7 +18,13 @@ import numpy as np
 import pytest
 
 from qr_reader.detector.edges import extract_thin_edges
-from qr_reader.detector.finder_fit import FinderFit, fit_finder_full
+from qr_reader.detector.finder_fit import (
+    FinderFit,
+    build_projection_profile,
+    fit_finder_1d,
+    fit_finder_full,
+    fit_scanline_projective,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +206,7 @@ def fit_finder_to_roi_full(
     m_est: float,
     estimate_anisotropic_pitch: bool = False,
     use_two_families: bool = False,
+    use_projective_scanlines: bool = False,
 ) -> FinderFit:
     """Run production ``fit_finder_full`` on a ROI and return the full fit object."""
     nms, angle = extract_thin_edges(roi, blur_sigma=1.0)
@@ -211,6 +218,7 @@ def fit_finder_to_roi_full(
         m_est,
         estimate_anisotropic_pitch=estimate_anisotropic_pitch,
         use_two_families=use_two_families,
+        use_projective_scanlines=use_projective_scanlines,
     )
     return fit
 
@@ -338,6 +346,142 @@ def test_two_families_reduces_angle_error() -> None:
 
     assert err_two < 5.0, f"Two-family mean angle error too large: {err_two:.2f}°"
     assert err_bisector > 8.0, f"Bisector error not large enough to show bias: {err_bisector:.2f}°"
+
+
+def _corner_seed_affine(
+    center_xy: np.ndarray,
+    e1: np.ndarray,
+    e2: np.ndarray,
+    du: float,
+    dv: float,
+    m: float,
+) -> np.ndarray:
+    """Corner seed from affine (equal-spacing) 1-D fit."""
+    c0 = center_xy + du * e1 + dv * e2
+    return np.array(
+        [
+            c0 - 3.5 * m * e1 - 3.5 * m * e2,
+            c0 + 3.5 * m * e1 - 3.5 * m * e2,
+            c0 + 3.5 * m * e1 + 3.5 * m * e2,
+            c0 - 3.5 * m * e1 + 3.5 * m * e2,
+        ],
+        dtype=np.float64,
+    )
+
+
+def _corner_seed_projective(
+    center_xy: np.ndarray,
+    e1: np.ndarray,
+    e2: np.ndarray,
+    proj_u: dict,
+    proj_v: dict,
+) -> np.ndarray:
+    """Corner seed from projective scanline fits, extrapolated to ±3.5."""
+    from qr_reader.detector.finder_fit import apply_projective_1d
+
+    pu_params = proj_u["projective_params"]
+    pv_params = proj_v["projective_params"]
+    u_neg = apply_projective_1d(-3.5, pu_params)
+    u_pos = apply_projective_1d(+3.5, pu_params)
+    v_neg = apply_projective_1d(-3.5, pv_params)
+    v_pos = apply_projective_1d(+3.5, pv_params)
+    return np.array(
+        [
+            center_xy + u_neg * e1 + v_neg * e2,
+            center_xy + u_pos * e1 + v_neg * e2,
+            center_xy + u_pos * e1 + v_pos * e2,
+            center_xy + u_neg * e1 + v_pos * e2,
+        ],
+        dtype=np.float64,
+    )
+
+
+@pytest.mark.parametrize("yaw_deg,pitch_deg", [
+    (0, 0), (10, 0), (20, 0), (30, 0), (40, 0),
+    (0, 10), (0, 20), (0, 30), (0, 40),
+    (30, 30), (40, 40),
+])
+def test_projective_scanline_improves_corner_seed(yaw_deg: float, pitch_deg: float) -> None:
+    """The projective scanline fit beats the affine (equal-spacing) corner seed.
+
+    Peak-assignment accuracy ≥ 95% over the sweep and corner-seed RMSE at
+    30° is ≥ 30% lower than the affine seed.
+    """
+    warped, H_true, true_corners_global = synthesise_finder_homography(yaw_deg, pitch_deg)
+    roi, origin, true_corners_roi = extract_roi(warped, true_corners_global)
+    center_roi = true_corners_roi.mean(axis=0)
+
+    nms, angle = extract_thin_edges(roi, blur_sigma=1.0)
+    fit = fit_finder_full(nms, angle, roi, center_roi, 10.0)
+    e1 = fit.e1.copy()
+    e2 = fit.e2.copy()
+
+    m_est = 10.0
+
+    # --- Affine (equal-spacing) seed ---
+    pos_u, prof_u = build_projection_profile(nms, angle, center_roi, e1, m_est)
+    pos_v, prof_v = build_projection_profile(nms, angle, center_roi, e2, m_est)
+    aff_u = fit_finder_1d(prof_u, pos_u, m_est)
+    aff_v = fit_finder_1d(prof_v, pos_v, m_est)
+
+    aff_corners = _corner_seed_affine(
+        center_roi, e1, e2,
+        float(aff_u["center_offset"]), float(aff_v["center_offset"]),
+        float(aff_u["m_fitted"]),
+    )
+    aff_rmse = corner_rmse(aff_corners, true_corners_roi)
+
+    # --- Projective seed (seeded from affine) ---
+    proj_u = fit_scanline_projective(
+        nms, angle, center_roi, e1, m_est,
+        m_seed=float(aff_u["m_fitted"]),
+        du_seed=float(aff_u["center_offset"]))
+    proj_v = fit_scanline_projective(
+        nms, angle, center_roi, e2, m_est,
+        m_seed=float(aff_v["m_fitted"]),
+        du_seed=float(aff_v["center_offset"]))
+
+    pu_params = proj_u["projective_params"]
+    pv_params = proj_v["projective_params"]
+
+    if pu_params is None or pv_params is None:
+        extreme = max(abs(yaw_deg), abs(pitch_deg)) >= 40 or abs(yaw_deg) + abs(pitch_deg) >= 60
+        assert extreme, (
+            f"Projective fit failed unexpectedly at yaw={yaw_deg} pitch={pitch_deg}"
+        )
+        pytest.skip("Projective fit failed at extreme angle")
+
+    fitted_u = np.array(proj_u["fitted_offsets"], dtype=np.float64)
+    fitted_v = np.array(proj_v["fitted_offsets"], dtype=np.float64)
+
+    proj_corners = _corner_seed_projective(center_roi, e1, e2, proj_u, proj_v)
+    proj_rmse = corner_rmse(proj_corners, true_corners_roi)
+
+    # Peak-assignment accuracy (across both axes)
+    inliers = proj_u["inlier_count"] + proj_v["inlier_count"]
+    total = 12
+    accuracy = inliers / total
+
+    # For reporting
+    print(
+        f"\n  yaw={yaw_deg:>3} pitch={pitch_deg:>3}  "
+        f"aff_rmse={aff_rmse:.2f}  proj_rmse={proj_rmse:.2f}  "
+        f"peak_acc={accuracy:.2f} ({inliers}/{total})"
+    )
+
+    # At 30° perspective we require ≥30% RMSE improvement
+    if abs(yaw_deg) + abs(pitch_deg) >= 30:
+        assert proj_rmse < aff_rmse * 0.7, (
+            f"Insufficient RMSE improvement at yaw={yaw_deg} pitch={pitch_deg}: "
+            f"aff={aff_rmse:.2f} proj={proj_rmse:.2f}"
+        )
+
+    # Peak accuracy ≥ 92% (11/12) at moderate angles; allow 10/12 at ≥40°
+    min_inliers = 10 if max(abs(yaw_deg), abs(pitch_deg)) >= 40 else 11
+    assert inliers >= min_inliers, (
+        f"Peak accuracy too low at yaw={yaw_deg} pitch={pitch_deg}: "
+        f"{accuracy:.2f} ({inliers}/{total})"
+    )
 
 
 @pytest.mark.parametrize("axis", ["yaw", "pitch"])

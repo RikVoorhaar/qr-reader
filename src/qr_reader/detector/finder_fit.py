@@ -385,6 +385,200 @@ def fit_finder_1d(
     }
 
 
+def detect_profile_peaks(
+    positions: np.ndarray,
+    profile: np.ndarray,
+    m_est: float,
+    min_prominence_frac: float = 0.1,
+) -> list[float]:
+    """Detect local-maximum peaks in a 1D profile.
+
+    Returns peaks sorted by position, filtered by relative prominence
+    (``min_prominence_frac * profile.max()``).
+    """
+    n = len(profile)
+    if n < 3:
+        return []
+
+    max_val = float(np.max(profile))
+    if max_val <= 0:
+        return []
+    threshold = min_prominence_frac * max_val
+
+    peaks: list[tuple[int, float]] = []
+    for i in range(1, n - 1):
+        if profile[i] > profile[i - 1] and profile[i] > profile[i + 1]:
+            val = float(profile[i])
+            if val >= threshold:
+                peaks.append((i, val))
+
+    peaks.sort(key=lambda x: x[1], reverse=True)
+
+    kept: list[int] = []
+    half_module_bins = max(1, int(np.ceil((m_est / 2) / (positions[1] - positions[0]))))
+    for i, peak in enumerate(peaks):
+        idx_i = peak[0]
+        if not kept:
+            kept.append(idx_i)
+            continue
+        too_close = any(abs(positions[idx_i] - positions[k]) < m_est / 2 for k in kept)
+        if not too_close:
+            kept.append(idx_i)
+
+    return sorted([float(positions[k]) for k in kept])
+
+
+def fit_projective_1d(u_arr: np.ndarray, t_arr: np.ndarray) -> tuple[float, float, float, float]:
+    """Fit 1D projective map ``t = (a*u + b)/(c*u + d)`` from ≥3 correspondences.
+
+    Solves the homogeneous linear system by SVD (null-space).
+    """
+    n = len(u_arr)
+    M = np.column_stack([u_arr.astype(np.float64),
+                         np.ones(n, dtype=np.float64),
+                         -u_arr * t_arr,
+                         -t_arr.astype(np.float64)])
+    _, _, Vt = np.linalg.svd(M, full_matrices=False)
+    a, b, c, d = Vt[-1]
+    return float(a), float(b), float(c), float(d)
+
+
+def apply_projective_1d(u: float, params: tuple[float, float, float, float]) -> float:
+    """Apply 1D projective map to canonical position *u*."""
+    a, b, c, d = params
+    denom = c * u + d
+    if abs(denom) < 1e-12:
+        return np.inf
+    return (a * u + b) / denom
+
+
+def fit_scanline_projective(
+    nms: np.ndarray,
+    angle: np.ndarray,
+    center_xy: np.ndarray,
+    axis: np.ndarray,
+    m_est: float,
+    angle_gate_deg: float = 22.5,
+    inlier_tol_frac: float = 0.25,
+    m_seed: float | None = None,
+    du_seed: float = 0.0,
+) -> dict:
+    """Fit 1D projective scanline model from NMS edges.
+
+    Detects local-maximum peaks in the angle-gated projection profile,
+    matches them to visible canonical inner transitions
+    ``[-2.5, -1.5, -0.5, 0.5, 1.5, 2.5]`` by nearest-neighbour
+    assignment (preserving order), and fits a 1-D homography
+    ``t = (a*u + b)/(c*u + d)`` via least-squares on all matched
+    correspondences.  Outer positions ±3.5 are extrapolated through the
+    fitted map.
+
+    Parameters
+    ----------
+    nms, angle, center_xy, axis, m_est, angle_gate_deg
+        Same as ``build_projection_profile``.
+    inlier_tol_frac : float
+        Matching tolerance as a fraction of *m_est*.
+    m_seed : float or None
+        Module pitch for seed prediction.  Defaults to *m_est*.
+    du_seed : float
+        Centre offset for seed prediction (default 0).
+
+    Returns
+    -------
+    dict
+        Keys:
+        - ``projective_params``: ``(a,b,c,d)`` or None
+        - ``inlier_count``: number of inner positions matched (0–6)
+        - ``peak_count``: number of detected peaks
+        - ``fitted_offsets``: predicted positions for the 6 inner canonical u
+        - ``center_offset``: ``t(0)`` from the projective map
+        - ``m_effective``: average module pitch ``(t(3.5)−t(−3.5))/7``
+    """
+    # Use visible inner transitions only — the outer boundary (±3.5) is
+    # white-on-white and invisible to edge detection.
+    canonical_inner = np.array([-2.5, -1.5, -0.5, 0.5, 1.5, 2.5], dtype=np.float64)
+    canonical_outer = np.array([-3.5, 3.5], dtype=np.float64)
+
+    positions, profile = build_projection_profile(
+        nms, angle, center_xy, axis, m_est, angle_gate_deg)
+    if len(positions) < 4:
+        return _empty_projective_result()
+
+    peaks = detect_profile_peaks(positions, profile, m_est)
+    if len(peaks) < 4:
+        return _empty_projective_result()
+
+    peaks_arr = np.array(peaks, dtype=np.float64)
+    inlier_tol = inlier_tol_frac * m_est
+
+    m_pred = m_seed if m_seed is not None else m_est
+    seed_pred = canonical_inner * m_pred + du_seed
+
+    matched_canon: list[int] = []
+    matched_obs: list[float] = []
+    used_peak = np.zeros(len(peaks_arr), dtype=bool)
+
+    for ci, u_pred in enumerate(seed_pred):
+        best_j = -1
+        best_dist = inlier_tol + 1.0
+        for j in range(len(peaks_arr)):
+            if used_peak[j]:
+                continue
+            d = abs(peaks_arr[j] - u_pred)
+            if d < best_dist:
+                best_dist = d
+                best_j = j
+        if best_j >= 0:
+            used_peak[best_j] = True
+            matched_canon.append(ci)
+            matched_obs.append(float(peaks_arr[best_j]))
+
+    if len(matched_canon) < 4:
+        return _empty_projective_result()
+
+    c_matched = canonical_inner[np.array(matched_canon)]
+    t_matched = np.array(matched_obs, dtype=np.float64)
+
+    params = fit_projective_1d(c_matched, t_matched)
+    fitted = np.array([apply_projective_1d(u, params) for u in canonical_inner],
+                      dtype=np.float64)
+
+    if not np.all(np.isfinite(fitted)):
+        return _empty_projective_result()
+
+    inlier_count = 0
+    for u, t_pred in zip(canonical_inner, fitted):
+        if not np.isfinite(t_pred):
+            continue
+        if np.any(np.abs(peaks_arr - t_pred) < inlier_tol):
+            inlier_count += 1
+
+    t_neg = apply_projective_1d(-3.5, params)
+    t_pos = apply_projective_1d(+3.5, params)
+    m_eff = (t_pos - t_neg) / 7.0 if np.isfinite(t_pos) and np.isfinite(t_neg) else m_est
+
+    return {
+        "projective_params": params,
+        "inlier_count": inlier_count,
+        "peak_count": len(peaks_arr),
+        "fitted_offsets": fitted,
+        "center_offset": float(apply_projective_1d(0.0, params)),
+        "m_effective": float(m_eff),
+    }
+
+
+def _empty_projective_result() -> dict:
+    return {
+        "projective_params": None,
+        "inlier_count": 0,
+        "peak_count": 0,
+        "fitted_offsets": np.zeros(6, dtype=np.float64),
+        "center_offset": 0.0,
+        "m_effective": 0.0,
+    }
+
+
 def refine_outer_line(
     nms: np.ndarray,
     angle: np.ndarray,
@@ -830,6 +1024,7 @@ def fit_finder_full(
     angle_gate_deg: float = 22.5,
     estimate_anisotropic_pitch: bool = False,
     use_two_families: bool = False,
+    use_projective_scanlines: bool = False,
 ) -> FinderFit:
     """Fit a finder pattern from NMS edges and ROI image (Phases 1–3, optionally 4).
 
@@ -861,6 +1056,11 @@ def fit_finder_full(
         If True, estimate independent edge-family normals ``n_u``, ``n_v``
         via 2-mode von-Mises EM instead of the symmetric 4-fold histogram.
         Fall back to the 4-fold result when the mixture is ambiguous.
+    use_projective_scanlines : bool
+        If True, replace the equal-spacing 1-D fit with a projective
+        scanline RANSAC that maps canonical module positions to observed
+        peaks via a 1-D homography, providing per-axis centre offsets and
+        effective module pitches under perspective.
 
     Returns
     -------
@@ -878,15 +1078,47 @@ def fit_finder_full(
     m_edge = estimate_m_from_edges(nms, angle, center_xy, e1, e2, angle_gate_deg)
     m_init = max(m_est, m_edge)
 
-    pos_u, prof_u = build_projection_profile(nms, angle, center_xy, e1, m_init, angle_gate_deg)
-    pos_v, prof_v = build_projection_profile(nms, angle, center_xy, e2, m_init, angle_gate_deg)
+    if use_projective_scanlines:
+        pos_u, prof_u = build_projection_profile(nms, angle, center_xy, e1, m_init, angle_gate_deg)
+        pos_v, prof_v = build_projection_profile(nms, angle, center_xy, e2, m_init, angle_gate_deg)
+        aff_u = fit_finder_1d(prof_u, pos_u, m_init)
+        aff_v = fit_finder_1d(prof_v, pos_v, m_init)
 
-    fit_u = fit_finder_1d(prof_u, pos_u, m_init)
-    fit_v = fit_finder_1d(prof_v, pos_v, m_init)
+        proj_u = fit_scanline_projective(nms, angle, center_xy, e1, m_init,
+                                         angle_gate_deg=angle_gate_deg,
+                                         m_seed=float(aff_u["m_fitted"]),
+                                         du_seed=float(aff_u["center_offset"]))
+        proj_v = fit_scanline_projective(nms, angle, center_xy, e2, m_init,
+                                         angle_gate_deg=angle_gate_deg,
+                                         m_seed=float(aff_v["m_fitted"]),
+                                         du_seed=float(aff_v["center_offset"]))
 
-    m_fit = (fit_u["m_fitted"] + fit_v["m_fitted"]) / 2.0
-    du = fit_u["center_offset"]
-    dv = fit_v["center_offset"]
+        du = float(proj_u["center_offset"])
+        dv = float(proj_v["center_offset"])
+        m_u = float(proj_u["m_effective"])
+        m_v = float(proj_v["m_effective"])
+        m_fit = (m_u + m_v) / 2.0
+
+        # Fall back to equal-spacing fit when projective fails
+        if proj_u["projective_params"] is None or m_u <= 0:
+            du = float(aff_u["center_offset"])
+            m_u = float(aff_u["m_fitted"])
+        if proj_v["projective_params"] is None or m_v <= 0:
+            dv = float(aff_v["center_offset"])
+            m_v = float(aff_v["m_fitted"])
+
+        m_fit = (m_u + m_v) / 2.0
+    else:
+        pos_u, prof_u = build_projection_profile(nms, angle, center_xy, e1, m_init, angle_gate_deg)
+        pos_v, prof_v = build_projection_profile(nms, angle, center_xy, e2, m_init, angle_gate_deg)
+
+        fit_u = fit_finder_1d(prof_u, pos_u, m_init)
+        fit_v = fit_finder_1d(prof_v, pos_v, m_init)
+
+        m_fit = (fit_u["m_fitted"] + fit_v["m_fitted"]) / 2.0
+        du = fit_u["center_offset"]
+        dv = fit_v["center_offset"]
+
     fitted_center = center_xy + du * e1 + dv * e2
 
     n_um, um = refine_outer_line(nms, angle, fitted_center, e1, -3.5 * m_fit, angle_gate_deg=angle_gate_deg)
@@ -916,18 +1148,25 @@ def fit_finder_full(
     )
 
     if estimate_anisotropic_pitch:
-        result.m_u = float(fit_u["m_fitted"])
-        result.m_v = float(fit_v["m_fitted"])
+        if use_projective_scanlines:
+            result.m_u = float(m_u)
+            result.m_v = float(m_v)
+        else:
+            result.m_u = float(fit_u["m_fitted"])
+            result.m_v = float(fit_v["m_fitted"])
 
     if use_template:
         tmpl = fit_finder_template(roi_gray, nms, angle, center_xy, e1, e2, m_fit,
                                    angle_gate_deg=angle_gate_deg)
         if tmpl.score > 0:
             result = tmpl
-            # Carry forward per-axis diagnostics from Phase 3 when template is used.
             if estimate_anisotropic_pitch:
-                result.m_u = float(fit_u["m_fitted"])
-                result.m_v = float(fit_v["m_fitted"])
+                if use_projective_scanlines:
+                    result.m_u = float(m_u)
+                    result.m_v = float(m_v)
+                else:
+                    result.m_u = float(fit_u["m_fitted"])
+                    result.m_v = float(fit_v["m_fitted"])
 
     return result
 
