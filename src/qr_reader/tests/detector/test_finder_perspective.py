@@ -21,9 +21,11 @@ from qr_reader.detector.edges import extract_thin_edges
 from qr_reader.detector.finder_fit import (
     FinderFit,
     build_projection_profile,
+    corners_from_finder_homography,
     fit_finder_1d,
     fit_finder_full,
     fit_scanline_projective,
+    refine_finder_homography,
 )
 
 
@@ -207,6 +209,7 @@ def fit_finder_to_roi_full(
     estimate_anisotropic_pitch: bool = False,
     use_two_families: bool = False,
     use_projective_scanlines: bool = False,
+    use_finder_homography: bool = False,
 ) -> FinderFit:
     """Run production ``fit_finder_full`` on a ROI and return the full fit object."""
     nms, angle = extract_thin_edges(roi, blur_sigma=1.0)
@@ -219,6 +222,7 @@ def fit_finder_to_roi_full(
         estimate_anisotropic_pitch=estimate_anisotropic_pitch,
         use_two_families=use_two_families,
         use_projective_scanlines=use_projective_scanlines,
+        use_finder_homography=use_finder_homography,
     )
     return fit
 
@@ -482,6 +486,83 @@ def test_projective_scanline_improves_corner_seed(yaw_deg: float, pitch_deg: flo
         f"Peak accuracy too low at yaw={yaw_deg} pitch={pitch_deg}: "
         f"{accuracy:.2f} ({inliers}/{total})"
     )
+
+
+@pytest.mark.parametrize("yaw_deg,pitch_deg", [
+    (0, 0), (10, 0), (20, 0), (30, 0),
+    (0, 10), (0, 20), (0, 30),
+    (30, 30),
+])
+def test_finder_homography_reduces_rmse(yaw_deg: float, pitch_deg: float) -> None:
+    """The LM-refined homography beats _corners_from_rho on perspective."""
+    warped, H_true, true_corners_global = synthesise_finder_homography(yaw_deg, pitch_deg)
+    roi, origin, true_corners_roi = extract_roi(warped, true_corners_global)
+    center_roi = true_corners_roi.mean(axis=0)
+
+    rho_corners = fit_finder_to_roi(roi, center_roi, 10.0)
+    rho_rmse = corner_rmse(rho_corners, true_corners_roi)
+
+    fit_h = fit_finder_to_roi_full(roi, center_roi, 10.0, use_finder_homography=True)
+    h_rmse = corner_rmse(fit_h.corners, true_corners_roi)
+
+    print(f"\n  yaw={yaw_deg:>3} pitch={pitch_deg:>3}  "
+          f"rho_rmse={rho_rmse:.2f}  homog_rmse={h_rmse:.2f}")
+
+    if abs(yaw_deg) + abs(pitch_deg) >= 30:
+        assert h_rmse < 25.0, f"Homography RMSE too high: {h_rmse:.2f} px"
+        assert h_rmse <= rho_rmse * 1.05, (
+            f"Homography not better than rho: {h_rmse:.2f} vs {rho_rmse:.2f}"
+        )
+
+
+def test_homography_convergence_basin() -> None:
+    """The LM refinement converges from perturbed initialisers."""
+    warped, H_true, true_corners_global = synthesise_finder_homography(20, 20)
+    roi, origin, true_corners_roi = extract_roi(warped, true_corners_global)
+    center_roi = true_corners_roi.mean(axis=0)
+    nms, angle = extract_thin_edges(roi, blur_sigma=1.0)
+
+    fit = fit_finder_full(nms, angle, roi, center_roi, 10.0)
+    fc = fit.center
+    e1 = fit.e1
+    e2 = fit.e2
+    m = float(fit.m)
+
+    def make_H(dx=0.0, dy=0.0, dtheta=0.0, scale=1.0):
+        c, s = np.cos(dtheta), np.sin(dtheta)
+        e1r = e1 * c - e2 * s
+        e2r = e1 * s + e2 * c
+        H = np.eye(3)
+        ms = m * scale
+        H[0, 0] = ms * float(e1r[0])
+        H[0, 1] = ms * float(e2r[0])
+        H[0, 2] = float(fc[0]) + dx
+        H[1, 0] = ms * float(e1r[1])
+        H[1, 1] = ms * float(e2r[1])
+        H[1, 2] = float(fc[1]) + dy
+        return H
+
+    H_nom = make_H()
+    rmse_nom = corner_rmse(corners_from_finder_homography(H_nom), true_corners_roi)
+
+    converged = 0
+    total = 0
+    for dx in [-5, 0, 5]:
+        for dy in [-5, 0, 5]:
+            for dtheta in [-5, 0, 5]:
+                for scl in [0.8, 1.0, 1.2]:
+                    if dx == 0 and dy == 0 and dtheta == 0 and scl == 1.0:
+                        continue
+                    total += 1
+                    Hp = make_H(dx=dx, dy=dy, dtheta=np.deg2rad(dtheta), scale=scl)
+                    Hr = refine_finder_homography(nms, angle, Hp)
+                    cr = corner_rmse(corners_from_finder_homography(Hr), true_corners_roi)
+                    if cr < rmse_nom * 1.5:
+                        converged += 1
+
+    rate = converged / total if total else 0
+    print(f"\n  Convergence: {converged}/{total} = {rate:.1%}")
+    assert rate >= 0.9, f"Convergence rate too low: {rate:.1%}"
 
 
 @pytest.mark.parametrize("axis", ["yaw", "pitch"])

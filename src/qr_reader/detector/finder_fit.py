@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import numpy as np
+from scipy.optimize import least_squares
 
 
 @dataclass
@@ -1014,6 +1015,142 @@ def extract_finder_corners(
     return np.array([c00, c10, c11, c01], dtype=np.float64)
 
 
+_CANONICAL_EDGES = np.array(
+    [
+        [1.0, 0.0, 2.5],  # left inner:   u + 2.5 = 0,  normal → +u
+        [-1.0, 0.0, 2.5],  # right inner: -u + 2.5 = 0,  normal → −u
+        [0.0, 1.0, 2.5],  # bottom inner: v + 2.5 = 0,  normal → +v
+        [0.0, -1.0, 2.5],  # top inner:  -v + 2.5 = 0,  normal → −v
+    ],
+    dtype=np.float64,
+)
+"""Canonical finder *visible* edge lines at ±2.5 (the dark-ring boundary;
+the outer quiet-zone border at ±3.5 is white-on-white).  Corners are
+extrapolated through the fitted homography from ±3.5 canonical positions."""
+
+
+def refine_finder_homography(
+    nms: np.ndarray,
+    angle: np.ndarray,
+    H_init: np.ndarray,
+    soft_l1_scale: float = 3.0,
+    max_nfev: int = 100,
+) -> np.ndarray:
+    """Refine 8-DOF homography by aligning NMS edges to projected canonical edges.
+
+    Objective: robust perpendicular distance from each NMS edge pixel to
+    the nearest of the four projected canonical edge lines, weighted by
+    NMS magnitude and gradient-orientation consistency.
+
+    Parameters
+    ----------
+    nms : ndarray (H, W)
+        NMS edge magnitudes.
+    angle : ndarray (H, W)
+        Edge-normal angles in [-π, π].
+    H_init : ndarray (3, 3)
+        Initial homography (affine from centre, axes, and module pitch).
+    soft_l1_scale : float
+        Scale parameter for the soft-L₁ / Pseudo-Huber loss.
+    max_nfev : int
+        Maximum LM function evaluations.
+
+    Returns
+    -------
+    H_refined : ndarray (3, 3)
+        Refined homography with H[2,2] = 1.
+    """
+    ys, xs = np.nonzero(nms)
+    if len(ys) < 4:
+        return H_init.copy()
+
+    points = np.column_stack([xs.astype(np.float64), ys.astype(np.float64)])
+    w = nms[ys, xs].astype(np.float64)
+    w_max = float(w.max())
+    if w_max > 0:
+        w = w / w_max
+    norms = np.column_stack([np.cos(angle[ys, xs]), np.sin(angle[ys, xs])])
+
+    # Keep only pixels whose canonical position is within 2 module units
+    # of the canonical square boundary, and assign each to the nearest edge.
+    H_inv = np.linalg.inv(H_init)
+    pts_can_h = H_inv @ np.column_stack([points, np.ones(len(ys))]).T
+    pts_can = pts_can_h[:2] / pts_can_h[2]  # (2, N)
+
+    # Signed distances to each canonical edge (in module units)
+    dist_left = pts_can[0] + 2.5    # u + 2.5
+    dist_right = -pts_can[0] + 2.5  # -u + 2.5
+    dist_bottom = pts_can[1] + 2.5  # v + 2.5
+    dist_top = -pts_can[1] + 2.5    # -v + 2.5
+    all_dists = np.column_stack([dist_left, dist_right, dist_bottom, dist_top])
+    nearest_dist = np.min(all_dists, axis=1)
+    edge_idx = np.argmin(all_dists, axis=1)  # 0=left, 1=right, 2=bottom, 3=top
+
+    in_range = nearest_dist < 1.5
+    if not np.any(in_range):
+        return H_init.copy()
+
+    points = points[in_range]
+    norms = norms[in_range]
+    w = w[in_range]
+    edge_idx = edge_idx[in_range]
+    N = len(points)
+
+    def fun(params: np.ndarray) -> np.ndarray:
+        H = np.eye(3)
+        H.ravel()[:8] = params
+
+        H_inv_T = np.linalg.inv(H).T
+        img_edges = (H_inv_T @ _CANONICAL_EDGES.T).T  # (4, 3)
+
+        errors = np.full(N, np.nan, dtype=np.float64)
+
+        for k in range(4):
+            mask = edge_idx == k
+            if not np.any(mask):
+                continue
+
+            a, b, c = float(img_edges[k, 0]), float(img_edges[k, 1]), float(img_edges[k, 2])
+            norm2 = a * a + b * b
+            if norm2 < 1e-12:
+                continue
+            inv_norm = 1.0 / np.sqrt(norm2)
+
+            pk = points[mask]
+            dists = np.abs(a * pk[:, 0] + b * pk[:, 1] + c) * inv_norm
+
+            n_k = np.array([a * inv_norm, b * inv_norm])
+            alignment = np.abs(norms[mask] @ n_k)
+
+            errors[mask] = dists * alignment * w[mask]
+
+        errors = np.where(np.isnan(errors), soft_l1_scale * 2.0, errors)
+        return errors
+
+    x0 = H_init.ravel()[:8].copy()
+    result = least_squares(
+        fun, x0, method="trf", loss="soft_l1", f_scale=soft_l1_scale, max_nfev=max_nfev
+    )
+
+    H_refined = np.eye(3)
+    H_refined.ravel()[:8] = result.x
+    return H_refined
+
+
+_CANONICAL_CORNERS = np.array(
+    [[-3.5, -3.5], [3.5, -3.5], [3.5, 3.5], [-3.5, 3.5]], dtype=np.float64
+)
+
+
+def corners_from_finder_homography(H: np.ndarray) -> np.ndarray:
+    """Project the 4 canonical finder corners through *H* (3×3 homography).
+
+    Returns (4, 2) image coordinates in [(-,-), (+,-), (+,+), (-,+)] order.
+    """
+    corners_h = H @ np.column_stack([_CANONICAL_CORNERS, np.ones(4)]).T
+    return (corners_h[:2] / corners_h[2]).T
+
+
 def fit_finder_full(
     nms: np.ndarray,
     angle: np.ndarray,
@@ -1025,6 +1162,7 @@ def fit_finder_full(
     estimate_anisotropic_pitch: bool = False,
     use_two_families: bool = False,
     use_projective_scanlines: bool = False,
+    use_finder_homography: bool = False,
 ) -> FinderFit:
     """Fit a finder pattern from NMS edges and ROI image (Phases 1–3, optionally 4).
 
@@ -1061,6 +1199,11 @@ def fit_finder_full(
         scanline RANSAC that maps canonical module positions to observed
         peaks via a 1-D homography, providing per-axis centre offsets and
         effective module pitches under perspective.
+    use_finder_homography : bool
+        If True, refine an 8-DOF homography from the affine initialiser
+        (centre, axes, pitch) using LM optimization on NMS edge-point
+        reprojection, and derive corners from the refined homography.
+        Corners from ``_corners_from_rho`` are replaced.
 
     Returns
     -------
@@ -1146,6 +1289,19 @@ def fit_finder_full(
         n_u=n_u.copy() if n_u is not None else None,
         n_v=n_v.copy() if n_v is not None else None,
     )
+
+    if use_finder_homography:
+        H_init = np.eye(3)
+        H_init[0, 0] = float(m_fit) * float(e1[0])
+        H_init[0, 1] = float(m_fit) * float(e2[0])
+        H_init[0, 2] = float(fitted_center[0])
+        H_init[1, 0] = float(m_fit) * float(e1[1])
+        H_init[1, 1] = float(m_fit) * float(e2[1])
+        H_init[1, 2] = float(fitted_center[1])
+
+        H_refined = refine_finder_homography(nms, angle, H_init)
+        result.corners = corners_from_finder_homography(H_refined)
+        result.m = float(m_fit)  # keep original m
 
     if estimate_anisotropic_pitch:
         if use_projective_scanlines:
