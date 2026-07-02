@@ -33,6 +33,7 @@ Every source file under `src/qr_reader/` and its role.
 | `sample.py` | Sample the module bit matrix from the rectified QR image using the homography | `homography.py`, `scipy` |
 | `version.py` | Cross-ratio measurement, constraint building/filtering, version estimation | `landmarks.py` |
 | `roi.py` | Compute padded bounding box from `CandidateCluster`, extract clamped sub-image cutout | `clustering.py` |
+| `finder_fit.py` | Per-finder orientation (4-fold histogram / two-family von-Mises), 1-D projection-profile fitting (equal spacing / projective scanlines), optional 8-DOF homography refinement | — |
 | `edges.py` | Thin edge extraction: Gaussian blur → Sobel → L2 magnitude → interpolated NMS → (magnitude, angle) | `scipy` |
 | `hough.py` | Gradient-guided Hough line detection: one-theta voting → peak extraction → weighted-TLS refinement → `LineSegment` | `edges.py` |
 | `hough_benchmark.py` | Standalone benchmark: generate images → ROIs → Hough → per-edge TP/FN/FP with 1-D IoU overlap quality, per-finder/side/k breakdown, Hough-accumulator visualization | All detector modules, `synth.pipeline.generate_sample` |
@@ -83,36 +84,22 @@ Image (ndarray)
 qr_gen.binarize_image()                    → binary image
   │
   ▼
-alignment.find_alignment_patterns_2d()     → (rows, cols_all) candidate positions
+alignment.find_alignment_patterns_2d()   → (rows, cols_all) candidate positions
   │
   ▼
-clustering.cluster_candidates()            → list[CandidateCluster]
+clustering.cluster_candidates()          → list[CandidateCluster]
   │
   ▼ (per cluster)
-region.region_fill_wave_front()            → region mask
-region.region_boundary_8()                 → boundary trace
-region.boundary_connected_components_ndimage() → boundary components
-corner.angular_nms_top_radial_indices()    → 4 corners per component
+edges.extract_thin_edges()                 → NMS magnitudes + edge-normal angles
+finder_fit.fit_finder_full()               → FinderFit (centre, axes, pitch, corners)
   │
   ▼
-finder_pattern.extract_finder_patterns()   → list[FinderPattern]
-finder_pattern.find_all_associations()     → list[Association]
-finder_pattern.find_triplets()             → list[Triplet] (take first)
+detector._run_detection() : deduplicate → find associations → find triplets →
+  estimate version → fit global homography (similarity init, optional DLT,
+  LM-refined)                                  → (H, V)
   │
   ▼
-landmarks.build_named_landmarks()          → NamedLandmarks (image_lm)
-version.build_constraints()                → list[Constraint]
-version.filter_constraints()               → filtered constraints
-version.estimate_version()                 → version (V), module count (N)
-  │
-  ▼
-landmarks.canonical_grid_landmarks()       → grid landmarks
-landmarks.build_named_landmarks() [2nd]    → NamedLandmarks (image_lm)
-homography.ransac_homography()             → H (initial)
-homography.refine_homography_lm()          → H (refined)
-  │
-  ▼
-sample.sample_qr_bits()                    → (N, N) bool bit matrix
+homography.compute_qr_corners() / sample.sample_qr_bits() → decoded text string
   │
   ▼
 decoder.decode()                           → decoded text string

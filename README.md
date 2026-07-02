@@ -37,13 +37,12 @@ Image
   → Binarize (Otsu threshold)
   → Alignment patterns (1:1:3:1:1 ratio scan)
   → Cluster candidates
-  → Find corner points per cluster (angular NMS)
-  → Extract finder patterns (the three large corner squares)
+  → Fit finder pattern per cluster (orientation + 1-D profile fit)
+  → Deduplicate overlapping candidates
   → Associate colinear finder patterns
   → Find L-shaped triplets
-  → Build landmarks (named reference points A–F)
-  → Estimate version (cross-ratio matching)
-  → Estimate homography (DLT → RANSAC → LM)
+  → Estimate version (inter-finder distance / pitch)
+  → Estimate homography (similarity init, optional DLT, LM)
   → Sample module bit matrix
 ```
 

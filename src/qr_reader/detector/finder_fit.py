@@ -1193,9 +1193,9 @@ def fit_finder_full(
     m_est: float,
     use_template: bool = False,
     angle_gate_deg: float = 22.5,
-    estimate_anisotropic_pitch: bool = False,
-    use_two_families: bool = False,
-    use_projective_scanlines: bool = False,
+    estimate_anisotropic_pitch: bool = True,
+    use_two_families: bool = True,
+    use_projective_scanlines: bool = True,
     use_finder_homography: bool = False,
 ) -> FinderFit:
     """Fit a finder pattern from NMS edges and ROI image (Phases 1–3, optionally 4).
