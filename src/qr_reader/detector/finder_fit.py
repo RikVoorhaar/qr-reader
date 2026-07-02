@@ -35,6 +35,16 @@ class FinderFit:
         Template fit score (populated by Phase 4).
     phi : float
         Orientation angle in radians (mod π/2).
+    m_u : float or None
+        Per-axis module pitch along e1 (set when ``estimate_anisotropic_pitch``).
+    m_v : float or None
+        Per-axis module pitch along e2 (set when ``estimate_anisotropic_pitch``).
+    n_u : ndarray or None
+        First edge-family unit normal, estimated independently from e1
+        (set when ``use_two_families``).
+    n_v : ndarray or None
+        Second edge-family unit normal, estimated independently from e2
+        (set when ``use_two_families``).
     """
 
     center: np.ndarray  # (2,)
@@ -47,6 +57,8 @@ class FinderFit:
     phi: float = 0.0
     m_u: float | None = None
     m_v: float | None = None
+    n_u: np.ndarray | None = None
+    n_v: np.ndarray | None = None
 
 
 def estimate_orientation(
@@ -99,6 +111,104 @@ def estimate_orientation(
     e2 = np.array([-np.sin(phi), np.cos(phi)])
 
     return float(phi), e1, e2
+
+
+def estimate_orientation_two_families(
+    nms: np.ndarray,
+    angle: np.ndarray,
+    center_xy: np.ndarray,
+    kappa: float = 10.0,
+    max_iter: int = 30,
+    tol: float = 1e-4,
+) -> tuple[np.ndarray, np.ndarray, float, float, float]:
+    """Estimate two edge-family orientations via 2-mode von-Mises EM.
+
+    Edge normals are modulo π (180° symmetry).  We double the angles
+    (β = 2α mod 2π) so the two perpendicular families are separated by π
+    and can be modelled by a standard von-Mises mixture on the full circle.
+
+    A heuristic fallback to the 4-fold histogram is triggered when the two
+    modes are ambiguous (mixture-weight ratio < 0.3) or when the acute angle
+    between the two families falls below 30°.
+
+    Parameters
+    ----------
+    nms, angle, center_xy
+        Same as ``estimate_orientation``.
+
+    Returns
+    -------
+    n_u : ndarray (2,)
+        Unit normal of the first edge family.
+    n_v : ndarray (2,)
+        Unit normal of the second edge family.
+    score_u : float
+        Mixture weight of the first family (≈ confidence).
+    score_v : float
+        Mixture weight of the second family.
+    phi : float
+        The 4-fold orientation angle (mod π/2) for diagnostic use.
+    """
+    phi, e1_fallback, e2_fallback = estimate_orientation(nms, angle, center_xy)
+
+    ys, xs = np.nonzero(nms)
+    if len(ys) < 8:
+        return e1_fallback.copy(), e2_fallback.copy(), 0.5, 0.5, phi
+
+    w = nms[ys, xs].astype(np.float64)
+    alpha = np.fmod(angle[ys, xs], np.pi)
+    alpha = np.where(alpha < 0, alpha + np.pi, alpha)
+
+    beta = (2.0 * alpha) % (2.0 * np.pi)
+
+    phi_double = (2.0 * phi) % (2.0 * np.pi)
+    mu = np.array([phi_double, (phi_double + np.pi) % (2.0 * np.pi)])
+    pi_w = np.array([0.5, 0.5])
+
+    for _ in range(max_iter):
+        diff = beta[:, np.newaxis] - mu[np.newaxis, :]
+        log_r = kappa * np.cos(diff) + np.log(pi_w[np.newaxis, :])
+        log_r_max = log_r.max(axis=1, keepdims=True)
+        r = np.exp(log_r - log_r_max)
+        r /= r.sum(axis=1, keepdims=True)
+
+        n_k = r.sum(axis=0)
+        pi_w_new = n_k / len(beta)
+
+        mu_new = np.zeros(2, dtype=np.float64)
+        for k in range(2):
+            s = float(np.sum(r[:, k] * np.sin(beta)))
+            c = float(np.sum(r[:, k] * np.cos(beta)))
+            mu_new[k] = np.arctan2(s, c) % (2.0 * np.pi)
+
+        if max(
+            float(abs(pi_w_new - pi_w).max()),
+            float(abs(((mu_new - mu + np.pi) % (2.0 * np.pi) - np.pi)).max()),
+        ) < tol:
+            pi_w = pi_w_new
+            mu = mu_new
+            break
+
+        pi_w = pi_w_new
+        mu = mu_new
+
+    angle_u = (mu[0] / 2.0) % np.pi
+    angle_v = (mu[1] / 2.0) % np.pi
+
+    n_u = np.array([np.cos(angle_u), np.sin(angle_u)])
+    n_v = np.array([np.cos(angle_v), np.sin(angle_v)])
+
+    score_u = float(pi_w[0])
+    score_v = float(pi_w[1])
+
+    score_ratio = min(score_u, score_v) / max(score_u, score_v)
+    dot_abs = abs(float(np.dot(n_u, n_v)))
+    sep_deg = float(np.rad2deg(np.arccos(dot_abs)))
+
+    if score_ratio < 0.3 or sep_deg < 30.0 or sep_deg > 150.0:
+        return e1_fallback.copy(), e2_fallback.copy(), 0.5, 0.5, phi
+
+    return n_u, n_v, score_u, score_v, phi
 
 
 def build_projection_profile(
@@ -719,6 +829,7 @@ def fit_finder_full(
     use_template: bool = False,
     angle_gate_deg: float = 22.5,
     estimate_anisotropic_pitch: bool = False,
+    use_two_families: bool = False,
 ) -> FinderFit:
     """Fit a finder pattern from NMS edges and ROI image (Phases 1–3, optionally 4).
 
@@ -746,6 +857,10 @@ def fit_finder_full(
         If True, store the per-axis fitted module pitches in ``m_u`` and
         ``m_v``.  Corners still use the shared ``m`` to avoid changing the
         existing geometric path.
+    use_two_families : bool
+        If True, estimate independent edge-family normals ``n_u``, ``n_v``
+        via 2-mode von-Mises EM instead of the symmetric 4-fold histogram.
+        Fall back to the 4-fold result when the mixture is ambiguous.
 
     Returns
     -------
@@ -753,6 +868,12 @@ def fit_finder_full(
         Fitted finder geometry with corners.
     """
     phi, e1, e2 = estimate_orientation(nms, angle, center_xy)
+
+    if use_two_families:
+        n_u, n_v, score_u, score_v, phi_diag = estimate_orientation_two_families(
+            nms, angle, center_xy)
+    else:
+        n_u, n_v, score_u, score_v, phi_diag = None, None, None, None, None
 
     m_edge = estimate_m_from_edges(nms, angle, center_xy, e1, e2, angle_gate_deg)
     m_init = max(m_est, m_edge)
@@ -790,6 +911,8 @@ def fit_finder_full(
         outer_lines=outer_lines,
         corners=corners,
         phi=float(phi),
+        n_u=n_u.copy() if n_u is not None else None,
+        n_v=n_v.copy() if n_v is not None else None,
     )
 
     if estimate_anisotropic_pitch:
