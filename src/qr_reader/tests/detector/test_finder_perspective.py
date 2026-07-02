@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 
 from qr_reader.detector.edges import extract_thin_edges
-from qr_reader.detector.finder_fit import fit_finder_full
+from qr_reader.detector.finder_fit import FinderFit, fit_finder_full
 
 
 # ---------------------------------------------------------------------------
@@ -28,7 +28,7 @@ from qr_reader.detector.finder_fit import fit_finder_full
 
 def render_canonical_finder(
     module_size: int = 10,
-    quiet_modules: int = 4,
+    quiet_modules: int = 2,
 ) -> np.ndarray:
     """Render a clean binary finder pattern (white=255, black=0).
 
@@ -107,9 +107,11 @@ def synthesise_finder_homography(
     R = _rotation_matrix(yaw_deg, pitch_deg)
     H_world_to_image = K @ R @ np.diag([1.0, 1.0, camera_distance])
 
-    # Source pixel to destination pixel: subtract image centre (world origin
-    # is at the finder centre), apply world-to-image homography.
-    T = np.array([[1.0, 0.0, -cx], [0.0, 1.0, -cy], [0.0, 0.0, 1.0]])
+    # Source pixel to destination pixel: subtract the source finder centre
+    # (which is the world origin), apply world-to-image homography.
+    src_cx = src.shape[1] / 2.0
+    src_cy = src.shape[0] / 2.0
+    T = np.array([[1.0, 0.0, -src_cx], [0.0, 1.0, -src_cy], [0.0, 0.0, 1.0]])
     M = H_world_to_image @ T
 
     warped = cv2.warpPerspective(
@@ -189,9 +191,26 @@ def corner_rmse(est_corners_xy: np.ndarray, true_corners_xy: np.ndarray) -> floa
 
 def fit_finder_to_roi(roi: np.ndarray, center_xy: np.ndarray, m_est: float) -> np.ndarray:
     """Run production ``fit_finder_full`` on a ROI and return corners in ROI coords."""
+    return fit_finder_to_roi_full(roi, center_xy, m_est).corners
+
+
+def fit_finder_to_roi_full(
+    roi: np.ndarray,
+    center_xy: np.ndarray,
+    m_est: float,
+    estimate_anisotropic_pitch: bool = False,
+) -> FinderFit:
+    """Run production ``fit_finder_full`` on a ROI and return the full fit object."""
     nms, angle = extract_thin_edges(roi, blur_sigma=1.0)
-    fit = fit_finder_full(nms, angle, roi, center_xy, m_est)
-    return np.asarray(fit.corners, dtype=np.float64)
+    fit = fit_finder_full(
+        nms,
+        angle,
+        roi,
+        center_xy,
+        m_est,
+        estimate_anisotropic_pitch=estimate_anisotropic_pitch,
+    )
+    return fit
 
 
 # ---------------------------------------------------------------------------
@@ -262,6 +281,42 @@ def test_frontoparallel_rmse_is_small() -> None:
     rmse = corner_rmse(est_corners_roi, true_corners_roi)
     # Baseline expectation: < 2 px on a clean, frontoparallel finder.
     assert rmse < 2.0, f"Frontoparallel RMSE too large: {rmse:.2f} px"
+
+
+@pytest.mark.parametrize("axis", ["yaw", "pitch"])
+def test_anisotropic_pitch_ratio_trends_with_perspective(axis: str) -> None:
+    """With estimate_anisotropic_pitch=True, m_u/m_v captures foreshortening."""
+    angles = [0, 10, 20, 30]
+    ratios: list[float] = []
+
+    for angle_deg in angles:
+        yaw = angle_deg if axis == "yaw" else 0
+        pitch = angle_deg if axis == "pitch" else 0
+        warped, _, true_corners_global = synthesise_finder_homography(yaw, pitch)
+        roi, origin, true_corners_roi = extract_roi(warped, true_corners_global)
+        center_roi = true_corners_roi.mean(axis=0)
+        fit = fit_finder_to_roi_full(
+            roi,
+            center_roi,
+            10.0,
+            estimate_anisotropic_pitch=True,
+        )
+        assert fit.m_u is not None, f"m_u not set for {axis}={angle_deg}"
+        assert fit.m_v is not None, f"m_v not set for {axis}={angle_deg}"
+        ratios.append(float(fit.m_u / fit.m_v))
+
+    # Frontoparallel pitch should be nearly isotropic.
+    assert 0.95 <= ratios[0] <= 1.05, f"Frontoparallel ratio not near 1: {ratios[0]:.3f}"
+
+    # At 30° perspective the ratio should deviate from 1.0 by > 5%.
+    assert abs(ratios[-1] - 1.0) > 0.05, f"30° {axis} ratio too close to 1: {ratios[-1]:.3f}"
+
+    # Anisotropy (max(ratio, 1/ratio)) should increase monotonically with angle.
+    anisotropy = [max(r, 1.0 / r) for r in ratios]
+    for i in range(len(anisotropy) - 1):
+        assert anisotropy[i] <= anisotropy[i + 1], (
+            f"Anisotropy not monotonic for {axis}: {anisotropy}"
+        )
 
 
 def test_write_sweep_csv(tmp_path_factory) -> None:

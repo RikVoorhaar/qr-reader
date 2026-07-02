@@ -45,6 +45,8 @@ class FinderFit:
     corners: np.ndarray = field(default_factory=lambda: np.zeros((4, 2)))
     score: float = 0.0
     phi: float = 0.0
+    m_u: float | None = None
+    m_v: float | None = None
 
 
 def estimate_orientation(
@@ -326,7 +328,7 @@ def refine_outer_line(
     ys, xs = np.nonzero(nms)
     if len(ys) < 2:
         normal = axis.copy()
-        return normal, max(approx_rho, 0.0)
+        return normal, approx_rho
 
     strengths = nms[ys, xs].astype(np.float64)
     points = np.column_stack([xs.astype(np.float64), ys.astype(np.float64)])
@@ -343,7 +345,7 @@ def refine_outer_line(
 
     if np.sum(mask) < 2:
         normal = axis.copy()
-        return normal, max(approx_rho, 0.0)
+        return normal, approx_rho
 
     support_pts = points[mask]
     support_w = strengths[mask]
@@ -716,6 +718,7 @@ def fit_finder_full(
     m_est: float,
     use_template: bool = False,
     angle_gate_deg: float = 22.5,
+    estimate_anisotropic_pitch: bool = False,
 ) -> FinderFit:
     """Fit a finder pattern from NMS edges and ROI image (Phases 1–3, optionally 4).
 
@@ -739,6 +742,10 @@ def fit_finder_full(
         If True, run Phase 4 template fitting and keep the best result.
     angle_gate_deg : float
         Angle gating threshold in degrees.  Default 22.5°.
+    estimate_anisotropic_pitch : bool
+        If True, store the per-axis fitted module pitches in ``m_u`` and
+        ``m_v``.  Corners still use the shared ``m`` to avoid changing the
+        existing geometric path.
 
     Returns
     -------
@@ -761,18 +768,18 @@ def fit_finder_full(
     dv = fit_v["center_offset"]
     fitted_center = center_xy + du * e1 + dv * e2
 
-    um = refine_outer_line(nms, angle, fitted_center, e1, -3.5 * m_fit, angle_gate_deg=angle_gate_deg)[1]
-    up = refine_outer_line(nms, angle, fitted_center, e1, +3.5 * m_fit, angle_gate_deg=angle_gate_deg)[1]
-    vm = refine_outer_line(nms, angle, fitted_center, e2, -3.5 * m_fit, angle_gate_deg=angle_gate_deg)[1]
-    vp = refine_outer_line(nms, angle, fitted_center, e2, +3.5 * m_fit, angle_gate_deg=angle_gate_deg)[1]
+    n_um, um = refine_outer_line(nms, angle, fitted_center, e1, -3.5 * m_fit, angle_gate_deg=angle_gate_deg)
+    n_up, up = refine_outer_line(nms, angle, fitted_center, e1, +3.5 * m_fit, angle_gate_deg=angle_gate_deg)
+    n_vm, vm = refine_outer_line(nms, angle, fitted_center, e2, -3.5 * m_fit, angle_gate_deg=angle_gate_deg)
+    n_vp, vp = refine_outer_line(nms, angle, fitted_center, e2, +3.5 * m_fit, angle_gate_deg=angle_gate_deg)
 
-    corners = extract_finder_corners_from_rho(um, up, vm, vp, e1, e2)
+    corners = extract_finder_corners_from_rho(um, up, vm, vp, n_um, n_vm)
 
     outer_lines = {
-        "u+": (e1.copy(), up),
-        "u-": (e1.copy(), um),
-        "v+": (e2.copy(), vp),
-        "v-": (e2.copy(), vm),
+        "u+": (n_up.copy(), up),
+        "u-": (n_um.copy(), um),
+        "v+": (n_vp.copy(), vp),
+        "v-": (n_vm.copy(), vm),
     }
 
     result = FinderFit(
@@ -785,21 +792,34 @@ def fit_finder_full(
         phi=float(phi),
     )
 
+    if estimate_anisotropic_pitch:
+        result.m_u = float(fit_u["m_fitted"])
+        result.m_v = float(fit_v["m_fitted"])
+
     if use_template:
         tmpl = fit_finder_template(roi_gray, nms, angle, center_xy, e1, e2, m_fit,
                                    angle_gate_deg=angle_gate_deg)
         if tmpl.score > 0:
             result = tmpl
+            # Carry forward per-axis diagnostics from Phase 3 when template is used.
+            if estimate_anisotropic_pitch:
+                result.m_u = float(fit_u["m_fitted"])
+                result.m_v = float(fit_v["m_fitted"])
 
     return result
 
 
-def _corners_from_rho(um, up, vm, vp, e1, e2):
-    """Compute corners from weighted-mean projections (no normal flipping)."""
-    c00 = um * e1 + vm * e2
-    c10 = up * e1 + vm * e2
-    c11 = up * e1 + vp * e2
-    c01 = um * e1 + vp * e2
+def _corners_from_rho(um, up, vm, vp, n_u, n_v):
+    """Compute corners from line normals and signed distances.
+
+    ``n_u`` and ``n_v`` are the (possibly canonicalised) unit normals of the
+    u- and v-edge families.  The corner is ``rho_u * n_u + rho_v * n_v``,
+    which is the intersection point of the two corresponding lines.
+    """
+    c00 = um * n_u + vm * n_v
+    c10 = up * n_u + vm * n_v
+    c11 = up * n_u + vp * n_v
+    c01 = um * n_u + vp * n_v
     return np.array([c00, c10, c11, c01], dtype=np.float64)
 
 
