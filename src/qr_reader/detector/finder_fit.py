@@ -193,11 +193,22 @@ def estimate_orientation_two_families(
         pi_w = pi_w_new
         mu = mu_new
 
-    angle_u = (mu[0] / 2.0) % np.pi
-    angle_v = (mu[1] / 2.0) % np.pi
+    candidate_angles = np.array([(mu[0] / 2.0) % np.pi, (mu[1] / 2.0) % np.pi])
+
+    # Label the mode closest to the 4-fold orientation reference as the u-axis.
+    # This keeps per-finder family labels consistent with the global QR frame.
+    diff_to_phi = np.abs(candidate_angles - phi)
+    diff_to_phi = np.minimum(diff_to_phi, np.pi - diff_to_phi)
+    u_idx = int(np.argmin(diff_to_phi))
+    angle_u = candidate_angles[u_idx]
+    angle_v = candidate_angles[1 - u_idx]
 
     n_u = np.array([np.cos(angle_u), np.sin(angle_u)])
-    n_v = np.array([np.cos(angle_v), np.sin(angle_v)])
+    # Preserve the v family while choosing the sign that yields a right-handed
+    # (e1, e2) frame.
+    v1 = np.array([np.cos(angle_v), np.sin(angle_v)])
+    v2 = -v1
+    n_v = v1 if (n_u[0] * v1[1] - n_u[1] * v1[0]) >= (n_u[0] * v2[1] - n_u[1] * v2[0]) else v2
 
     score_u = float(pi_w[0])
     score_v = float(pi_w[1])
@@ -1142,6 +1153,29 @@ _CANONICAL_CORNERS = np.array(
 )
 
 
+def _align_quad_order(
+    est_corners: np.ndarray, ref_corners: np.ndarray
+) -> np.ndarray:
+    """Reorder *est_corners* to best match *ref_corners* up to cyclic shift.
+
+    Also allows reversing the ordering (reflection) because the 8-DOF
+    per-finder homography may converge to a mirror of the canonical square.
+    Returns the reordered 4×2 array.
+    """
+    est = np.asarray(est_corners, dtype=np.float64).reshape(4, 2)
+    ref = np.asarray(ref_corners, dtype=np.float64).reshape(4, 2)
+
+    best = (np.inf, est.copy())
+    for reverse in (False, True):
+        base = est[::-1].copy() if reverse else est.copy()
+        for shift in range(4):
+            shifted = np.roll(base, shift, axis=0)
+            err = float(np.mean(np.linalg.norm(shifted - ref, axis=1) ** 2))
+            if err < best[0]:
+                best = (err, shifted.copy())
+    return best[1]
+
+
 def corners_from_finder_homography(H: np.ndarray) -> np.ndarray:
     """Project the 4 canonical finder corners through *H* (3×3 homography).
 
@@ -1300,7 +1334,12 @@ def fit_finder_full(
         H_init[1, 2] = float(fitted_center[1])
 
         H_refined = refine_finder_homography(nms, angle, H_init)
-        result.corners = corners_from_finder_homography(H_refined)
+        homog_corners = corners_from_finder_homography(H_refined)
+        # The LM objective is symmetric to 180° rotation / reflection of the
+        # canonical square, so the returned corners may be cyclically shifted
+        # or mirrored.  Reorder them to match the rho-based corner frame so
+        # downstream association code gets a consistent canonical order.
+        result.corners = _align_quad_order(homog_corners, corners)
         result.m = float(m_fit)  # keep original m
 
     if estimate_anisotropic_pitch:
