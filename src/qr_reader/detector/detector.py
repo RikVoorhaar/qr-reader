@@ -12,6 +12,7 @@ All functions assume the input contains **one** QR code.
 from __future__ import annotations
 
 import numpy as np
+from scipy.ndimage import map_coordinates
 
 from qr_reader.detector.alignment import find_alignment_patterns_2d
 from qr_reader.detector.clustering import cluster_candidates
@@ -30,6 +31,55 @@ from qr_reader.detector.homography import (
 from qr_reader.detector.roi import cluster_to_bbox, cutout
 from qr_reader.detector.sample import sample_qr_bits
 from qr_reader.qr_gen import binarize_image
+
+
+def _score_timing_pattern(img_gray: np.ndarray, H: np.ndarray, N: int) -> float:
+    """Score row 6 and column 6 for timing-pattern alternation.
+
+    The timing pattern runs from module 8 to N−9 on row 6 and column 6,
+    alternating dark/light each module.  Returns a score in [0, 1] where
+    1 = perfect alternation.
+    """
+    if N <= 17:
+        return 0.0
+
+    mid_start, mid_end = 8, N - 9
+    if mid_end <= mid_start:
+        return 0.0
+
+    nc = mid_end - mid_start + 1
+
+    xs = np.arange(mid_start, mid_end + 1, dtype=np.float64)
+    ys6 = np.full(nc, 6.0, dtype=np.float64)
+
+    grid_row6 = np.column_stack([xs, ys6])
+    img_row6 = project_points(H, grid_row6)
+    coords_r = np.stack([img_row6[:, 1], img_row6[:, 0]])
+    row6_vals = map_coordinates(
+        img_gray.astype(np.float64), coords_r, order=1, mode="nearest"
+    )
+
+    grid_col6 = np.column_stack([ys6, xs])
+    img_col6 = project_points(H, grid_col6)
+    coords_c = np.stack([img_col6[:, 1], img_col6[:, 0]])
+    col6_vals = map_coordinates(
+        img_gray.astype(np.float64), coords_c, order=1, mode="nearest"
+    )
+
+    all_vals = np.concatenate([row6_vals, col6_vals])
+    thr = float(np.median(all_vals))
+
+    row6_bits = row6_vals >= thr
+    col6_bits = col6_vals >= thr
+
+    row6_score = int(np.sum(row6_bits[1:] != row6_bits[:-1]))
+    col6_score = int(np.sum(col6_bits[1:] != col6_bits[:-1]))
+
+    max_possible = 2 * (nc - 1)
+    if max_possible < 1:
+        return 0.0
+
+    return (row6_score + col6_score) / max_possible
 
 
 def _run_detection(image: np.ndarray) -> tuple[np.ndarray, int]:
@@ -136,7 +186,11 @@ def _run_detection(image: np.ndarray) -> tuple[np.ndarray, int]:
     m_avg = (fit_map[tl_idx].m + fit_map[tr_idx].m + fit_map[bl_idx].m) / 3.0
     dx = float(np.linalg.norm(c_tr - center_tl_xy))
     dy = float(np.linalg.norm(c_bl - center_tl_xy))
-    N_est = int(round((dx + dy) / (2.0 * m_avg) + 7))
+    dh = float(np.linalg.norm(c_tr - c_bl))
+    s_hat = (dx + dy + dh / np.sqrt(2)) / (3.0 * m_avg)
+    N_est = int(round(s_hat + 7))
+    N_legal = ((N_est - 17) // 4) * 4 + 21
+    N_legal = max(21, min(177, N_legal))
 
     global_u = c_tr - center_tl_xy
     global_u = global_u / (float(np.linalg.norm(global_u)) + 1e-12)
@@ -162,9 +216,9 @@ def _run_detection(image: np.ndarray) -> tuple[np.ndarray, int]:
 
     best_err = np.inf
     best_H: np.ndarray | None = None
-    best_N = N_est
+    best_N = N_legal
 
-    for N_cand in range(max(17, N_est - 2), min(177, N_est + 3)):
+    for N_cand in range(max(21, N_legal - 4), min(181, N_legal + 5), 4):
         src_xy: list[list[float]] = []
         dst_xy: list[list[float]] = []
         for corners, origin in [
@@ -185,8 +239,10 @@ def _run_detection(image: np.ndarray) -> tuple[np.ndarray, int]:
             pass
         proj = project_points(H, src_arr)
         err = float(np.mean(np.linalg.norm(proj - dst_arr, axis=1)))
-        if err < best_err:
-            best_err = err
+        timing = _score_timing_pattern(img_gray, H, N_cand)
+        combined_err = err - 0.5 * m_avg * timing
+        if combined_err < best_err:
+            best_err = combined_err
             best_H = H
             best_N = N_cand
 
