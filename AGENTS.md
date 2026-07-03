@@ -35,8 +35,6 @@ Every source file under `src/qr_reader/` and its role.
 | `roi.py` | Compute padded bounding box from `CandidateCluster`, extract clamped sub-image cutout | `clustering.py` |
 | `finder_fit.py` | Per-finder orientation (4-fold histogram / two-family von-Mises), 1-D projection-profile fitting (equal spacing / projective scanlines), optional 8-DOF homography refinement | — |
 | `edges.py` | Thin edge extraction: Gaussian blur → Sobel → L2 magnitude → interpolated NMS → (magnitude, angle) | `scipy` |
-| `hough.py` | Gradient-guided Hough line detection: one-theta voting → peak extraction → weighted-TLS refinement → `LineSegment` | `edges.py` |
-| `hough_benchmark.py` | Standalone benchmark: generate images → ROIs → Hough → per-edge TP/FN/FP with 1-D IoU overlap quality, per-finder/side/k breakdown, Hough-accumulator visualization | All detector modules, `synth.pipeline.generate_sample` |
 
 ### Decoder (`decoder/`)
 
@@ -59,7 +57,6 @@ Every source file under `src/qr_reader/` and its role.
 | `full-pipeline.py` | End-to-end pipeline: generate test image → detect → decode, with visualization |
 | `qr_benchmark.py` | Benchmark detection/decoding across versions, seeds, and transforms |
 | `debug_find_all_associations.py` | Targeted debug script for the `find_all_associations` high-version failure |
-| `debug_hough_failures.py` | Hough failure-mode diagnostics: accumulator reconstruction, vote-fragmentation analysis, peak-suppression simulation |
 
 **Notebook-style scripts** (diagnostic/visual scripts with `# %%` cells):
 use default matplotlib backend and `plt.show()` — never save images to disk.
