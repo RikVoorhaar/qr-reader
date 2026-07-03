@@ -1195,9 +1195,8 @@ def fit_finder_full(
     """Fit a finder pattern from NMS edges and ROI image.
 
     Estimates two independent edge-family orientations, fits a 1-D
-    projective scanline model per axis, and refines an 8-DOF homography on
-    the visible finder edges. Corners are derived from the refined
-    homography.
+    projective scanline model per axis, refines outer edge lines,
+    and computes corners as the intersections of those lines.
 
     Parameters
     ----------
@@ -1219,7 +1218,7 @@ def fit_finder_full(
     Returns
     -------
     FinderFit
-        Fitted finder geometry with corners.
+        Fitted finder geometry with rho-based outer-line intersection corners.
     """
     phi, e1, e2 = estimate_orientation(nms, angle, center_xy)
 
@@ -1286,26 +1285,9 @@ def fit_finder_full(
         phi=float(phi),
         n_u=n_u.copy(),
         n_v=n_v.copy(),
+        m_u=float(m_u),
+        m_v=float(m_v),
     )
-
-    H_init = np.eye(3)
-    H_init[0, 0] = float(m_fit) * float(e1[0])
-    H_init[0, 1] = float(m_fit) * float(e2[0])
-    H_init[0, 2] = float(fitted_center[0])
-    H_init[1, 0] = float(m_fit) * float(e1[1])
-    H_init[1, 1] = float(m_fit) * float(e2[1])
-    H_init[1, 2] = float(fitted_center[1])
-
-    H_refined = refine_finder_homography(nms, angle, H_init)
-    homog_corners = corners_from_finder_homography(H_refined)
-    # The LM objective is symmetric to 180° rotation / reflection of the
-    # canonical square, so the returned corners may be cyclically shifted
-    # or mirrored.  Reorder them to match the rho-based corner frame so
-    # downstream association code gets a consistent canonical order.
-    result.corners = _align_quad_order(homog_corners, corners)
-
-    result.m_u = float(m_u)
-    result.m_v = float(m_v)
 
     if use_template:
         tmpl = fit_finder_template(roi_gray, nms, angle, center_xy, e1, e2, m_fit,

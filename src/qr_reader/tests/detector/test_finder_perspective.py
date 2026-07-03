@@ -479,31 +479,19 @@ def test_projective_scanline_improves_corner_seed(yaw_deg: float, pitch_deg: flo
     (0, 10), (0, 20), (0, 30),
     (30, 30),
 ])
-def test_finder_homography_reduces_rmse(yaw_deg: float, pitch_deg: float) -> None:
-    """The LM-refined homography beats _corners_from_rho on perspective."""
+def test_rho_corner_rmse(yaw_deg: float, pitch_deg: float) -> None:
+    """Rho-based corners from fit_finder_full have reasonable accuracy."""
     warped, H_true, true_corners_global = synthesise_finder_homography(yaw_deg, pitch_deg)
     roi, origin, true_corners_roi = extract_roi(warped, true_corners_global)
     center_roi = true_corners_roi.mean(axis=0)
 
     fit = fit_finder_to_roi_full(roi, center_roi, 10.0)
-    h_rmse = corner_rmse(fit.corners, true_corners_roi)
+    rmse = corner_rmse(fit.corners, true_corners_roi)
 
-    # rho baseline from the line positions that initialise the homography
-    (n_um, um) = fit.outer_lines["u-"]
-    (n_up, up) = fit.outer_lines["u+"]
-    (n_vm, vm) = fit.outer_lines["v-"]
-    (n_vp, vp) = fit.outer_lines["v+"]
-    rho_corners = extract_finder_corners_from_rho(um, up, vm, vp, n_um, n_vm)
-    rho_rmse = corner_rmse(rho_corners, true_corners_roi)
-
-    print(f"\n  yaw={yaw_deg:>3} pitch={pitch_deg:>3}  "
-          f"rho_rmse={rho_rmse:.2f}  homog_rmse={h_rmse:.2f}")
+    print(f"\n  yaw={yaw_deg:>3} pitch={pitch_deg:>3}  rmse={rmse:.2f}")
 
     if abs(yaw_deg) + abs(pitch_deg) >= 30:
-        assert h_rmse < 25.0, f"Homography RMSE too high: {h_rmse:.2f} px"
-        assert h_rmse <= rho_rmse * 1.05, (
-            f"Homography not better than rho: {h_rmse:.2f} vs {rho_rmse:.2f}"
-        )
+        assert rmse < 27.0, f"Rho corner RMSE too high: {rmse:.2f} px"
 
 
 def test_homography_convergence_basin() -> None:

@@ -105,7 +105,7 @@ def _run_detection(image: np.ndarray) -> tuple[np.ndarray, int]:
                 continue
             cj = fps[j].outer_corners.mean(axis=0)
             seg_j = float(np.linalg.norm(fps[j].outer_corners[0] - fps[j].outer_corners[1]))
-            if float(np.linalg.norm(ci - cj)) < 6.0 * min(seg_i, seg_j):
+            if float(np.linalg.norm(ci - cj)) < 1.0 * min(seg_i, seg_j):
                 if fit_map[fps[i].cluster_idx].score >= fit_map[fps[j].cluster_idx].score:
                     keep_mask[j] = False
                 else:
