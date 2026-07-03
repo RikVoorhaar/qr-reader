@@ -24,7 +24,6 @@ from qr_reader.detector.finder_pattern import (
 )
 from qr_reader.detector.homography import (
     compute_qr_corners,
-    dlt_design_matrix_condition,
     estimate_homography_dlt,
     project_points,
     refine_homography_lm,
@@ -34,45 +33,11 @@ from qr_reader.detector.sample import sample_qr_bits
 from qr_reader.qr_gen import binarize_image
 
 
-def _similarity_init_from_centres(
-    grid_centres: np.ndarray, img_centres: np.ndarray
-) -> np.ndarray:
-    """Return a similarity (rigid + uniform scale) homography from 3 points."""
-    gc = grid_centres.mean(axis=0)
-    ic = img_centres.mean(axis=0)
-    dg = grid_centres - gc
-    di = img_centres - ic
-    M = dg.T @ di
-    U, _, Vt = np.linalg.svd(M)
-    R = U @ Vt
-    if np.linalg.det(R) < 0:
-        R[:, -1] *= -1
-    m_scale = np.sum(di * (dg @ R.T)) / (np.sum(dg * dg) + 1e-12)
-
-    A_sim = m_scale * R
-    H_init = np.eye(3)
-    H_init[0, :2] = A_sim[0]
-    H_init[1, :2] = A_sim[1]
-    H_init[0, 2] = ic[0] - A_sim[0] @ gc
-    H_init[1, 2] = ic[1] - A_sim[1] @ gc
-    return H_init
-
-
-def _run_detection(
-    image: np.ndarray, use_global_dlt_from_corners: bool = False
-) -> tuple[np.ndarray, int]:
+def _run_detection(image: np.ndarray) -> tuple[np.ndarray, int]:
     """Shared pipeline: image → homography + version.
 
     Returns ``(H, V)`` where *H* maps QR-grid (x, y) → image (x, y) and
     *V* is the estimated QR version (1..40).
-
-    Parameters
-    ----------
-    use_global_dlt_from_corners
-        If True, initialise the global homography by DLT on the 12 refined
-        finder corners, then refine with LM.  If False, the old
-        similarity-from-centres initialiser is used.  The old path is kept
-        as a fallback when the DLT design matrix is poorly conditioned.
 
     Raises ``ValueError`` if no QR code is detected.
     """
@@ -115,16 +80,7 @@ def _run_detection(
         center_xy = np.array([c_col, c_row], dtype=np.float64)
         m_est = float(cluster.cols[5] - cluster.cols[0]) / 7.0
 
-        fit = fit_finder_full(
-            nms,
-            angle,
-            roi,
-            center_xy,
-            m_est,
-            estimate_anisotropic_pitch=True,
-            use_two_families=True,
-            use_projective_scanlines=True,
-        )
+        fit = fit_finder_full(nms, angle, roi, center_xy, m_est)
 
         corners_xy_global = fit.corners + np.array([c0, r0], dtype=np.float64)
         corners_rc = corners_xy_global[:, ::-1]
@@ -197,11 +153,7 @@ def _run_detection(
     dy = float(np.linalg.norm(c_bl - center_tl_xy))
     N_est = int(round((dx + dy) / (2.0 * m_avg) + 7))
 
-    # 7. Global homography from 12 refined finder corners.
-    #    When use_global_dlt_from_corners is True we use DLT; otherwise the old
-    #    similarity-from-centres initialiser is kept.  A poorly conditioned DLT
-    #    design matrix (cond > 500) automatically falls back to the similarity
-    #    initialiser for that N candidate.
+    # 7. Global homography from 12 refined finder corners: DLT + LM.
     grid_offsets = np.array([[0, 0], [7, 0], [7, 7], [0, 7]], dtype=np.float64)
     tl_c = global_corners_xy[tl_idx]
     tr_c = global_corners_xy[tr_idx]
@@ -212,15 +164,6 @@ def _run_detection(
     best_N = N_est
 
     for N_cand in range(max(17, N_est - 2), min(177, N_est + 3)):
-        img_centres = np.array(
-            [tl_c.mean(axis=0), tr_c.mean(axis=0), bl_c.mean(axis=0)],
-            dtype=np.float64,
-        )
-        grid_centres = np.array(
-            [[3.5, 3.5], [N_cand - 3.5, 3.5], [3.5, N_cand - 3.5]],
-            dtype=np.float64,
-        )
-
         src_xy: list[list[float]] = []
         dst_xy: list[list[float]] = []
         for corners, origin in [
@@ -234,39 +177,17 @@ def _run_detection(
         src_arr = np.array(src_xy, dtype=np.float64)
         dst_arr = np.array(dst_xy, dtype=np.float64)
 
-        def _reproj_err(H: np.ndarray) -> float:
-            proj = project_points(H, src_arr)
-            return float(np.mean(np.linalg.norm(proj - dst_arr, axis=1)))
-
-        candidates: list[np.ndarray] = []
-
-        # Similarity-from-centres initialisation is always available and is
-        # a conservative, well-conditioned starting point.
-        H_sim = _similarity_init_from_centres(grid_centres, img_centres)
+        H = estimate_homography_dlt(src_arr, dst_arr)
         try:
-            H_sim = refine_homography_lm(H_sim, src_arr, dst_arr, loss="linear")
+            H = refine_homography_lm(H, src_arr, dst_arr, loss="linear")
         except Exception:
             pass
-        candidates.append(H_sim)
-
-        if use_global_dlt_from_corners:
-            cond = dlt_design_matrix_condition(src_arr, dst_arr)
-            if cond <= 500.0:
-                try:
-                    H_dlt = estimate_homography_dlt(src_arr, dst_arr)
-                    H_dlt = refine_homography_lm(H_dlt, src_arr, dst_arr, loss="linear")
-                    candidates.append(H_dlt)
-                except Exception:
-                    pass
-            else:
-                print(f"global_dlt_cond = {cond:.1f} > 500; using similarity init only")
-
-        for H in candidates:
-            err = _reproj_err(H)
-            if err < best_err:
-                best_err = err
-                best_H = H
-                best_N = N_cand
+        proj = project_points(H, src_arr)
+        err = float(np.mean(np.linalg.norm(proj - dst_arr, axis=1)))
+        if err < best_err:
+            best_err = err
+            best_H = H
+            best_N = N_cand
 
     if best_H is None:
         raise ValueError("Homography estimation failed")

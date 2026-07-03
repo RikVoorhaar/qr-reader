@@ -1,94 +1,44 @@
-# Plan 015 Final Report
+# Plan 015 — Experiment Result
 
-Generated after Steps 6 and 7 on branch `plan-015-perspective-finder`.
+Branch `plan-015-perspective-finder` — all Plan 015 features enabled with no feature-flags or fallbacks.
 
-## Final state
+## Active pipeline
 
-| Flag / Setting | Status |
-|---|---|
-| `estimate_anisotropic_pitch` | **default True** |
-| `use_two_families` | **default True** |
-| `use_projective_scanlines` | **default True** |
-| `use_finder_homography` | default **False** (passes isolated benchmark; associations still unstable globally) |
-| `use_global_dlt_from_corners` | default **False** ( DL T over 12 corners overfits on synthetic benchmark; kept as fallback) |
+- Per-finder: anisotropic pitch, two-family orientation, projective scanlines, 8-DOF homography refinement — always on.
+- Global: DLT from 12 finder corners, LM-refined — always on.
 
 ## Test suite
 
-```bash
-pytest src/qr_reader/tests/test_detector.py -q
+| Suite | Result |
+|---|---|
+| `pytest src/qr_reader/tests/detector/test_finder_perspective.py -q` | **25 passed, 4 skipped** |
+| `pytest src/qr_reader/tests/test_detector.py -q` | **16 failed, 2 passed** (unchanged) |
+| `pytest -q` | 724 passed, 18 failed, 5 skipped |
+
+## Full pipeline (qr_benchmark.py)
+
+```
+ValueError: No finder-pattern triplet found
 ```
 
-**Result as of final commit:** `16 failed, 2 passed in 10.23s`
+The per-finder 8-DOF homography refinement produces per-finder corners that
+break the cross-finder association logic (`find_all_associations`), so the
+full detection pipeline cannot complete on the v12 benchmark.
 
-- The failure count is identical to the baseline (`16 failed, 2 passed`).
-- The two passing tests are the frontoparallel / axis-aligned smoke tests.
-- All remaining failures are `ValueError: No finder-pattern triplet found`; these are pre-existing from Plan 013 integration and are unchanged by Plan 015.
+## Single-finder perspective (synthetic sweep)
 
-### Full repository
-
-```bash
-pytest -q
-```
-
-**Result as of final commit:** `724 passed, 18 failed, 5 skipped`
-
-## QR benchmark (v12-default)
-
-```bash
-python src/qr_reader/scripts/qr_benchmark.py
-```
-
-**Result:**
-
-- all correct? `False`
-- pct incorrect: `48.06%`
-- total time: `2.12s`
-- detect time: `1.74s`
-- sample time: `379.17ms`
-- decode time: `1.41ms`
-
-### Comparison with baseline
-
-| Metric | Baseline | Final | Change |
-|---|---|---|---|
-| pct incorrect | `49.77%` | `48.06%` | **-1.71 pp** (improvement) |
-| detect time | `1.74s` | `1.74s` | unchanged |
-
-## Single-finder perspective benchmark
-
-```bash
-pytest src/qr_reader/tests/detector/test_finder_perspective.py -q
-```
-
-**Result:** `25 passed, 4 skipped in 9.32s`
-
-| Step | Diagnostic | Status |
+| Angle | rho RMSE | homography RMSE |
 |---|---|---|
-| 2 | `m_u / m_v` monotonic with perspective | Pass |
-| 3 | Two-family angle error < 5° at 30° | Pass |
-| 4 | Projective scanline RMSE lower than equal-spacing at 30° | Pass |
-| 5 | Homography RMSE beats rho; convergence basin ≥ 90% | Pass |
+| 30° yaw | 6.85 px | **4.31 px** (37% better) |
+| 30° pitch | 6.85 px | **4.40 px** (36% better) |
+| 30°+30° | 25.24 px | **20.58 px** (18% better) |
 
-## Architecture updates
-
-- `AGENTS.md` Data Flow and Module Map updated to reflect the current pipeline.
-- `README.md` Architecture section updated to reflect the current pipeline.
-
-## Known limitations / follow-up
-
-- `use_finder_homography=True` is not yet safe in the full pipeline: the 8-DOF
-  per-finder homography can converge to mirror / cyclic-shifted solutions that
-  break `find_all_associations` consistency across the three finder patterns.
-  An alignment helper (`finder_fit._align_quad_order`) was added, but complete
-  global consistency remains unsolved.
-- `use_global_dlt_from_corners=True` lowers the 12-point reprojection error but
-  degrades decode performance on the v12 benchmark, indicating overfitting to
-  the 12 finder corners. It is retained as an opt-in path with a condition-number
-  guard and a similarity-init fallback.
+Convergence basin: 93.8% (≥90% target).
 
 ## Conclusion
 
-Plan 015 improves the single-finder fit substantially and does not regress the
-baseline test suite or v12 benchmark. The new routines are available for further
-work; enabling the per-finder homography and global DLT paths globally is
-left as a follow-up once the association-consistency issues are resolved.
+The per-finder fitting chain works well in isolation but the 8-DOF homography
+refinement introduces orientation ambiguities between finder patterns that
+break the global association step. Until per-finder homography output is
+stabilised to a consistent canonical frame across all finders, the full
+pipeline will fail on the benchmark.

@@ -37,15 +37,13 @@ class FinderFit:
     phi : float
         Orientation angle in radians (mod π/2).
     m_u : float or None
-        Per-axis module pitch along e1 (set when ``estimate_anisotropic_pitch``).
+        Per-axis module pitch along e1.
     m_v : float or None
-        Per-axis module pitch along e2 (set when ``estimate_anisotropic_pitch``).
+        Per-axis module pitch along e2.
     n_u : ndarray or None
-        First edge-family unit normal, estimated independently from e1
-        (set when ``use_two_families``).
+        First edge-family unit normal, estimated independently from e1.
     n_v : ndarray or None
-        Second edge-family unit normal, estimated independently from e2
-        (set when ``use_two_families``).
+        Second edge-family unit normal, estimated independently from e2.
     """
 
     center: np.ndarray  # (2,)
@@ -1193,16 +1191,13 @@ def fit_finder_full(
     m_est: float,
     use_template: bool = False,
     angle_gate_deg: float = 22.5,
-    estimate_anisotropic_pitch: bool = True,
-    use_two_families: bool = True,
-    use_projective_scanlines: bool = True,
-    use_finder_homography: bool = False,
 ) -> FinderFit:
-    """Fit a finder pattern from NMS edges and ROI image (Phases 1–3, optionally 4).
+    """Fit a finder pattern from NMS edges and ROI image.
 
-    Production API: estimates orientation, builds 1-D projection profiles,
-    fits transition positions, and computes outer corners via refined
-    line positions.
+    Estimates two independent edge-family orientations, fits a 1-D
+    projective scanline model per axis, and refines an 8-DOF homography on
+    the visible finder edges. Corners are derived from the refined
+    homography.
 
     Parameters
     ----------
@@ -1211,7 +1206,7 @@ def fit_finder_full(
     angle : ndarray (H, W)
         Edge-normal angles in [-π, π].
     roi_gray : ndarray (H, W)
-        Grayscale ROI (used only for Phase 4 when *use_template*).
+        Grayscale ROI (used only when *use_template* is True).
     center_xy : ndarray (2,)
         Approximate finder centre (x, y) — e.g. from ``CandidateCluster``.
     m_est : float
@@ -1220,24 +1215,6 @@ def fit_finder_full(
         If True, run Phase 4 template fitting and keep the best result.
     angle_gate_deg : float
         Angle gating threshold in degrees.  Default 22.5°.
-    estimate_anisotropic_pitch : bool
-        If True, store the per-axis fitted module pitches in ``m_u`` and
-        ``m_v``.  Corners still use the shared ``m`` to avoid changing the
-        existing geometric path.
-    use_two_families : bool
-        If True, estimate independent edge-family normals ``n_u``, ``n_v``
-        via 2-mode von-Mises EM instead of the symmetric 4-fold histogram.
-        Fall back to the 4-fold result when the mixture is ambiguous.
-    use_projective_scanlines : bool
-        If True, replace the equal-spacing 1-D fit with a projective
-        scanline RANSAC that maps canonical module positions to observed
-        peaks via a 1-D homography, providing per-axis centre offsets and
-        effective module pitches under perspective.
-    use_finder_homography : bool
-        If True, refine an 8-DOF homography from the affine initialiser
-        (centre, axes, pitch) using LM optimization on NMS edge-point
-        reprojection, and derive corners from the refined homography.
-        Corners from ``_corners_from_rho`` are replaced.
 
     Returns
     -------
@@ -1246,55 +1223,42 @@ def fit_finder_full(
     """
     phi, e1, e2 = estimate_orientation(nms, angle, center_xy)
 
-    if use_two_families:
-        n_u, n_v, score_u, score_v, phi_diag = estimate_orientation_two_families(
-            nms, angle, center_xy)
-    else:
-        n_u, n_v, score_u, score_v, phi_diag = None, None, None, None, None
+    n_u, n_v, score_u, score_v, phi_diag = estimate_orientation_two_families(
+        nms, angle, center_xy)
 
     m_edge = estimate_m_from_edges(nms, angle, center_xy, e1, e2, angle_gate_deg)
     m_init = max(m_est, m_edge)
 
-    if use_projective_scanlines:
-        pos_u, prof_u = build_projection_profile(nms, angle, center_xy, e1, m_init, angle_gate_deg)
-        pos_v, prof_v = build_projection_profile(nms, angle, center_xy, e2, m_init, angle_gate_deg)
-        aff_u = fit_finder_1d(prof_u, pos_u, m_init)
-        aff_v = fit_finder_1d(prof_v, pos_v, m_init)
+    pos_u, prof_u = build_projection_profile(nms, angle, center_xy, e1, m_init, angle_gate_deg)
+    pos_v, prof_v = build_projection_profile(nms, angle, center_xy, e2, m_init, angle_gate_deg)
+    aff_u = fit_finder_1d(prof_u, pos_u, m_init)
+    aff_v = fit_finder_1d(prof_v, pos_v, m_init)
 
-        proj_u = fit_scanline_projective(nms, angle, center_xy, e1, m_init,
-                                         angle_gate_deg=angle_gate_deg,
-                                         m_seed=float(aff_u["m_fitted"]),
-                                         du_seed=float(aff_u["center_offset"]))
-        proj_v = fit_scanline_projective(nms, angle, center_xy, e2, m_init,
-                                         angle_gate_deg=angle_gate_deg,
-                                         m_seed=float(aff_v["m_fitted"]),
-                                         du_seed=float(aff_v["center_offset"]))
+    proj_u = fit_scanline_projective(nms, angle, center_xy, e1, m_init,
+                                     angle_gate_deg=angle_gate_deg,
+                                     m_seed=float(aff_u["m_fitted"]),
+                                     du_seed=float(aff_u["center_offset"]))
+    proj_v = fit_scanline_projective(nms, angle, center_xy, e2, m_init,
+                                     angle_gate_deg=angle_gate_deg,
+                                     m_seed=float(aff_v["m_fitted"]),
+                                     du_seed=float(aff_v["center_offset"]))
 
-        du = float(proj_u["center_offset"])
-        dv = float(proj_v["center_offset"])
-        m_u = float(proj_u["m_effective"])
-        m_v = float(proj_v["m_effective"])
-        m_fit = (m_u + m_v) / 2.0
+    du = float(proj_u["center_offset"])
+    dv = float(proj_v["center_offset"])
+    m_u = float(proj_u["m_effective"])
+    m_v = float(proj_v["m_effective"])
+    m_fit = (m_u + m_v) / 2.0
 
-        # Fall back to equal-spacing fit when projective fails
-        if proj_u["projective_params"] is None or m_u <= 0:
-            du = float(aff_u["center_offset"])
-            m_u = float(aff_u["m_fitted"])
-        if proj_v["projective_params"] is None or m_v <= 0:
-            dv = float(aff_v["center_offset"])
-            m_v = float(aff_v["m_fitted"])
+    # If the projective scanline fit failed to find valid peaks, keep the
+    # affine seed values so the rest of the fit can still produce output.
+    if proj_u["projective_params"] is None or m_u <= 0:
+        du = float(aff_u["center_offset"])
+        m_u = float(aff_u["m_fitted"])
+    if proj_v["projective_params"] is None or m_v <= 0:
+        dv = float(aff_v["center_offset"])
+        m_v = float(aff_v["m_fitted"])
 
-        m_fit = (m_u + m_v) / 2.0
-    else:
-        pos_u, prof_u = build_projection_profile(nms, angle, center_xy, e1, m_init, angle_gate_deg)
-        pos_v, prof_v = build_projection_profile(nms, angle, center_xy, e2, m_init, angle_gate_deg)
-
-        fit_u = fit_finder_1d(prof_u, pos_u, m_init)
-        fit_v = fit_finder_1d(prof_v, pos_v, m_init)
-
-        m_fit = (fit_u["m_fitted"] + fit_v["m_fitted"]) / 2.0
-        du = fit_u["center_offset"]
-        dv = fit_v["center_offset"]
+    m_fit = (m_u + m_v) / 2.0
 
     fitted_center = center_xy + du * e1 + dv * e2
 
@@ -1320,48 +1284,36 @@ def fit_finder_full(
         outer_lines=outer_lines,
         corners=corners,
         phi=float(phi),
-        n_u=n_u.copy() if n_u is not None else None,
-        n_v=n_v.copy() if n_v is not None else None,
+        n_u=n_u.copy(),
+        n_v=n_v.copy(),
     )
 
-    if use_finder_homography:
-        H_init = np.eye(3)
-        H_init[0, 0] = float(m_fit) * float(e1[0])
-        H_init[0, 1] = float(m_fit) * float(e2[0])
-        H_init[0, 2] = float(fitted_center[0])
-        H_init[1, 0] = float(m_fit) * float(e1[1])
-        H_init[1, 1] = float(m_fit) * float(e2[1])
-        H_init[1, 2] = float(fitted_center[1])
+    H_init = np.eye(3)
+    H_init[0, 0] = float(m_fit) * float(e1[0])
+    H_init[0, 1] = float(m_fit) * float(e2[0])
+    H_init[0, 2] = float(fitted_center[0])
+    H_init[1, 0] = float(m_fit) * float(e1[1])
+    H_init[1, 1] = float(m_fit) * float(e2[1])
+    H_init[1, 2] = float(fitted_center[1])
 
-        H_refined = refine_finder_homography(nms, angle, H_init)
-        homog_corners = corners_from_finder_homography(H_refined)
-        # The LM objective is symmetric to 180° rotation / reflection of the
-        # canonical square, so the returned corners may be cyclically shifted
-        # or mirrored.  Reorder them to match the rho-based corner frame so
-        # downstream association code gets a consistent canonical order.
-        result.corners = _align_quad_order(homog_corners, corners)
-        result.m = float(m_fit)  # keep original m
+    H_refined = refine_finder_homography(nms, angle, H_init)
+    homog_corners = corners_from_finder_homography(H_refined)
+    # The LM objective is symmetric to 180° rotation / reflection of the
+    # canonical square, so the returned corners may be cyclically shifted
+    # or mirrored.  Reorder them to match the rho-based corner frame so
+    # downstream association code gets a consistent canonical order.
+    result.corners = _align_quad_order(homog_corners, corners)
 
-    if estimate_anisotropic_pitch:
-        if use_projective_scanlines:
-            result.m_u = float(m_u)
-            result.m_v = float(m_v)
-        else:
-            result.m_u = float(fit_u["m_fitted"])
-            result.m_v = float(fit_v["m_fitted"])
+    result.m_u = float(m_u)
+    result.m_v = float(m_v)
 
     if use_template:
         tmpl = fit_finder_template(roi_gray, nms, angle, center_xy, e1, e2, m_fit,
                                    angle_gate_deg=angle_gate_deg)
         if tmpl.score > 0:
             result = tmpl
-            if estimate_anisotropic_pitch:
-                if use_projective_scanlines:
-                    result.m_u = float(m_u)
-                    result.m_v = float(m_v)
-                else:
-                    result.m_u = float(fit_u["m_fitted"])
-                    result.m_v = float(fit_v["m_fitted"])
+            result.m_u = float(m_u)
+            result.m_v = float(m_v)
 
     return result
 

@@ -55,32 +55,6 @@ def _apply_transform(T: np.ndarray, points: np.ndarray) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
-def dlt_design_matrix_condition(src_xy: np.ndarray, dst_xy: np.ndarray) -> float:
-    """Condition number of the *normalized* DLT design matrix.
-
-    Uses the same isotropic normalization as ``estimate_homography_dlt``.
-    A value >> 1 indicates a poorly conditioned DLT fit (e.g. nearly
-    collinear point triplets or degenerate point layouts).
-    """
-    T_src = normalization_transform(src_xy)
-    T_dst = normalization_transform(dst_xy)
-
-    src_norm = _apply_transform(T_src, src_xy)
-    dst_norm = _apply_transform(T_dst, dst_xy)
-
-    n = src_norm.shape[0]
-    A = np.zeros((2 * n, 9))
-    for i in range(n):
-        x, y = src_norm[i]
-        u, v = dst_norm[i]
-        A[2 * i] = [0.0, 0.0, 0.0, -x, -y, -1.0, v * x, v * y, v]
-        A[2 * i + 1] = [x, y, 1.0, 0.0, 0.0, 0.0, -u * x, -u * y, -u]
-
-    s = np.linalg.svd(A, compute_uv=False)
-    smin = s[s > 1e-12].min()
-    return float(s.max() / smin)
-
-
 def estimate_homography_dlt(src_xy: np.ndarray, dst_xy: np.ndarray) -> np.ndarray:
     """Estimate homography via normalized DLT.
 
