@@ -239,8 +239,9 @@ def find_triplets(
                 vec_ba = a_center - b_center
                 vec_bc = c_center - b_center
 
-                # Cross product in 2D
-                cross = vec_ba[0] * vec_bc[1] - vec_ba[1] * vec_bc[0]
+                v_ba_xy = vec_ba[::-1]
+                v_bc_xy = vec_bc[::-1]
+                cross = float(v_ba_xy[0] * v_bc_xy[1] - v_ba_xy[1] * v_bc_xy[0])
 
                 if cross > 0:
                     # BA is to the right of BC (counter-clockwise from BC to BA)
@@ -400,7 +401,9 @@ def find_valid_triplets(
                 if m_max < 1e-9 or (m_max - m_min) / m_max > module_size_tol:
                     continue
 
-                cross = float(vec_ba[0] * vec_bc[1] - vec_ba[1] * vec_bc[0])
+                v_ba_xy = vec_ba[::-1]
+                v_bc_xy = vec_bc[::-1]
+                cross = float(v_ba_xy[0] * v_bc_xy[1] - v_ba_xy[1] * v_bc_xy[0])
                 if cross > 0:
                     top_right = a_idx
                     bottom_left = c_idx
