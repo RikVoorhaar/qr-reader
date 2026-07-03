@@ -138,11 +138,27 @@ def _run_detection(image: np.ndarray) -> tuple[np.ndarray, int]:
     dy = float(np.linalg.norm(c_bl - center_tl_xy))
     N_est = int(round((dx + dy) / (2.0 * m_avg) + 7))
 
+    global_u = c_tr - center_tl_xy
+    global_u = global_u / (float(np.linalg.norm(global_u)) + 1e-12)
+    global_v = c_bl - center_tl_xy
+    global_v = global_v / (float(np.linalg.norm(global_v)) + 1e-12)
+
+    def _canonicalize_corners(corners_xy: np.ndarray) -> np.ndarray:
+        centre_xy = corners_xy.mean(axis=0)
+        uv = corners_xy - centre_xy
+        u_proj = uv @ global_u
+        v_proj = uv @ global_v
+        idx_tl = int(np.argmin(u_proj + v_proj))
+        idx_tr = int(np.argmax(u_proj - v_proj))
+        idx_br = int(np.argmax(u_proj + v_proj))
+        idx_bl = int(np.argmin(u_proj - v_proj))
+        return corners_xy[np.array([idx_tl, idx_tr, idx_br, idx_bl])]
+
     # 7. Global homography from 12 refined finder corners: DLT + LM.
     grid_offsets = np.array([[0, 0], [7, 0], [7, 7], [0, 7]], dtype=np.float64)
-    tl_c = global_corners_xy[tl_idx]
-    tr_c = global_corners_xy[tr_idx]
-    bl_c = global_corners_xy[bl_idx]
+    tl_c = _canonicalize_corners(global_corners_xy[tl_idx])
+    tr_c = _canonicalize_corners(global_corners_xy[tr_idx])
+    bl_c = _canonicalize_corners(global_corners_xy[bl_idx])
 
     best_err = np.inf
     best_H: np.ndarray | None = None

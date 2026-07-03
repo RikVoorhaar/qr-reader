@@ -75,10 +75,10 @@ def test_check_association():
 def test_find_triplets():
     # Top-Left at (0, 0)
     fp_tl = FinderPattern(cluster_idx=1, outer_corners=np.array([[0, 0], [2, 0], [2, 2], [0, 2]]))
-    # Top-Right at (10, 0)
-    fp_tr = FinderPattern(cluster_idx=0, outer_corners=np.array([[10, 0], [12, 0], [12, 2], [10, 2]]))
-    # Bottom-Left at (0, 10)
-    fp_bl = FinderPattern(cluster_idx=2, outer_corners=np.array([[0, 10], [2, 10], [2, 12], [0, 12]]))
+    # Top-Right at (0, 10) — col=10, same row as TL
+    fp_tr = FinderPattern(cluster_idx=2, outer_corners=np.array([[0, 10], [2, 10], [2, 12], [0, 12]]))
+    # Bottom-Left at (10, 0) — row=10, same col as TL
+    fp_bl = FinderPattern(cluster_idx=0, outer_corners=np.array([[10, 0], [12, 0], [12, 2], [10, 2]]))
 
     fps = [fp_tr, fp_tl, fp_bl]
     associations = find_all_associations(fps)
@@ -89,5 +89,5 @@ def test_find_triplets():
     t = triplets[0]
 
     assert t.top_left_idx == 1
-    assert t.top_right_idx == 0
-    assert t.bottom_left_idx == 2
+    assert t.top_right_idx == 2
+    assert t.bottom_left_idx == 0
