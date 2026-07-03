@@ -22,7 +22,6 @@ from qr_reader.detector.finder_fit import (
     FinderFit,
     build_projection_profile,
     corners_from_finder_homography,
-    extract_finder_corners_from_rho,
     fit_finder_1d,
     fit_finder_full,
     fit_scanline_projective,
@@ -288,54 +287,6 @@ def _angle_error_deg(a: np.ndarray, b: np.ndarray) -> float:
     """Acute angle between two unit vectors mod π, in degrees."""
     dot = abs(float(np.dot(a, b)))
     return float(np.rad2deg(np.arccos(min(dot, 1.0))))
-
-
-def _true_family_normals(H_world_to_image: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Ground-truth edge-family image normals from H^{-T} applied to canonical axes.
-
-    The edge families in the canonical frame have normals (1,0) for the
-    vertical (x=const) lines and (0,1) for the horizontal (y=const) lines.
-    Under homography H, lines transform as H^{-T}.  We use the centre line
-    (x=0, y=0) as the representative for each family.
-    """
-    H_inv = np.linalg.inv(H_world_to_image)
-    n_u_img = H_inv[0, :2].astype(np.float64)
-    n_v_img = H_inv[1, :2].astype(np.float64)
-    n_u_img /= np.linalg.norm(n_u_img)
-    n_v_img /= np.linalg.norm(n_v_img)
-    return n_u_img, n_v_img
-
-
-def test_two_families_reduces_angle_error() -> None:
-    """The two-family EM estimator reduces orientation error vs the 4-fold bisector."""
-    yaw = 30.0
-    pitch = 30.0
-
-    warped, H_true, true_corners_global = synthesise_finder_homography(yaw, pitch)
-    roi, origin, true_corners_roi = extract_roi(warped, true_corners_global)
-
-    center_roi = true_corners_roi.mean(axis=0)
-
-    fit = fit_finder_to_roi_full(roi, center_roi, 10.0)
-
-    n_u_gt, n_v_gt = _true_family_normals(H_true)
-
-    # Two-family normals from the new pipeline
-    assert fit.n_u is not None
-    assert fit.n_v is not None
-    err_two = (
-        _angle_error_deg(fit.n_u, n_u_gt)
-        + _angle_error_deg(fit.n_v, n_v_gt)
-    ) / 2.0
-
-    # 4-fold histogram bisector (still stored in e1/e2)
-    err_bisector = (
-        _angle_error_deg(fit.e1, n_u_gt)
-        + _angle_error_deg(fit.e2, n_v_gt)
-    ) / 2.0
-
-    assert err_two < 5.0, f"Two-family mean angle error too large: {err_two:.2f}°"
-    assert err_bisector > 8.0, f"Bisector error not large enough to show bias: {err_bisector:.2f}°"
 
 
 def _corner_seed_affine(

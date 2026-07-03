@@ -40,10 +40,6 @@ class FinderFit:
         Per-axis module pitch along e1.
     m_v : float or None
         Per-axis module pitch along e2.
-    n_u : ndarray or None
-        First edge-family unit normal, estimated independently from e1.
-    n_v : ndarray or None
-        Second edge-family unit normal, estimated independently from e2.
     """
 
     center: np.ndarray  # (2,)
@@ -56,8 +52,6 @@ class FinderFit:
     phi: float = 0.0
     m_u: float | None = None
     m_v: float | None = None
-    n_u: np.ndarray | None = None
-    n_v: np.ndarray | None = None
 
 
 def estimate_orientation(
@@ -110,115 +104,6 @@ def estimate_orientation(
     e2 = np.array([-np.sin(phi), np.cos(phi)])
 
     return float(phi), e1, e2
-
-
-def estimate_orientation_two_families(
-    nms: np.ndarray,
-    angle: np.ndarray,
-    center_xy: np.ndarray,
-    kappa: float = 10.0,
-    max_iter: int = 30,
-    tol: float = 1e-4,
-) -> tuple[np.ndarray, np.ndarray, float, float, float]:
-    """Estimate two edge-family orientations via 2-mode von-Mises EM.
-
-    Edge normals are modulo π (180° symmetry).  We double the angles
-    (β = 2α mod 2π) so the two perpendicular families are separated by π
-    and can be modelled by a standard von-Mises mixture on the full circle.
-
-    A heuristic fallback to the 4-fold histogram is triggered when the two
-    modes are ambiguous (mixture-weight ratio < 0.3) or when the acute angle
-    between the two families falls below 30°.
-
-    Parameters
-    ----------
-    nms, angle, center_xy
-        Same as ``estimate_orientation``.
-
-    Returns
-    -------
-    n_u : ndarray (2,)
-        Unit normal of the first edge family.
-    n_v : ndarray (2,)
-        Unit normal of the second edge family.
-    score_u : float
-        Mixture weight of the first family (≈ confidence).
-    score_v : float
-        Mixture weight of the second family.
-    phi : float
-        The 4-fold orientation angle (mod π/2) for diagnostic use.
-    """
-    phi, e1_fallback, e2_fallback = estimate_orientation(nms, angle, center_xy)
-
-    ys, xs = np.nonzero(nms)
-    if len(ys) < 8:
-        return e1_fallback.copy(), e2_fallback.copy(), 0.5, 0.5, phi
-
-    w = nms[ys, xs].astype(np.float64)
-    alpha = np.fmod(angle[ys, xs], np.pi)
-    alpha = np.where(alpha < 0, alpha + np.pi, alpha)
-
-    beta = (2.0 * alpha) % (2.0 * np.pi)
-
-    phi_double = (2.0 * phi) % (2.0 * np.pi)
-    mu = np.array([phi_double, (phi_double + np.pi) % (2.0 * np.pi)])
-    pi_w = np.array([0.5, 0.5])
-
-    for _ in range(max_iter):
-        diff = beta[:, np.newaxis] - mu[np.newaxis, :]
-        log_r = kappa * np.cos(diff) + np.log(pi_w[np.newaxis, :])
-        log_r_max = log_r.max(axis=1, keepdims=True)
-        r = np.exp(log_r - log_r_max)
-        r /= r.sum(axis=1, keepdims=True)
-
-        n_k = r.sum(axis=0)
-        pi_w_new = n_k / len(beta)
-
-        mu_new = np.zeros(2, dtype=np.float64)
-        for k in range(2):
-            s = float(np.sum(r[:, k] * np.sin(beta)))
-            c = float(np.sum(r[:, k] * np.cos(beta)))
-            mu_new[k] = np.arctan2(s, c) % (2.0 * np.pi)
-
-        if max(
-            float(abs(pi_w_new - pi_w).max()),
-            float(abs(((mu_new - mu + np.pi) % (2.0 * np.pi) - np.pi)).max()),
-        ) < tol:
-            pi_w = pi_w_new
-            mu = mu_new
-            break
-
-        pi_w = pi_w_new
-        mu = mu_new
-
-    candidate_angles = np.array([(mu[0] / 2.0) % np.pi, (mu[1] / 2.0) % np.pi])
-
-    # Label the mode closest to the 4-fold orientation reference as the u-axis.
-    # This keeps per-finder family labels consistent with the global QR frame.
-    diff_to_phi = np.abs(candidate_angles - phi)
-    diff_to_phi = np.minimum(diff_to_phi, np.pi - diff_to_phi)
-    u_idx = int(np.argmin(diff_to_phi))
-    angle_u = candidate_angles[u_idx]
-    angle_v = candidate_angles[1 - u_idx]
-
-    n_u = np.array([np.cos(angle_u), np.sin(angle_u)])
-    # Preserve the v family while choosing the sign that yields a right-handed
-    # (e1, e2) frame.
-    v1 = np.array([np.cos(angle_v), np.sin(angle_v)])
-    v2 = -v1
-    n_v = v1 if (n_u[0] * v1[1] - n_u[1] * v1[0]) >= (n_u[0] * v2[1] - n_u[1] * v2[0]) else v2
-
-    score_u = float(pi_w[0])
-    score_v = float(pi_w[1])
-
-    score_ratio = min(score_u, score_v) / max(score_u, score_v)
-    dot_abs = abs(float(np.dot(n_u, n_v)))
-    sep_deg = float(np.rad2deg(np.arccos(dot_abs)))
-
-    if score_ratio < 0.3 or sep_deg < 30.0 or sep_deg > 150.0:
-        return e1_fallback.copy(), e2_fallback.copy(), 0.5, 0.5, phi
-
-    return n_u, n_v, score_u, score_v, phi
 
 
 def build_projection_profile(
@@ -1222,9 +1107,6 @@ def fit_finder_full(
     """
     phi, e1, e2 = estimate_orientation(nms, angle, center_xy)
 
-    n_u, n_v, score_u, score_v, phi_diag = estimate_orientation_two_families(
-        nms, angle, center_xy)
-
     m_edge = estimate_m_from_edges(nms, angle, center_xy, e1, e2, angle_gate_deg)
     m_init = max(m_est, m_edge)
 
@@ -1283,8 +1165,6 @@ def fit_finder_full(
         outer_lines=outer_lines,
         corners=corners,
         phi=float(phi),
-        n_u=n_u.copy(),
-        n_v=n_v.copy(),
         m_u=float(m_u),
         m_v=float(m_v),
     )
@@ -1300,20 +1180,6 @@ def fit_finder_full(
     return result
 
 
-def _corners_from_rho(um, up, vm, vp, n_u, n_v):
-    """Compute corners from line normals and signed distances.
-
-    ``n_u`` and ``n_v`` are the (possibly canonicalised) unit normals of the
-    u- and v-edge families.  The corner is ``rho_u * n_u + rho_v * n_v``,
-    which is the intersection point of the two corresponding lines.
-    """
-    c00 = um * n_u + vm * n_v
-    c10 = up * n_u + vm * n_v
-    c11 = up * n_u + vp * n_v
-    c01 = um * n_u + vp * n_v
-    return np.array([c00, c10, c11, c01], dtype=np.float64)
-
-
 def extract_finder_corners_from_rho(
     um: float, up: float, vm: float, vp: float,
     e1: np.ndarray, e2: np.ndarray,
@@ -1321,8 +1187,13 @@ def extract_finder_corners_from_rho(
     """Compute 4 outer corners from refined rho values.
 
     Uses the decomposition p = u*e1 + v*e2 (valid because e1⊥e2).
+    The corner is ``rho_u * e1 + rho_v * e2``.
     """
-    return _corners_from_rho(um, up, vm, vp, e1, e2)
+    c00 = um * e1 + vm * e2
+    c10 = up * e1 + vm * e2
+    c11 = up * e1 + vp * e2
+    c01 = um * e1 + vp * e2
+    return np.array([c00, c10, c11, c01], dtype=np.float64)
 
 
 def estimate_m_from_edges(
