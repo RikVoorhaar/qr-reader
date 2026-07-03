@@ -51,7 +51,7 @@ def _make_qr(
     )
     qr.add_data(content)
     qr.make(fit=False)
-    return np.array(qr.modules, dtype=bool)
+    return np.array(qr.modules, dtype=bool).T
 
 
 # ──────────────────────────────────────────────────────────────
@@ -339,7 +339,7 @@ class TestErrorCorrection:
         rng = random.Random(42)
         flip_positions = rng.sample(data_positions, 3)
         for r, c in flip_positions:
-            corrupted[r, c] = not corrupted[r, c]
+            corrupted[c, r] = not corrupted[c, r]
 
         result = decode(corrupted)
         assert result == content

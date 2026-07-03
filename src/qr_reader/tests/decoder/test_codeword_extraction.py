@@ -56,7 +56,7 @@ def _gen_qr(
     )
     qr.add_data(content)
     qr.makeImpl(False, mask)
-    matrix = np.array(qr.modules, dtype=bool)
+    matrix = np.array(qr.modules, dtype=bool).T
     return matrix, list(qr.data_cache)
 
 

@@ -186,7 +186,7 @@ def extract_codewords(matrix: np.ndarray, version: int, mask_idx: int) -> bytes:
                 if 0 <= row < size and 0 <= c < size:
                     if not fn_mask[row, c]:
                         # Data module: read bit
-                        dark = bool(matrix[row, c])
+                        dark = bool(matrix[c, row])
                         # Unmask: XOR with mask condition
                         if _mask_condition(mask_idx, row, c):
                             dark = not dark
