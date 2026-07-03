@@ -19,8 +19,7 @@ from qr_reader.detector.edges import extract_thin_edges
 from qr_reader.detector.finder_fit import FinderFit, fit_finder_full
 from qr_reader.detector.finder_pattern import (
     FinderPattern,
-    find_all_associations,
-    find_triplets,
+    find_valid_triplets,
 )
 from qr_reader.detector.homography import (
     compute_qr_corners,
@@ -116,29 +115,15 @@ def _run_detection(image: np.ndarray) -> tuple[np.ndarray, int]:
     if not fps:
         raise ValueError("No finder patterns after deduplication")
 
-    # 5. Find associations and triplets
-    associations = find_all_associations(fps, offset_tol=1.20)
-    raw_triplets = find_triplets(fps, associations)
+    # 5. Find triplets via centre geometry + axis alignment
+    raw_triplets = find_valid_triplets(fps, fit_map)
     if not raw_triplets:
         raise ValueError("No finder-pattern triplet found")
 
     raw = raw_triplets[0]
     tl_idx = raw.top_left_idx
-
-    # Determine TR and BL from the associations: the finder sharing
-    # horizontal (segments [0,2]) edges with TL is TR; the one sharing
-    # vertical ([1,3]) edges is BL.
-    tr_idx = bl_idx = -1
-    for a in associations:
-        if tl_idx in (a.fp1_idx, a.fp2_idx):
-            other = a.fp2_idx if a.fp1_idx == tl_idx else a.fp1_idx
-            tl_segs = set(a.colinear_segments_1 if a.fp1_idx == tl_idx else a.colinear_segments_2)
-            if {0, 2} <= tl_segs:
-                tr_idx = other
-            elif {1, 3} <= tl_segs:
-                bl_idx = other
-    if tr_idx < 0 or bl_idx < 0:
-        raise ValueError("Could not determine TR / BL from associations")
+    tr_idx = raw.top_right_idx
+    bl_idx = raw.bottom_left_idx
 
     fp_map = {fp.cluster_idx: fp for fp in fps}
     rows = {idx: float(fp_map[idx].outer_corners.mean(axis=0)[0]) for idx in [tl_idx, tr_idx, bl_idx]}

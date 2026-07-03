@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
@@ -248,6 +250,158 @@ def find_triplets(
                     # Wait: vec_TR = (1, 0), vec_BL = (0, 1)
                     # TR x BL = 1*1 - 0*0 = 1 > 0
                     # So if cross > 0, BA is TR and BC is BL
+                    top_right = a_idx
+                    bottom_left = c_idx
+                else:
+                    top_right = c_idx
+                    bottom_left = a_idx
+
+                triplets.append(
+                    Triplet(
+                        top_left_idx=b_idx,
+                        top_right_idx=top_right,
+                        bottom_left_idx=bottom_left,
+                    )
+                )
+
+    return triplets
+
+
+def find_valid_triplets(
+    fps: list[FinderPattern],
+    fit_map: dict[int, object],
+    module_size_tol: float = 0.3,
+    min_module_size: float = 2.0,
+    dist_min: float = 2.0,
+    dist_max: float = 200.0,
+) -> list[Triplet]:
+    """Find triplets using center geometry, axis alignment, and module-size compatibility.
+
+    Replaces the ``find_all_associations → find_triplets`` pipeline when fine-grained
+    per-finder ``FinderFit`` information is available.  The algorithm:
+
+    1. **Pair connectivity** — Two finders are connected if their module sizes are
+       compatible (``|mi - mj| / max(mi, mj) < module_size_tol``), their centers are
+       within ``[dist_min * m_avg, dist_max * m_avg]``, and the inter-center vector
+       is approximately aligned with one finder axis (parallel to e1/e2, perpendicular
+       to the other).
+
+    2. **Triplet discovery** — A finder with >= 2 neighbours forms a candidate triplet
+       when its two neighbours are not directly connected and the angle at the centre
+       is within 15° of a right angle.
+
+    3. **Orientation resolution** — The top-left, top-right, and bottom-left roles are
+       assigned via a cross-product check on the inter-centre vectors.
+
+    Args:
+        fps: Finder patterns (already deduplicated).
+        fit_map: ``FinderFit`` objects keyed by ``cluster_idx``, providing ``center``,
+            ``e1``, ``e2``, and ``m``.
+        module_size_tol: Maximum relative module-pitch difference.
+        dist_min: Minimum inter-centre distance as a multiple of average module pitch.
+        dist_max: Maximum inter-centre distance as a multiple of average module pitch.
+        min_module_size: Minimum module pitch (px) for a valid finder pattern.
+
+    Returns:
+        List of ``Triplet`` objects (TL, TR, BL roles resolved).
+    """
+    n = len(fps)
+    if n < 3:
+        return []
+
+    idx_to_pos = {fp.cluster_idx: i for i, fp in enumerate(fps)}
+    centers = np.array([fp.outer_corners.mean(axis=0) for fp in fps])
+
+    adj: dict[int, list[int]] = {fp.cluster_idx: [] for fp in fps}
+
+    for i in range(n):
+        idx_i = fps[i].cluster_idx
+        if idx_i not in fit_map:
+            continue
+        fi = fit_map[idx_i]
+        mi = fi.m
+        ci_rc = centers[i]
+
+        for j in range(i + 1, n):
+            idx_j = fps[j].cluster_idx
+            if idx_j not in fit_map:
+                continue
+            fj = fit_map[idx_j]
+            mj = fj.m
+
+            if mi < min_module_size or mj < min_module_size:
+                continue
+
+            if abs(mi - mj) / max(mi, mj) > module_size_tol:
+                continue
+
+            cj_rc = centers[j]
+            delta_rc = cj_rc - ci_rc
+            dist = float(np.linalg.norm(delta_rc))
+            m_avg = (mi + mj) / 2.0
+
+            if dist < dist_min * m_avg or dist > dist_max * m_avg:
+                continue
+
+            if dist < 1e-9:
+                continue
+            delta_xy = delta_rc[::-1]
+            delta_unit = delta_xy / dist
+
+            dot1 = abs(float(np.dot(delta_unit, fi.e1)))
+            dot2 = abs(float(np.dot(delta_unit, fi.e2)))
+            parallel_score = max(dot1, dot2)
+            perp_score = min(dot1, dot2)
+
+            if parallel_score < 0.9 or perp_score > 0.25 * parallel_score:
+                continue
+
+            adj[idx_i].append(idx_j)
+            adj[idx_j].append(idx_i)
+
+    triplets: list[Triplet] = []
+    for b_idx in adj:
+        neighbors = adj[b_idx]
+        if len(neighbors) < 2:
+            continue
+        for ni in range(len(neighbors)):
+            for nj in range(ni + 1, len(neighbors)):
+                a_idx = neighbors[ni]
+                c_idx = neighbors[nj]
+
+                if a_idx in adj.get(c_idx, []) or c_idx in adj.get(a_idx, []):
+                    continue
+
+                ca = centers[idx_to_pos[a_idx]]
+                cb = centers[idx_to_pos[b_idx]]
+                cc = centers[idx_to_pos[c_idx]]
+
+                vec_ba = ca - cb
+                vec_bc = cc - cb
+
+                dot = float(np.dot(vec_ba, vec_bc))
+                norm = float(np.linalg.norm(vec_ba) * np.linalg.norm(vec_bc))
+                if norm < 1e-9:
+                    continue
+                cos_angle = np.clip(dot / norm, -1.0, 1.0)
+                angle = float(np.arccos(cos_angle))
+
+                if abs(angle - np.pi / 2) > np.deg2rad(15):
+                    continue
+
+                for idx in (a_idx, b_idx, c_idx):
+                    if idx not in fit_map:
+                        continue
+                ma = fit_map[a_idx].m
+                mb = fit_map[b_idx].m
+                mc = fit_map[c_idx].m
+                m_max = max(ma, mb, mc)
+                m_min = min(ma, mb, mc)
+                if m_max < 1e-9 or (m_max - m_min) / m_max > module_size_tol:
+                    continue
+
+                cross = float(vec_ba[0] * vec_bc[1] - vec_ba[1] * vec_bc[0])
+                if cross > 0:
                     top_right = a_idx
                     bottom_left = c_idx
                 else:
