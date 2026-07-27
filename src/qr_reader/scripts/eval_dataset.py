@@ -118,10 +118,17 @@ def evaluate_sample(rec: dict, dataset_dir: Path) -> dict[str, Any]:
     t1 = perf_counter()
     result["detect_time"] = t1 - t0
 
+    sample_time = 0.0
+    decode_time = 0.0
+
     if result["detect_ok"]:
+        t2 = perf_counter()
         try:
             bits = sample_qr_bits(image_gray, H, N_det)
+            t3 = perf_counter()
+            sample_time = t3 - t2
             text = decode(bits)
+            decode_time = perf_counter() - t3
             result["decode_ok"] = text == rec["payload"]
             result["text_det"] = text
             result["payload_gt"] = rec["payload"]
@@ -129,8 +136,9 @@ def evaluate_sample(rec: dict, dataset_dir: Path) -> dict[str, Any]:
             result["decode_ok"] = False
             result["decode_error"] = str(e)
 
-    t2 = perf_counter()
-    result["total_time"] = t2 - t0
+    result["sample_time"] = sample_time
+    result["decode_time"] = decode_time
+    result["total_time"] = perf_counter() - t0
 
     return result
 
@@ -168,8 +176,14 @@ def print_results(records: list[dict], results: list[dict]) -> None:
         print(f"  Corner RMSE (mod):   {np.mean(corner_rmse_norm):.2f} mean / {np.median(corner_rmse_norm):.2f} median")
 
     detect_times = [r["detect_time"] for r in results if r.get("detect_ok")]
+    sample_times = [r["sample_time"] for r in results if r.get("detect_ok")]
+    decode_times = [r["decode_time"] for r in results if r.get("detect_ok")]
     if detect_times:
         print(f"\n  Detect time (ms):    {np.mean(detect_times)*1000:.0f} mean / {np.median(detect_times)*1000:.0f} median")
+    if sample_times:
+        print(f"  Sample time (ms):    {np.mean(sample_times)*1000:.0f} mean / {np.median(sample_times)*1000:.0f} median")
+    if decode_times:
+        print(f"  Decode time (ms):    {np.mean(decode_times)*1000:.0f} mean / {np.median(decode_times)*1000:.0f} median")
 
     errors = [r.get("error") for r in results if r.get("error") and not r.get("detect_ok")]
     if errors:
