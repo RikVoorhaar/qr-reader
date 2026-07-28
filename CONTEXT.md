@@ -104,6 +104,21 @@ segment endpoints (projected extent of the longest contiguous support run),
 and accumulator vote score.  Used for downstream finder-pattern corner extraction.
 _Avoid_: Hough peak, accumulator bin
 
+**Projective Center**:
+The image of the canonical finder-pattern centre (1/2, 1/2) under the
+projective transformation defined by the four boundary lines of the finder
+pattern.  Computed as the intersection of the two diagonals of the quadrilateral
+formed by the four line intersections.  Used to calibrate the relative
+scales κ_u, κ_v of opposite boundary-line pairs for projective line interpolation.
+_Avoid_: True centre, geometric centre, finder centroid
+
+**Centerpoint**:
+The point from which half-rays are sampled outward to produce radial intensity
+profiles.  This is NOT the projective center — it is estimated from boundary
+points and may be offset by several pixels from the true centre of the finder
+pattern.
+_Avoid_: Centre, ray origin, sampling centre
+
 ### Synthesis
 
 **Synthetic Image**:
