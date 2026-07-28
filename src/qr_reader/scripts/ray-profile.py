@@ -100,7 +100,6 @@ plt.show()
 
 
 
-
 # ── Pipeline: binarize → alignment scan → cluster ──
 img_binary = binarize_image(img_gray)
 max_error = np.log(1.3)
@@ -718,11 +717,15 @@ from qr_reader.detector.edge_fitting import (
     DISTANCE_THRESHOLD,
     MAX_GAP,
     PITCH_CONSTANT,
+    assign_half_rays_to_segments,
     assign_points,
     build_pair_distance_matrix,
+    check_segment_jacobian,
     cluster_pairs,
     compute_boundary_points,
     extract_top_clusters,
+    segment_refinement_jacobian,
+    segment_refinement_residuals,
 )
 
 show_indices = CLUSTER_INDICES or list(range(len(clusters)))
@@ -995,6 +998,190 @@ for ci, data in edge_data.items():
     print(f"Cluster {ci}: half-ray assignment — " + ", ".join(
         f"Edge {si}: {c}" for si, c in enumerate(counts)))
 
+    if TIGHT_LAYOUT:
+        plt.tight_layout()
+    plt.show()
+
+
+# %% [12] Step 2 — Jacobian verification
+
+def _compute_m_mask(
+    x0: np.ndarray,
+    center_xy: np.ndarray,
+    half_dirs: np.ndarray,
+    seg_mask: np.ndarray,
+    pitch_constant: float = PITCH_CONSTANT,
+) -> np.ndarray:
+    """Pre-compute m values from initial segment estimate for fixed masking."""
+    n_rays = len(half_dirs)
+    m_mask = np.full(n_rays, np.nan, dtype=np.float64)
+    theta, rho = x0
+    n = np.array([np.cos(theta), np.sin(theta)])
+    for i in range(n_rays):
+        if not seg_mask[i]:
+            continue
+        denom = n @ half_dirs[i]
+        if abs(denom) < 1e-12:
+            continue
+        t_int = (rho - n @ center_xy) / denom
+        m_mask[i] = t_int / pitch_constant
+    return m_mask
+
+
+for ci, data in edge_data.items():
+    if "top4" not in data:
+        continue
+    top4 = data["top4"]
+    profiles_norm = data["profiles_norm"]
+    center_xy = data["center_xy"]
+    theta_rad = data["theta_rad"]
+    max_dist = data["max_dist"]
+
+    half_dirs = np.column_stack([np.cos(theta_rad), np.sin(theta_rad)])
+    n_rays = len(theta_rad)
+    n_samples = profiles_norm.shape[1]
+    t_samples = np.linspace(0, max_dist, n_samples)
+
+    seg_idx, _ = assign_half_rays_to_segments(center_xy, half_dirs, top4)
+
+    print(f"\nCluster {ci}:")
+    for k in range(len(top4)):
+        mask = seg_idx == k
+        n_assigned = int(np.sum(mask))
+        if n_assigned == 0:
+            print(f"  Segment {k}: no assigned half-rays, skipping")
+            continue
+        ec = top4[k]
+        x0 = np.array([np.arctan2(ec.normal[1], ec.normal[0]),
+                       float(ec.rho)])
+        m_mask = _compute_m_mask(x0, center_xy, half_dirs, mask,
+                                 PITCH_CONSTANT)
+        _, _, max_err = check_segment_jacobian(
+            x0, center_xy, profiles_norm, half_dirs, t_samples,
+            mask, m_mask, PITCH_CONSTANT,
+        )
+        status = "✓" if max_err <= 1e-3 else "✗"
+        print(f"  Segment {k}: {status} max rel Jacobian error = {max_err:.2e}"
+              f"  ({n_assigned} rays)")
+
+
+# %% [13] Step 3 — LM refinement + combined diagnostic plot
+from scipy.optimize import least_squares
+
+MASK_BOUNDARY = 4.5
+EDGE_COLORS = ["#e41a1c", "#377eb8", "#4daf4a", "#984ea3"]
+
+for ci, data in edge_data.items():
+    if "top4" not in data:
+        continue
+    top4 = data["top4"]
+    profiles_norm = data["profiles_norm"]
+    center_xy = data["center_xy"]
+    theta_rad = data["theta_rad"]
+    max_dist = data["max_dist"]
+    roi = data["roi"]
+    H_roi, W_roi = data["H_roi"], data["W_roi"]
+    points = data["points"]
+    assignment = data.get("assignment")
+
+    half_dirs = np.column_stack([np.cos(theta_rad), np.sin(theta_rad)])
+    n_rays = len(theta_rad)
+    n_samples = profiles_norm.shape[1]
+    t_samples = np.linspace(0, max_dist, n_samples)
+
+    seg_idx, _ = assign_half_rays_to_segments(center_xy, half_dirs, top4)
+
+    print(f"\nCluster {ci}:")
+    refined_normals = []
+    refined_rhos = []
+    for k in range(len(top4)):
+        mask = seg_idx == k
+        if np.sum(mask) == 0:
+            refined_normals.append(None)
+            refined_rhos.append(None)
+            print(f"  Segment {k}: no assigned half-rays, skipping")
+            continue
+        ec = top4[k]
+        x0 = np.array([np.arctan2(ec.normal[1], ec.normal[0]),
+                       float(ec.rho)])
+        m_mask = _compute_m_mask(x0, center_xy, half_dirs, mask,
+                                 PITCH_CONSTANT)
+        cost0 = np.sum(segment_refinement_residuals(
+            x0, center_xy, profiles_norm, half_dirs, t_samples,
+            mask, m_mask, PITCH_CONSTANT, MASK_BOUNDARY, 1.0,
+        ) ** 2)
+
+        result = least_squares(
+            fun=segment_refinement_residuals,
+            x0=x0,
+            jac=segment_refinement_jacobian,
+            method="lm",
+            args=(center_xy, profiles_norm, half_dirs, t_samples,
+                  mask, m_mask, PITCH_CONSTANT, MASK_BOUNDARY, 1.0),
+        )
+        theta_opt, rho_opt = result.x
+        n_opt = np.array([np.cos(theta_opt), np.sin(theta_opt)])
+        refined_normals.append(n_opt)
+        refined_rhos.append(rho_opt)
+        print(f"  Segment {k}: (θ={x0[0]:.4f}→{theta_opt:.4f},"
+              f" ρ={x0[1]:.2f}→{rho_opt:.2f})"
+              f"  cost={cost0:.4f}→{result.cost:.4f}")
+
+    # ── Diagnostic plot ──
+    fig, ax = plt.subplots(figsize=(9, 9))
+    ax.imshow(roi, cmap="gray", extent=[0, W_roi, H_roi, 0])
+    ax.plot(center_xy[0], center_xy[1], "r+", markersize=12, markeredgewidth=2)
+
+    # per-ray boundary points coloured by segment assignment
+    if points is not None and assignment is not None:
+        for j in range(len(points)):
+            a = assignment[j]
+            c = EDGE_COLORS[a] if 0 <= a < len(EDGE_COLORS) else "gray"
+            ax.plot(points[j, 0], points[j, 1], "o", color=c, markersize=7,
+                    markeredgewidth=0.5, markeredgecolor="white")
+
+    # Initial lines (dashed)
+    for k, ec in enumerate(top4):
+        assigned_pts = points[assignment == k] if assignment is not None else None
+        if assigned_pts is None or len(assigned_pts) == 0:
+            continue
+        proj = assigned_pts @ ec.direction
+        lo, hi = float(proj.min()), float(proj.max())
+        ext = (hi - lo) * 0.2
+        t_vals = np.array([lo - ext, hi + ext])
+        line_pts = ec.rho * ec.normal + t_vals[:, None] * ec.direction
+        ax.plot(line_pts[:, 0], line_pts[:, 1], "--", color=EDGE_COLORS[k],
+                linewidth=1.5, alpha=0.5)
+
+    # Refined lines (solid)
+    for k in range(len(top4)):
+        if refined_normals[k] is None:
+            continue
+        assigned_pts = points[assignment == k] if assignment is not None else None
+        if assigned_pts is None or len(assigned_pts) == 0:
+            continue
+        n_opt = refined_normals[k]
+        r_opt = refined_rhos[k]
+        d_opt = np.array([-n_opt[1], n_opt[0]])
+        proj = assigned_pts @ d_opt
+        lo, hi = float(proj.min()), float(proj.max())
+        ext = (hi - lo) * 0.2
+        t_vals = np.array([lo - ext, hi + ext])
+        line_pts = r_opt * n_opt + t_vals[:, None] * d_opt
+        ax.plot(line_pts[:, 0], line_pts[:, 1], "-", color=EDGE_COLORS[k],
+                linewidth=2.5, alpha=0.9, label=f"Edge {k}")
+
+    # Legend entries
+    ax.plot([], [], "--", color="gray", label="Initial")
+    ax.plot([], [], "-", color="black", linewidth=2.5, label="Refined")
+    for k in range(len(top4)):
+        if refined_normals[k] is not None:
+            ax.plot([], [], "o", color=EDGE_COLORS[k], markersize=8, label=f"Seg {k}")
+
+    ax.set_title(f"Cluster {ci} — LM refinement")
+    ax.legend(fontsize=8, loc="upper right")
+    ax.set_xlabel("x (col)")
+    ax.set_ylabel("y (row)")
     if TIGHT_LAYOUT:
         plt.tight_layout()
     plt.show()

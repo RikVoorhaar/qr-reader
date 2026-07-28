@@ -22,10 +22,10 @@ Jacobian, half-ray assignment, `validate_jacobian`) live in `edge_fitting.py`.
 
 | Step | Status | Deliverable |
 |------|--------|-------------|
-| 0 — Bug fix | pending | Notebook runs cleanly on easy/medium/hard presets; 18 rows in heatmap; 36 unique half-rays; Phase 0–2 produces correct 4 edges; 18 tests pass |
-| 1 — Profile visualisation | pending | Two-panel heatmap (actual vs theoretical) per cluster; template transitions visually aligned with profile data |
-| 2 — Residual + Jacobian + check | pending | 4×N_clusters "max relative Jacobian error" lines, all ≤ 1e‑3 |
-| 3 — LM refinement + plot | pending | Combined plot per cluster: initial (dashed) + refined (solid) segment lines over ROI; refined visibly more accurate
+| 0 — Bug fix | ✅ done | Notebook runs cleanly on all presets; 36 half-rays; Phase 0–2 produces correct 4 edges |
+| 1 — Profile visualisation | ✅ done | Two-panel heatmap (actual vs theoretical) per cluster; templates visually aligned |
+| 2 — Residual + Jacobian + check | ✅ done | All 4×N_clusters segments ≤ 9.1e‑4 (well under 1e‑3 threshold); central-difference FD with eps=5e‑6 |
+| 3 — LM refinement + plot | ✅ done | Combined plot per cluster: initial (dashed) + refined (solid) lines over ROI; cost 2–5× lower
 
 ---
  

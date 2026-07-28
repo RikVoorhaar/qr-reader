@@ -245,6 +245,253 @@ def assign_points(clusters: list[EdgeCluster], n_points: int) -> np.ndarray:
     return assignment
 
 
+# ── Segment-refinement helpers (plan Step 2–3) ───────────────────────────────
+
+try:
+    from scipy.special import erfc  # noqa: F811
+except ImportError:
+    pass
+
+
+def _finder_template(
+    t: np.ndarray,
+    m: float,
+    sigma: float = 1.0,
+) -> np.ndarray:
+    """Soft finder-pattern intensity template along a radial ray."""
+    u = np.abs(np.asarray(t, dtype=np.float64)) / m
+    inv_s_sqrt2 = 1.0 / ((sigma / m) * np.sqrt(2.0))
+    return (
+        0.5 * erfc(-(u - 1.5) * inv_s_sqrt2)
+        - 0.5 * erfc(-(u - 2.5) * inv_s_sqrt2)
+        + 0.5 * erfc(-(u - 3.5) * inv_s_sqrt2)
+    )
+
+
+def _template_dm(
+    t: np.ndarray,
+    m: float,
+    sigma: float = 1.0,
+) -> np.ndarray:
+    """Derivative of ``_finder_template`` w.r.t. *m*."""
+    abs_t = np.abs(np.asarray(t, dtype=np.float64))
+    inv_factor = 1.0 / (sigma * np.sqrt(2.0))
+    z1 = -(abs_t - 1.5 * m) * inv_factor
+    z2 = -(abs_t - 2.5 * m) * inv_factor
+    z3 = -(abs_t - 3.5 * m) * inv_factor
+    prefactor = -1.0 / (sigma * np.sqrt(2.0 * np.pi))
+    return prefactor * (
+        1.5 * np.exp(-z1 * z1)
+        - 2.5 * np.exp(-z2 * z2)
+        + 3.5 * np.exp(-z3 * z3)
+    )
+
+
+def assign_half_rays_to_segments(
+    center_xy: np.ndarray,
+    half_dirs: np.ndarray,
+    segments: list[EdgeCluster],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Assign each half-ray to the segment with the smallest positive t.
+
+    Parameters
+    ----------
+    center_xy : ndarray (2,)
+        Finder centre in ROI-local (x=col, y=row) coordinates.
+    half_dirs : ndarray (N, 2)
+        Unit direction vectors, one per half-ray.
+    segments : list[EdgeCluster]
+        The 4 fitted edge segments with ``.normal`` and ``.rho``.
+
+    Returns
+    -------
+    segment_idx : ndarray (N,) int
+        Index into ``segments`` (0..3); -1 if no segment has positive t.
+    t_int : ndarray (N,) float
+        Intersection distance from centre; NaN for unassigned half-rays.
+    """
+    n_rays = len(half_dirs)
+    segment_idx = np.full(n_rays, -1, dtype=int)
+    t_int = np.full(n_rays, np.nan, dtype=np.float64)
+
+    for i in range(n_rays):
+        d = half_dirs[i]
+        best_t = np.inf
+        best_idx = -1
+        for si, seg in enumerate(segments):
+            denom = seg.normal @ d
+            if abs(denom) < 1e-12:
+                continue
+            t = (seg.rho - seg.normal @ center_xy) / denom
+            if 0 < t < best_t:
+                best_t = t
+                best_idx = si
+        if best_idx >= 0:
+            segment_idx[i] = best_idx
+            t_int[i] = best_t
+
+    return segment_idx, t_int
+
+
+def segment_refinement_residuals(
+    x: np.ndarray,
+    center_xy: np.ndarray,
+    half_profiles: np.ndarray,
+    half_dirs: np.ndarray,
+    t_samples: np.ndarray,
+    segment_mask: np.ndarray,
+    m_mask: np.ndarray,
+    pitch_constant: float = PITCH_CONSTANT,
+    mask_boundary: float = 4.5,
+    sigma: float = 1.0,
+) -> np.ndarray:
+    """Residual vector for one segment's LM refinement.
+
+    Returns a 1-D float64 array of length ``N_assigned * N_S`` where
+    ``N_S = len(t_samples)``.  Unmasked samples contribute
+    ``template - profile``; masked samples contribute ``0.0``.
+
+    The masking boundary uses ``m_mask`` (pre-computed from the initial
+    estimate), NOT the current *m* value, to keep the residual smooth.
+    """
+    theta, rho = x[0], x[1]
+    n = np.array([np.cos(theta), np.sin(theta)])
+
+    assigned = np.flatnonzero(segment_mask)
+    n_assigned = len(assigned)
+    n_s = len(t_samples)
+    residuals = np.zeros(n_assigned * n_s, dtype=np.float64)
+
+    for k, i in enumerate(assigned):
+        d = half_dirs[i]
+        denom = n @ d
+        if abs(denom) < 1e-12:
+            continue
+        t_int_i = (rho - n @ center_xy) / denom
+        m_i = t_int_i / pitch_constant
+        if m_i <= 0:
+            continue
+        template = _finder_template(t_samples, m_i, sigma)
+        mask = np.abs(t_samples) <= mask_boundary * m_mask[i]
+        row_start = k * n_s
+        residuals[row_start:row_start + n_s][mask] = \
+            template[mask] - half_profiles[i, mask]
+
+    return residuals
+
+
+def segment_refinement_jacobian(
+    x: np.ndarray,
+    center_xy: np.ndarray,
+    half_profiles: np.ndarray,
+    half_dirs: np.ndarray,
+    t_samples: np.ndarray,
+    segment_mask: np.ndarray,
+    m_mask: np.ndarray,
+    pitch_constant: float = PITCH_CONSTANT,
+    mask_boundary: float = 4.5,
+    sigma: float = 1.0,
+) -> np.ndarray:
+    """Jacobian of ``segment_refinement_residuals`` w.r.t. ``x = [theta, rho]``.
+
+    Returns an ``(R, 2)`` float64 array where ``R = N_assigned * N_S``.
+    Column 0 = ∂r/∂θ, column 1 = ∂r/∂ρ.
+    """
+    theta, rho = x[0], x[1]
+    n_vec = np.array([np.cos(theta), np.sin(theta)])
+    n_perp = np.array([-np.sin(theta), np.cos(theta)])
+
+    assigned = np.flatnonzero(segment_mask)
+    n_assigned = len(assigned)
+    n_s = len(t_samples)
+    Jac = np.zeros((n_assigned * n_s, 2), dtype=np.float64)
+
+    n_dot_C = n_vec @ center_xy
+    nperp_dot_C = n_perp @ center_xy
+
+    for k, i in enumerate(assigned):
+        d = half_dirs[i]
+        nd = n_vec @ d
+        if abs(nd) < 1e-12:
+            continue
+        nperp_d = n_perp @ d
+        rho_minus_nC = rho - n_dot_C
+
+        t_int_i = rho_minus_nC / nd
+        m_i = t_int_i / pitch_constant
+        if m_i <= 0:
+            continue
+
+        dm_drho = 1.0 / (pitch_constant * nd)
+        dm_dtheta = (
+            -(nperp_dot_C * nd)
+            - (rho_minus_nC * nperp_d)
+        ) / (pitch_constant * nd * nd)
+
+        dT_dm = _template_dm(t_samples, m_i, sigma)
+        mask = np.abs(t_samples) <= mask_boundary * m_mask[i]
+
+        row_start = k * n_s
+        Jac[row_start:row_start + n_s, 0][mask] = dT_dm[mask] * dm_dtheta
+        Jac[row_start:row_start + n_s, 1][mask] = dT_dm[mask] * dm_drho
+
+    return Jac
+
+
+def check_segment_jacobian(
+    x0: np.ndarray,
+    center_xy: np.ndarray,
+    half_profiles: np.ndarray,
+    half_dirs: np.ndarray,
+    t_samples: np.ndarray,
+    segment_mask: np.ndarray,
+    m_mask: np.ndarray,
+    pitch_constant: float = PITCH_CONSTANT,
+    mask_boundary: float = 4.5,
+    sigma: float = 1.0,
+    eps: float = 5e-6,
+) -> tuple[np.ndarray, np.ndarray, float]:
+    """Compare analytical Jacobian to finite-difference approximation.
+
+    Returns
+    -------
+    J_analytical : ndarray
+    J_fd : ndarray
+    max_rel_error : float
+        Maximum relative error across non-negligible entries (|J| > 1e-8).
+    """
+    base = segment_refinement_residuals(
+        x0, center_xy, half_profiles, half_dirs, t_samples,
+        segment_mask, m_mask, pitch_constant, mask_boundary, sigma,
+    )
+    J = segment_refinement_jacobian(
+        x0, center_xy, half_profiles, half_dirs, t_samples,
+        segment_mask, m_mask, pitch_constant, mask_boundary, sigma,
+    )
+    J_fd = np.zeros_like(J)
+    for k in range(2):
+        h = np.zeros(2)
+        h[k] = eps
+        f_plus = segment_refinement_residuals(
+            x0 + h, center_xy, half_profiles, half_dirs, t_samples,
+            segment_mask, m_mask, pitch_constant, mask_boundary, sigma,
+        )
+        f_minus = segment_refinement_residuals(
+            x0 - h, center_xy, half_profiles, half_dirs, t_samples,
+            segment_mask, m_mask, pitch_constant, mask_boundary, sigma,
+        )
+        J_fd[:, k] = (f_plus - f_minus) / (2.0 * eps)
+
+    denom = np.maximum(np.abs(J), 1e-12)
+    rel_errors = np.abs(J - J_fd) / denom
+    significant = np.abs(J) > 1e-8
+    if np.any(significant):
+        max_err = float(np.max(rel_errors[significant]))
+    else:
+        max_err = float(np.max(rel_errors))
+    return J, J_fd, max_err
+
+
 @dataclass
 class EdgeFitResult:
     """Full output of the edge-fitting pipeline for one finder candidate."""
