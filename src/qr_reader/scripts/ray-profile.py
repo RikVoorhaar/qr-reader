@@ -729,147 +729,20 @@ for ci in show_indices:
         plt.tight_layout()
     plt.show()
 
-# %% [8] Phase 0 — Local TLS init + degeneracy cull
-H_SMOOTH = 2
-DEGENERACY_THRESHOLD = 0.3
-MIN_POINTS = 18
-PITCH_CONSTANT = 3.5
-
-
-def compute_boundary_points(
-    center_xy: np.ndarray,
-    m_pos: np.ndarray,
-    m_neg: np.ndarray,
-    theta_rad: np.ndarray,
-    pitch_constant: float = 3.5,
-) -> np.ndarray:
-    """1N cyclic boundary points: prefer m_pos, fall back to m_neg."""
-    N = len(theta_rad)
-    half_N = N // 2
-    points = np.full((N, 2), np.nan, dtype=np.float64)
-    for i in range(N):
-        dx = float(np.cos(theta_rad[i]))
-        dy = float(np.sin(theta_rad[i]))
-        dir_vec = np.array([dx, dy])
-        if np.isfinite(m_pos[i]):
-            points[i] = center_xy + pitch_constant * m_pos[i] * dir_vec
-        else:
-            neg_idx = (i + half_N) % N
-            if np.isfinite(m_neg[neg_idx]):
-                points[i] = center_xy + pitch_constant * m_neg[neg_idx] * dir_vec
-    return points
-
-
-def tls_line(pts: np.ndarray) -> tuple[np.ndarray, float, np.ndarray, np.ndarray]:
-    """TLS line fit via SVD.  Returns (normal, rho, dir_vec, singular_values)."""
-    mu = pts.mean(axis=0)
-    _, s, Vt = np.linalg.svd(pts - mu, full_matrices=False)
-    n = Vt[1]
-    d = Vt[0]
-    r = float(mu @ n)
-    if r < 0:
-        n = -n
-        r = -r
-    return n, r, d, s
-
-
-def perp_dist(points: np.ndarray, normal: np.ndarray, rho: float) -> np.ndarray:
-    return np.abs(points @ normal - rho)
-
+# %% [8] Phase 0 — Pairwise σ₂/σ₁ distance matrix + initial pair clusters
+from qr_reader.detector.edge_fitting import (
+    DISTANCE_THRESHOLD,
+    MAX_GAP,
+    PITCH_CONSTANT,
+    assign_points,
+    build_pair_distance_matrix,
+    cluster_pairs,
+    compute_boundary_points,
+    extract_top_clusters,
+)
 
 show_indices = CLUSTER_INDICES or list(range(len(clusters)))
-
-for ci in show_indices:
-    if ci >= len(clusters):
-        break
-
-    cluster = clusters[ci]
-    bbox = cluster_to_bbox(cluster, scale=1.5)
-    roi = cutout(img_gray, bbox)
-    if roi.size == 0:
-        continue
-
-    r0 = max(0, int(bbox[0]))
-    c0 = max(0, int(bbox[2]))
-    H_roi, W_roi = roi.shape
-
-    c_col = float(cluster.cols[2] + cluster.cols[3]) / 2.0 - c0
-    c_row = float(cluster.row) - r0
-    center_xy = np.array([c_col, c_row], dtype=np.float64)
-    m_est = float(cluster.cols[5] - cluster.cols[0]) / 7.0
-
-    roi_norm, dark_val, bright_val = normalize_roi_intensities(roi)
-    profiles, ray_endpoints, angles_deg = sample_ray_profiles(
-        roi, c_col, c_row, num_rays=NUM_RAYS, num_samples=NUM_SAMPLES,
-        ray_length=RAY_LENGTH,
-    )
-    span = bright_val - dark_val
-    if span < 1.0:
-        span = 1.0
-    profiles_norm = np.clip((profiles - dark_val) / span, 0.0, 1.0)
-
-    diag_half = 0.5 * np.hypot(W_roi, H_roi)
-    max_dist = RAY_LENGTH * diag_half
-    m_pos, m_neg, _, _, _, _ = fit_all_rays(profiles_norm, m_est, max_dist)
-    theta_rad = np.linspace(0, 2 * np.pi, NUM_RAYS, endpoint=False)
-    theta_deg = np.rad2deg(theta_rad)
-
-    bp = compute_boundary_points(center_xy, m_pos, m_neg, theta_rad, PITCH_CONSTANT)
-    N = len(bp)
-
-    # ── Local TLS on 5-point windows ──
-    ratios = np.full(N, np.nan, dtype=np.float64)
-    init_normals = np.zeros((N, 2), dtype=np.float64)
-    init_rhos = np.zeros(N, dtype=np.float64)
-    init_dirs = np.zeros((N, 2), dtype=np.float64)
-    init_support = [[] for _ in range(N)]
-
-    for i in range(N):
-        idx = [(i + k) % N for k in range(-H_SMOOTH, H_SMOOTH + 1)]
-        pts = bp[idx]
-        if len(pts) < 2:
-            continue
-        n, rho, d, s = tls_line(pts)
-        init_normals[i] = n
-        init_rhos[i] = rho
-        init_dirs[i] = d
-        init_support[i] = idx
-        ratios[i] = s[1] / s[0] if s[0] > 1e-12 else np.nan
-
-    # ── Cull degenerate points ──
-    kept_mask = np.ones(N, dtype=bool)
-    for i in range(N):
-        if np.isfinite(ratios[i]) and ratios[i] > DEGENERACY_THRESHOLD:
-            kept_mask[i] = False
-    n_kept = int(np.sum(kept_mask))
-    if n_kept < MIN_POINTS:
-        order = np.argsort(ratios)
-        kept_mask[:] = False
-        kept_mask[order[:MIN_POINTS]] = True
-        n_kept = MIN_POINTS
-
-    print(f"Cluster {ci}: kept {n_kept}/{N} points "
-          f"(threshold={DEGENERACY_THRESHOLD})")
-
-    # ── Diagnostic plot: angle vs σ₂/σ₁ ──
-    fig, ax = plt.subplots(figsize=(9, 5))
-    ax.axhline(DEGENERACY_THRESHOLD, color="black", linestyle="--", linewidth=1,
-               alpha=0.5, label=f"threshold={DEGENERACY_THRESHOLD}")
-    for i in range(N):
-        color = C_GOOD if kept_mask[i] else C_GT
-        ax.plot(theta_deg[i], ratios[i], "o", color=color, markersize=6)
-    ax.set_xlabel("Angle (deg CCW from +x)")
-    ax.set_ylabel("σ₂/σ₁")
-    ax.set_title(f"Phase 0 — Local TLS degeneracy ratios  (cluster {ci}, "
-                 f"kept {n_kept}/{N})")
-    ax.legend(fontsize=8)
-    ax.set_ylim(0, max(1.0, np.nanmax(ratios) * 1.15))
-    if TIGHT_LAYOUT:
-        plt.tight_layout()
-    plt.show()
-
-# %% [9] Phase 1 — Agglomerative clustering with merge-order plot
-show_indices = CLUSTER_INDICES or list(range(len(clusters)))
+edge_data: dict[int, dict] = {}
 
 for ci in show_indices:
     if ci >= len(clusters):
@@ -905,278 +778,160 @@ for ci in show_indices:
     m_pos, m_neg, _, _, _, _ = fit_all_rays(profiles_norm, m_est, max_dist)
     theta_rad = np.linspace(0, 2 * np.pi, NUM_RAYS, endpoint=False)
 
-    bp = compute_boundary_points(center_xy, m_pos, m_neg, theta_rad, PITCH_CONSTANT)
-    N = len(bp)
-
-    # ── Phase 0: local TLS + cull ──
-    ratios = np.full(N, np.nan)
-    for i in range(N):
-        idx = [(i + k) % N for k in range(-H_SMOOTH, H_SMOOTH + 1)]
-        pts = bp[idx]
-        if len(pts) < 2:
-            continue
-        _, _, _, s = tls_line(pts)
-        ratios[i] = s[1] / s[0] if s[0] > 1e-12 else np.nan
-
-    kept_mask = np.ones(N, dtype=bool)
-    for i in range(N):
-        if np.isfinite(ratios[i]) and ratios[i] > DEGENERACY_THRESHOLD:
-            kept_mask[i] = False
-    n_kept = int(np.sum(kept_mask))
-    if n_kept < MIN_POINTS:
-        order = np.argsort(ratios)
-        kept_mask[:] = False
-        kept_mask[order[:MIN_POINTS]] = True
-        n_kept = MIN_POINTS
-
-    kept_indices = [i for i in range(N) if kept_mask[i]]
-
-    # ── Agglomerative clustering ──
-    clusters_list: list[dict] = []
-    for i in kept_indices:
-        supp_idx = [(i + k) % N for k in range(-H_SMOOTH, H_SMOOTH + 1)]
-        pts = bp[supp_idx]
-        n, rho, d, _ = tls_line(pts)
-        clusters_list.append({
-            "start": i,
-            "end": i,
-            "support": supp_idx,
-            "normal": n,
-            "rho": rho,
-            "dir": d,
-        })
-
-    absorb_step = np.full(N, -1, dtype=int)
-    for cl in clusters_list:
-        absorb_step[cl["start"]] = 0
-
-    merge_step = 0
-    while len(clusters_list) > 4:
-        nc = len(clusters_list)
-        if nc < 2:
-            break
-
-        distances = np.full(nc, np.inf)
-        pair_indices = []
-        for j in range(nc):
-            j_next = (j + 1) % nc
-            ca = clusters_list[j]
-            cb = clusters_list[j_next]
-
-            pts_a = bp[ca["support"]]
-            pts_b = bp[cb["support"]]
-            da = np.mean(perp_dist(pts_a, cb["normal"], cb["rho"]))
-            db = np.mean(perp_dist(pts_b, ca["normal"], ca["rho"]))
-            distances[j] = (da + db) / 2.0
-            pair_indices.append((j, j_next))
-
-        best_j = int(np.argmin(distances))
-        j1, j2 = pair_indices[best_j]
-        j_prev = (j1 - 1) % nc
-        j_next_next = (j2 + 1) % nc
-
-        ca = clusters_list[j1]
-        cb = clusters_list[j2]
-
-        new_support = sorted(set(ca["support"] + cb["support"]))
-        pts = bp[new_support]
-        n, rho, d, _ = tls_line(pts)
-
-        new_cl = {
-            "start": ca["start"],
-            "end": cb["end"],
-            "support": new_support,
-            "normal": n,
-            "rho": rho,
-            "dir": d,
-        }
-
-        merge_step += 1
-        for idx in ca["support"] + cb["support"]:
-            absorb_step[idx] = merge_step
-
-        if j1 < j2:
-            del clusters_list[j2]
-            del clusters_list[j1]
-        else:
-            del clusters_list[max(j1, j2)]
-            del clusters_list[min(j1, j2)]
-
-        clusters_list.insert(min(j1, j2), new_cl)
-
-    # ── Diagnostic plot: merge order ──
-    fig, ax = plt.subplots(figsize=(9, 9))
-    ax.imshow(roi, cmap="gray", extent=[0, W_roi, H_roi, 0])
-    ax.plot(center_xy[0], center_xy[1], "r+", markersize=12, markeredgewidth=2)
-
+    bp = compute_boundary_points(center_xy, m_pos, m_neg, theta_rad,
+                                 PITCH_CONSTANT)
     valid = np.all(np.isfinite(bp), axis=1)
-    max_step = merge_step if merge_step > 0 else 1
-    for i in range(N):
-        if valid[i]:
-            if absorb_step[i] >= 0:
-                c = plt.cm.plasma(absorb_step[i] / max_step)
-            else:
-                c = "gray"
-            ax.plot(bp[i, 0], bp[i, 1], "o", color=c, markersize=6,
-                    markeredgewidth=0.5, markeredgecolor="white")
+    valid_indices = np.flatnonzero(valid)
+    points = bp[valid]
+    M = len(points)
+    if M < 4:
+        print(f"Cluster {ci}: only {M} valid boundary points, skipping")
+        continue
 
-    sm = plt.cm.ScalarMappable(cmap="plasma", norm=plt.Normalize(0, max_step))
-    cbar = plt.colorbar(sm, ax=ax, shrink=0.8)
-    cbar.set_label("Merge step (dark=early, bright=late)")
+    D, pairs = build_pair_distance_matrix(points, valid_indices, NUM_RAYS,
+                                          max_gap=MAX_GAP)
 
-    ax.set_title(f"Phase 1 — Agglomerative merge order  (cluster {ci}, "
-                 f"{merge_step} merges)")
+    edge_data[ci] = {
+        "roi": roi, "center_xy": center_xy,
+        "bp": bp, "points": points, "valid_indices": valid_indices,
+        "D": D, "pairs": pairs,
+        "H_roi": H_roi, "W_roi": W_roi,
+    }
+
+    n_comparable = int((np.sum(D < 1.0) - M) // 2)  # off-diagonal, symmetric
+    print(f"Cluster {ci}: {M}/{NUM_RAYS} valid boundary points, "
+          f"{n_comparable} comparable pair-pairs")
+
+    # ── Plot 0: distance-matrix heatmap + initial pairs on ROI ──
+    fig, axes = plt.subplots(1, 2, figsize=(15, 7))
+    fig.suptitle(f"Cluster {ci} — Phase 0: pairwise σ₂/σ₁ distances",
+                 fontsize=13, fontweight="bold")
+
+    ax = axes[0]
+    im = ax.imshow(D, cmap="viridis", vmin=0.0, vmax=1.0,
+                   interpolation="nearest")
+    ax.set_xlabel("Initial pair index")
+    ax.set_ylabel("Initial pair index")
+    ax.set_title(f"σ₂/σ₁ distance matrix  (1.0 = gap > {MAX_GAP})")
+    plt.colorbar(im, ax=ax, shrink=0.8, label="σ₂/σ₁")
+
+    ax = axes[1]
+    ax.imshow(roi, cmap="gray", extent=[0, W_roi, H_roi, 0])
+    ax.plot(center_xy[0], center_xy[1], "r+", markersize=12, markeredgewidth=2)
+    ax.scatter(points[:, 0], points[:, 1],
+               c=np.arange(M), cmap="hsv", s=30, edgecolors="white",
+               linewidths=0.4, zorder=3)
+    for j in range(M):
+        seg = points[pairs[j]]
+        ax.plot(seg[:, 0], seg[:, 1], "-", color="white", linewidth=0.8,
+                alpha=0.6)
+    ax.set_title(f"{M} boundary points + {M} initial pairs")
     ax.set_xlabel("x (col)")
     ax.set_ylabel("y (row)")
     if TIGHT_LAYOUT:
         plt.tight_layout()
     plt.show()
 
-# %% [10] Phase 2 — Final 4-line assignment
-show_indices = CLUSTER_INDICES or list(range(len(clusters)))
+# %% [9] Phase 1 — Sklearn single-linkage agglomerative clustering
+for ci, data in edge_data.items():
+    D = data["D"]
+    pairs = data["pairs"]
+    points = data["points"]
+    roi = data["roi"]
+    center_xy = data["center_xy"]
+    H_roi, W_roi = data["H_roi"], data["W_roi"]
+    M = len(points)
 
-for ci in show_indices:
-    if ci >= len(clusters):
-        break
+    labels = cluster_pairs(D, distance_threshold=DISTANCE_THRESHOLD)
+    data["labels"] = labels
+    n_clusters_found = len(set(labels.tolist()))
+    print(f"Cluster {ci}: sklearn found {n_clusters_found} clusters "
+          f"(threshold={DISTANCE_THRESHOLD})")
 
-    cluster = clusters[ci]
-    bbox = cluster_to_bbox(cluster, scale=1.5)
-    roi = cutout(img_gray, bbox)
-    if roi.size == 0:
-        continue
-
-    r0 = max(0, int(bbox[0]))
-    c0 = max(0, int(bbox[2]))
-    H_roi, W_roi = roi.shape
-
-    c_col = float(cluster.cols[2] + cluster.cols[3]) / 2.0 - c0
-    c_row = float(cluster.row) - r0
-    center_xy = np.array([c_col, c_row], dtype=np.float64)
-    m_est = float(cluster.cols[5] - cluster.cols[0]) / 7.0
-
-    roi_norm, dark_val, bright_val = normalize_roi_intensities(roi)
-    profiles, ray_endpoints, angles_deg = sample_ray_profiles(
-        roi, c_col, c_row, num_rays=NUM_RAYS, num_samples=NUM_SAMPLES,
-        ray_length=RAY_LENGTH,
-    )
-    span = bright_val - dark_val
-    if span < 1.0:
-        span = 1.0
-    profiles_norm = np.clip((profiles - dark_val) / span, 0.0, 1.0)
-
-    diag_half = 0.5 * np.hypot(W_roi, H_roi)
-    max_dist = RAY_LENGTH * diag_half
-    m_pos, m_neg, _, _, _, _ = fit_all_rays(profiles_norm, m_est, max_dist)
-    theta_rad = np.linspace(0, 2 * np.pi, NUM_RAYS, endpoint=False)
-
-    bp = compute_boundary_points(center_xy, m_pos, m_neg, theta_rad, PITCH_CONSTANT)
-    N = len(bp)
-
-    # ── Phase 0 + 1: cull + cluster ──
-    ratios = np.full(N, np.nan)
-    for i in range(N):
-        idx = [(i + k) % N for k in range(-H_SMOOTH, H_SMOOTH + 1)]
-        pts = bp[idx]
-        if len(pts) < 2:
-            continue
-        _, _, _, s = tls_line(pts)
-        ratios[i] = s[1] / s[0] if s[0] > 1e-12 else np.nan
-
-    kept_mask = np.ones(N, dtype=bool)
-    for i in range(N):
-        if np.isfinite(ratios[i]) and ratios[i] > DEGENERACY_THRESHOLD:
-            kept_mask[i] = False
-    n_kept = int(np.sum(kept_mask))
-    if n_kept < MIN_POINTS:
-        order = np.argsort(ratios)
-        kept_mask[:] = False
-        kept_mask[order[:MIN_POINTS]] = True
-        n_kept = MIN_POINTS
-
-    kept_indices = [i for i in range(N) if kept_mask[i]]
-
-    clusters_list: list[dict] = []
-    for i in kept_indices:
-        supp_idx = [(i + k) % N for k in range(-H_SMOOTH, H_SMOOTH + 1)]
-        pts = bp[supp_idx]
-        n, rho, d, _ = tls_line(pts)
-        clusters_list.append({
-            "start": i, "end": i,
-            "support": supp_idx,
-            "normal": n, "rho": rho, "dir": d,
-        })
-
-    while len(clusters_list) > 4 and len(clusters_list) >= 2:
-        nc = len(clusters_list)
-        distances = np.full(nc, np.inf)
-        pair_indices = []
-        for j in range(nc):
-            j_next = (j + 1) % nc
-            ca = clusters_list[j]
-            cb = clusters_list[j_next]
-            pts_a = bp[ca["support"]]
-            pts_b = bp[cb["support"]]
-            da = np.mean(perp_dist(pts_a, cb["normal"], cb["rho"]))
-            db = np.mean(perp_dist(pts_b, ca["normal"], ca["rho"]))
-            distances[j] = (da + db) / 2.0
-            pair_indices.append((j, j_next))
-
-        best_j = int(np.argmin(distances))
-        j1, j2 = pair_indices[best_j]
-        ca = clusters_list[j1]
-        cb = clusters_list[j2]
-
-        new_support = sorted(set(ca["support"] + cb["support"]))
-        pts_new = bp[new_support]
-        n, rho, d, _ = tls_line(pts_new)
-        new_cl = {
-            "start": ca["start"], "end": cb["end"],
-            "support": new_support,
-            "normal": n, "rho": rho, "dir": d,
-        }
-
-        if j1 < j2:
-            del clusters_list[j2]
-            del clusters_list[j1]
-        else:
-            del clusters_list[max(j1, j2)]
-            del clusters_list[min(j1, j2)]
-        clusters_list.insert(min(j1, j2), new_cl)
-
-    # ── Diagnostic plot: final 4 lines ──
-    seg_colors = ["#e41a1c", "#377eb8", "#4daf4a", "#984ea3"]
-
+    # ── Plot 1: points coloured by their leading pair's label ──
     fig, ax = plt.subplots(figsize=(9, 9))
     ax.imshow(roi, cmap="gray", extent=[0, W_roi, H_roi, 0])
     ax.plot(center_xy[0], center_xy[1], "r+", markersize=12, markeredgewidth=2)
 
-    if len(clusters_list) == 4:
-        for seg_idx, cl in enumerate(clusters_list):
-            pts_seg = bp[cl["support"]]
-            ax.scatter(pts_seg[:, 0], pts_seg[:, 1],
-                       color=seg_colors[seg_idx], s=30, edgecolors="white",
-                       linewidths=0.5, zorder=3, label=f"Edge {seg_idx}")
+    cmap = plt.cm.tab20
+    for j in range(M):
+        color = cmap(labels[j] % 20)
+        ax.plot(points[j, 0], points[j, 1], "o", color=color, markersize=7,
+                markeredgewidth=0.5, markeredgecolor="white")
 
-            n, rho, d = cl["normal"], cl["rho"], cl["dir"]
-            proj = pts_seg @ n
-            lo, hi = float(proj.min()), float(proj.max())
-            ext = (hi - lo) * 0.2
-            t_vals = np.array([lo - ext, hi + ext])
-            line_pts = rho * n + t_vals[:, None] * d
-            ax.plot(line_pts[:, 0], line_pts[:, 1],
-                    color=seg_colors[seg_idx], linewidth=2.5, alpha=0.9)
-    else:
-        valid_bp = np.all(np.isfinite(bp), axis=1)
-        if np.any(valid_bp & kept_mask):
-            ax.scatter(bp[valid_bp & kept_mask, 0], bp[valid_bp & kept_mask, 1],
-                       color="gray", s=20, zorder=3)
+    # Overlay TLS lines for the 4 largest clusters (preview of Phase 2)
+    top4_preview = extract_top_clusters(labels, pairs, points, k=4)
+    for ec in top4_preview:
+        support_pts = points[ec.support]
+        proj = support_pts @ ec.direction
+        lo, hi = float(proj.min()), float(proj.max())
+        ext = (hi - lo) * 0.2
+        t_vals = np.array([lo - ext, hi + ext])
+        line_pts = ec.rho * ec.normal + t_vals[:, None] * ec.direction
+        ax.plot(line_pts[:, 0], line_pts[:, 1], "-", color="white",
+                linewidth=1.5, alpha=0.7)
 
-    ax.set_title(f"Phase 2 — Initial 4-line assignment  (cluster {ci})")
+    ax.set_title(f"Phase 1 — sklearn labels  (cluster {ci}, "
+                 f"{n_clusters_found} clusters)")
+    ax.set_xlabel("x (col)")
+    ax.set_ylabel("y (row)")
+    if TIGHT_LAYOUT:
+        plt.tight_layout()
+    plt.show()
+
+# %% [10] Phase 2 — Top-4 extraction + TLS lines + tie-broken assignment
+seg_colors = ["#e41a1c", "#377eb8", "#4daf4a", "#984ea3"]
+
+for ci, data in edge_data.items():
+    if "labels" not in data:
+        continue
+    pairs = data["pairs"]
+    points = data["points"]
+    labels = data["labels"]
+    roi = data["roi"]
+    center_xy = data["center_xy"]
+    H_roi, W_roi = data["H_roi"], data["W_roi"]
+    M = len(points)
+
+    top4 = extract_top_clusters(labels, pairs, points, k=4)
+    assignment = assign_points(top4, M)
+    data["top4"] = top4
+    data["assignment"] = assignment
+
+    print(f"\nCluster {ci}: top-4 edge clusters")
+    for ei, ec in enumerate(top4):
+        print(f"  Edge {ei}: {len(ec.pair_indices)} pairs, "
+              f"{len(ec.support)} support pts, "
+              f"σ₂/σ₁={ec.sigma_ratio:.4f}, "
+              f"n=({ec.normal[0]:+.3f},{ec.normal[1]:+.3f}), ρ={ec.rho:.1f}")
+
+    # ── Plot 2: tie-broken point-to-edge assignment + fitted lines ──
+    fig, ax = plt.subplots(figsize=(9, 9))
+    ax.imshow(roi, cmap="gray", extent=[0, W_roi, H_roi, 0])
+    ax.plot(center_xy[0], center_xy[1], "r+", markersize=12, markeredgewidth=2)
+
+    for j in range(M):
+        a = assignment[j]
+        color = seg_colors[a] if a >= 0 else "gray"
+        ax.plot(points[j, 0], points[j, 1], "o", color=color, markersize=7,
+                markeredgewidth=0.5, markeredgecolor="white")
+
+    for ei, ec in enumerate(top4):
+        assigned_pts = points[assignment == ei]
+        if len(assigned_pts) == 0:
+            continue
+        proj = assigned_pts @ ec.direction
+        lo, hi = float(proj.min()), float(proj.max())
+        ext = (hi - lo) * 0.2
+        t_vals = np.array([lo - ext, hi + ext])
+        line_pts = ec.rho * ec.normal + t_vals[:, None] * ec.direction
+        ax.plot(line_pts[:, 0], line_pts[:, 1], "-", color=seg_colors[ei],
+                linewidth=2.5, alpha=0.9, label=f"Edge {ei}")
+
+    ax.set_title(f"Phase 2 — tie-broken assignment  (cluster {ci})")
     ax.legend(fontsize=8)
     ax.set_xlabel("x (col)")
     ax.set_ylabel("y (row)")
     if TIGHT_LAYOUT:
         plt.tight_layout()
     plt.show()
-
-
