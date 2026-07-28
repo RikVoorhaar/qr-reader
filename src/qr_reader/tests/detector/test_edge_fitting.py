@@ -37,38 +37,33 @@ def square_boundary_points(
 
 
 class TestComputeBoundaryPoints:
-    def test_prefers_m_pos(self):
-        n = 4
-        theta = np.linspace(0, 2 * np.pi, n, endpoint=False)
+    def test_output_shape(self):
+        k = 4
+        theta = np.linspace(0, 2 * np.pi, k, endpoint=False)
         center = np.array([5.0, 7.0])
-        m_pos = np.full(n, 2.0)
-        m_neg = np.full(n, 3.0)  # should be ignored
-        pts = compute_boundary_points(center, m_pos, m_neg, theta, pitch_constant=3.5)
-        expected_r = 3.5 * 2.0
-        for i in range(n):
+        m = np.full(k, 2.0)
+        pts = compute_boundary_points(center, m, theta, pitch_constant=3.5)
+        assert pts.shape == (k, 2)
+        for i in range(k):
             d = np.array([np.cos(theta[i]), np.sin(theta[i])])
-            np.testing.assert_allclose(pts[i], center + expected_r * d, atol=1e-12)
+            np.testing.assert_allclose(pts[i], center + 3.5 * 2.0 * d, atol=1e-12)
 
-    def test_falls_back_to_opposite_ray_m_neg(self):
-        n = 4
-        theta = np.linspace(0, 2 * np.pi, n, endpoint=False)
-        center = np.zeros(2)
-        m_pos = np.full(n, np.nan)
-        m_neg = np.full(n, np.nan)
-        # Negative half of ray 2 (theta=pi) points along +x, i.e. direction of ray 0.
-        m_neg[2] = 4.0
-        pts = compute_boundary_points(center, m_pos, m_neg, theta, pitch_constant=3.5)
-        np.testing.assert_allclose(pts[0], [3.5 * 4.0, 0.0], atol=1e-12)
-        assert np.isnan(pts[1]).all()
-        assert np.isnan(pts[2]).all()
-        assert np.isnan(pts[3]).all()
+    def test_nan_rows(self):
+        k = 4
+        theta = np.linspace(0, 2 * np.pi, k, endpoint=False)
+        m = np.array([1.0, np.nan, 3.0, np.nan])
+        pts = compute_boundary_points(np.zeros(2), m, theta)
+        assert pts.shape == (4, 2)
+        assert np.isfinite(pts[0]).all(); assert np.isnan(pts[1]).all()
+        assert np.isfinite(pts[2]).all(); assert np.isnan(pts[3]).all()
 
     def test_all_nan_when_no_fits(self):
-        n = 6
-        theta = np.linspace(0, 2 * np.pi, n, endpoint=False)
+        k = 6
+        theta = np.linspace(0, 2 * np.pi, k, endpoint=False)
         pts = compute_boundary_points(
-            np.zeros(2), np.full(n, np.nan), np.full(n, np.nan), theta
+            np.zeros(2), np.full(k, np.nan), theta,
         )
+        assert pts.shape == (6, 2)
         assert np.isnan(pts).all()
 
 

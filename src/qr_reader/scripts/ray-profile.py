@@ -16,8 +16,8 @@ import numpy as np
 PRESET = "easy"             # 'easy', 'medium', or 'hard'
 VERSION = 5                 # QR version (1–40)
 SAMPLE_SEED = 42            # Base seed
-NUM_RAYS = 36               # Angular increments (10° spacing)
-NUM_SAMPLES = 120           # Samples per half-ray (total profile length = 2×NUM_SAMPLES−1)
+NUM_RAYS = 36               # Half-ray count (36 directions in [0, 2π))
+NUM_SAMPLES = 120           # Samples per half-ray
 RAY_LENGTH = 1.0            # Ray length as fraction of half-ROI diagonal
 CLUSTER_INDICES = None      # List of cluster indices to plot, or None for all
 TIGHT_LAYOUT = True
@@ -116,7 +116,7 @@ def sample_ray_profiles(
     num_samples: int = 120,
     ray_length: float = 1.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Sample pixel intensities along rays from a centre point.
+    """Sample pixel intensities along half-rays outward from a centre point.
 
     Parameters
     ----------
@@ -125,19 +125,19 @@ def sample_ray_profiles(
     center_x, center_y : float
         Ray origin in ROI-local (x=col, y=row) coordinates.
     num_rays : int
-        Number of equally-spaced rays (full circle).
+        Number of equally-spaced half-rays in ``[0, 2π)``.
     num_samples : int
-        Number of sample points per half-ray (total samples = 2×num_samples−1 on the full line).
+        Number of sample points per half-ray.
     ray_length : float
         Ray extent as a fraction of half the ROI diagonal length.
 
     Returns
     -------
-    profiles : ndarray (num_rays, 2 * num_samples - 1)
-        Sampled intensities.  Rows = rays, columns = signed distance from centre
-        (negative = opposite direction, centre at column `num_samples − 1`).
+    profiles : ndarray (num_rays, num_samples)
+        Sampled intensities.  Each row is one half-ray from centre outward
+        (distance 0 → max_dist).
     ray_endpoints : ndarray (num_rays, 4)
-        Each row: [start_x, start_y, end_x, end_y] for drawing the full line.
+        Each row: [centre_x, centre_y, end_x, end_y] for drawing the ray.
     angles_deg : ndarray (num_rays,)
         Ray angles in degrees (0 = rightward, CCW).
     """
@@ -149,22 +149,20 @@ def sample_ray_profiles(
     angles = np.linspace(0, 2 * np.pi, num_rays, endpoint=False)
     angles_deg = np.rad2deg(angles)
 
-    n_full = 2 * num_samples - 1
-    profiles = np.full((num_rays, n_full), np.nan, dtype=np.float64)
+    profiles = np.full((num_rays, num_samples), np.nan, dtype=np.float64)
     ray_endpoints = np.zeros((num_rays, 4), dtype=np.float64)
 
     for i, theta in enumerate(angles):
         dx = np.cos(theta)
         dy = np.sin(theta)
 
-        # Endpoints for drawing the full line (both directions)
-        ray_endpoints[i] = [center_x - max_dist * dx,
-                            center_y - max_dist * dy,
+        # Endpoints for drawing the half-ray (centre → outward)
+        ray_endpoints[i] = [center_x, center_y,
                             center_x + max_dist * dx,
                             center_y + max_dist * dy]
 
-        # Sample along the full line: −max_dist … 0 … +max_dist
-        sample_ts = np.linspace(-max_dist, max_dist, n_full)
+        # Sample from centre outward
+        sample_ts = np.linspace(0, max_dist, num_samples)
         sx = center_x + sample_ts * dx
         sy = center_y + sample_ts * dy
 
@@ -192,15 +190,15 @@ def plot_ray_profiles(
     m_est: float,
     ci: int,
 ):
-    """Two-panel figure: rays overlaid on ROI, and polar heatmap of profiles."""
+    """Two-panel figure: half-rays overlaid on ROI, and heatmap of half-ray profiles."""
     H_roi, W_roi = roi.shape
     num_rays = len(angles_deg)
 
     fig, axes = plt.subplots(1, 2, figsize=(16, 7))
-    fig.suptitle(f"Cluster {ci} — {num_rays} radial profiles  "
+    fig.suptitle(f"Cluster {ci} — {num_rays} half-ray profiles  "
                  f"(m_est={m_est:.2f}px)", fontsize=13, fontweight="bold")
 
-    # ── Left: ROI with rays ──
+    # ── Left: ROI with half-rays ──
     ax = axes[0]
     ax.imshow(roi, cmap="gray", extent=[0, W_roi, H_roi, 0])
 
@@ -212,27 +210,26 @@ def plot_ray_profiles(
                 color=color, linewidth=1, alpha=0.6)
 
     ax.plot(center_xy[0], center_xy[1], "r+", markersize=12, markeredgewidth=2)
-    ax.set_title(f"ROI + sample rays (0° = rightward, CCW)")
+    ax.set_title(f"ROI + half-rays (0° = rightward, CCW)")
     ax.set_xlabel("x (col)")
     ax.set_ylabel("y (row)")
 
-    # ── Right: profile heatmap (horizontal = angle, vertical = distance from centre) ──
+    # ── Right: half-ray profile heatmap ──
     ax = axes[1]
-
-    n_full = profiles.shape[1]
-    centre_idx = n_full // 2
-    img_extent = [-centre_idx, centre_idx,
-                  angles_deg[-1] + (360.0 / num_rays), angles_deg[0]]
+    num_samples = profiles.shape[1]
+    step = (angles_deg[1] - angles_deg[0]) if num_rays > 1 else 360.0 / num_rays
+    # imshow y-extent: row 0 (angle 0) at y=0 (top), last row at y=360 (bottom)
+    img_extent = [0, num_samples - 1, angles_deg[-1] + step, angles_deg[0]]
 
     im = ax.imshow(profiles, aspect="auto", cmap="gray",
                    extent=img_extent, interpolation="nearest")
-    ax.set_xlabel("Sample index (± from centre)")
+    ax.set_xlabel("Distance from centre (px)")
     ax.set_ylabel("Angle (deg)")
-    ax.set_title("Radial intensity profiles (light = bright pixel)")
+    ax.set_title("Half-ray intensity profiles (light = bright pixel)")
 
-    # Vertical lines at the 4 canonical finder orientations
+    # Horizontal lines at the 4 canonical finder orientations
     for deg in np.arange(0, 360, 90):
-        ax.axvline(deg, color=C_GT, linestyle="--", linewidth=1, alpha=0.4)
+        ax.axhline(deg, color=C_GT, linestyle="--", linewidth=1, alpha=0.4)
 
     plt.colorbar(im, ax=ax, shrink=0.8, label="Intensity")
     if TIGHT_LAYOUT:
@@ -276,34 +273,30 @@ for ci in show_indices:
         ray_length=RAY_LENGTH,
     )
 
-    # ── Clip ray endpoints to ROI boundary ──
+    # ── Clip half-ray endpoints to ROI boundary ──
+    diag_half = 0.5 * np.hypot(W_roi, H_roi)
+    max_dist = RAY_LENGTH * diag_half
     clipped_endpoints = ray_endpoints.copy()
     for i in range(NUM_RAYS):
         dx = np.cos(np.deg2rad(angles_deg[i]))
         dy = np.sin(np.deg2rad(angles_deg[i]))
-        # Distance to each ROI edge from centre
         ts = []
         if abs(dx) > 1e-12:
-            ts.append((0 - c_col) / dx)
             ts.append((W_roi - 1 - c_col) / dx)
+            ts.append((0 - c_col) / dx)
         if abs(dy) > 1e-12:
-            ts.append((0 - c_row) / dy)
             ts.append((H_roi - 1 - c_row) / dy)
+            ts.append((0 - c_row) / dy)
         ts_pos = [t for t in ts if t > 0]
-        ts_neg = [t for t in ts if t < 0]
         t_pos = min(ts_pos) if ts_pos else max_dist
-        t_neg = max(ts_neg) if ts_neg else -max_dist
-        max_dist = np.hypot(W_roi, H_roi) * 0.5
         if t_pos > max_dist:
             t_pos = max_dist
-        if t_neg < -max_dist:
-            t_neg = -max_dist
-        clipped_endpoints[i] = [c_col + t_neg * dx, c_row + t_neg * dy,
+        clipped_endpoints[i] = [c_col, c_row,
                                 c_col + t_pos * dx, c_row + t_pos * dy]
 
-    # ── Inline plot (clipped rays + correct boundary lines) ──
+    # ── Inline plot (half-rays + half-ray profile heatmap) ──
     fig, axes = plt.subplots(1, 2, figsize=(16, 7))
-    fig.suptitle(f"Cluster {ci} — {NUM_RAYS} radial profiles  "
+    fig.suptitle(f"Cluster {ci} — {NUM_RAYS} half-ray profiles  "
                  f"(m_est={m_est:.2f}px)", fontsize=13, fontweight="bold")
 
     ax = axes[0]
@@ -314,25 +307,22 @@ for ci in show_indices:
         ax.plot([ep[0], ep[2]], [ep[1], ep[3]],
                 color=cmap_rays(i / NUM_RAYS), linewidth=1, alpha=0.6)
     ax.plot(c_col, c_row, "r+", markersize=12, markeredgewidth=2)
-    ax.set_title("ROI + sample rays")
+    ax.set_title("ROI + half-rays")
     ax.set_xlabel("x (col)")
     ax.set_ylabel("y (row)")
 
     ax = axes[1]
-    n_full = profiles.shape[1]
-    centre_idx = n_full // 2
-    img_extent = [-centre_idx, centre_idx,
-                  angles_deg[-1] + (360.0 / NUM_RAYS), angles_deg[0]]
+    step = (angles_deg[1] - angles_deg[0]) if NUM_RAYS > 1 else 360.0 / NUM_RAYS
+    img_extent = [0, max_dist, angles_deg[-1] + step, angles_deg[0]]
     ax.imshow(profiles, aspect="auto", cmap="gray",
               extent=img_extent, interpolation="nearest")
-    # Canonical boundary lines at ±1.5m, ±2.5m, ±3.5m
+    # Canonical boundary lines at 1.5m, 2.5m, 3.5m
     for k, ls in [(1.5, "--"), (2.5, "--"), (3.5, "-")]:
         ax.axvline(+k * m_est, color=C_GT, linestyle=ls, linewidth=1, alpha=0.5)
-        ax.axvline(-k * m_est, color=C_GT, linestyle=ls, linewidth=1, alpha=0.5)
     ax.axvline(0, color="white", linestyle="-", linewidth=0.5, alpha=0.5)
-    ax.set_xlabel("Sample index (± from centre)")
+    ax.set_xlabel("Distance from centre (px)")
     ax.set_ylabel("Angle (deg)")
-    ax.set_title("Radial intensity profiles")
+    ax.set_title("Half-ray intensity profiles")
 
     if TIGHT_LAYOUT:
         plt.tight_layout()
@@ -507,46 +497,30 @@ def fit_all_rays(
     num_grid: int = NUM_GRID,
     grid_width: float = GRID_WIDTH,
     sigma: float = 1.0,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Fit *m* independently to each half-ray in a profile stack.
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Fit *m* independently to each half-ray profile.
 
     Returns
     -------
-    m_pos, m_neg : ndarray (num_rays,)
-    mse_pos, mse_neg : ndarray (num_rays,)
-    success_pos, success_neg : ndarray (num_rays,) bool
+    m : ndarray (num_rays,)
+    mse : ndarray (num_rays,)
+    success : ndarray (num_rays,) bool
     """
     n_rays = profiles.shape[0]
-    n_full = profiles.shape[1]
-    centre_idx = n_full // 2
-    t_full = np.linspace(-max_dist, max_dist, n_full)
+    t_pos = np.linspace(0, max_dist, profiles.shape[1])
 
-    # Split into positive and negative halves, both mapped to [0, max_dist]
-    t_pos = t_full[centre_idx:]          # 0 … max_dist
-    t_neg = -t_full[:centre_idx + 1][::-1]  # 0 … max_dist
-
-    m_pos = np.full(n_rays, np.nan, dtype=np.float64)
-    m_neg = np.full(n_rays, np.nan, dtype=np.float64)
-    mse_pos = np.full(n_rays, np.nan, dtype=np.float64)
-    mse_neg = np.full(n_rays, np.nan, dtype=np.float64)
-    success_pos = np.full(n_rays, False)
-    success_neg = np.full(n_rays, False)
+    m = np.full(n_rays, np.nan, dtype=np.float64)
+    mse_arr = np.full(n_rays, np.nan, dtype=np.float64)
+    success = np.full(n_rays, False)
 
     for i in range(n_rays):
-        prof = profiles[i]
-        res_pos = fit_m_half_ray(t_pos, prof[centre_idx:], m_est,
-                                 mask_boundary, num_grid, grid_width, sigma)
-        m_pos[i] = res_pos["m_fitted"]
-        mse_pos[i] = res_pos["mse"]
-        success_pos[i] = res_pos["success"]
+        res = fit_m_half_ray(t_pos, profiles[i], m_est,
+                             mask_boundary, num_grid, grid_width, sigma)
+        m[i] = res["m_fitted"]
+        mse_arr[i] = res["mse"]
+        success[i] = res["success"]
 
-        res_neg = fit_m_half_ray(t_neg, prof[:centre_idx + 1][::-1], m_est,
-                                 mask_boundary, num_grid, grid_width, sigma)
-        m_neg[i] = res_neg["m_fitted"]
-        mse_neg[i] = res_neg["mse"]
-        success_neg[i] = res_neg["success"]
-
-    return m_pos, m_neg, mse_pos, mse_neg, success_pos, success_neg
+    return m, mse_arr, success
 
 
 # %% [6] Normalize ROI + fit per-ray m, overlay on heatmap
@@ -590,51 +564,47 @@ for ci in show_indices:
     # ── Fit half-rays ──
     diag_half = 0.5 * np.hypot(W_roi, H_roi)
     max_dist = RAY_LENGTH * diag_half
-    m_pos, m_neg, mse_pos, mse_neg, success_pos, success_neg = fit_all_rays(
-        profiles_norm, m_est, max_dist,
-    )
+    m, mse, success = fit_all_rays(profiles_norm, m_est, max_dist)
 
-    ok_pos = success_pos & np.isfinite(m_pos)
-    ok_neg = success_neg & np.isfinite(m_neg)
-    n_ok = int(np.sum(ok_pos)) + int(np.sum(ok_neg))
-    n_total = 2 * NUM_RAYS
-    m_all = np.concatenate([m_pos[ok_pos], m_neg[ok_neg]])
-    m_median = float(np.median(m_all)) if len(m_all) > 0 else m_est
+    ok = success & np.isfinite(m)
+    n_ok = int(np.sum(ok))
+    n_total = NUM_RAYS
+    m_median = float(np.median(m[ok])) if n_ok > 0 else m_est
     print(f"\nCluster {ci}: m_est={m_est:.2f}px, m_fitted median={m_median:.2f}px  "
           f"({n_ok}/{n_total})")
 
-    # ── Figure: heatmap + narrow strip above showing m per angle ──
+    # ── Figure: heatmap with fitted m overlays ──
     fig, ax_heatmap = plt.subplots(figsize=(11, 7))
     fig.suptitle(f"Cluster {ci} — m_est={m_est:.2f} → m_fit median={m_median:.2f}  "
                  f"(grey dashed = m_est)",
                  fontsize=12, fontweight="bold")
 
-    # profiles_norm is (num_rays, n_full).  imshow: rows=rays→y, cols=index→x.
-    n_full = profiles_norm.shape[1]
-    centre_idx = n_full // 2
-    # imshow: rows (rays=36) → y, cols (samples=239) → x
-    # y maps to angle range (descending: 360 at top), x maps to sample index (centred)
-    img_extent = [-centre_idx, centre_idx,
-                  angles_deg[-1] + (360.0 / NUM_RAYS), angles_deg[0]]
+    step = (angles_deg[1] - angles_deg[0]) if NUM_RAYS > 1 else 360.0 / NUM_RAYS
+    img_extent = [0, max_dist, angles_deg[-1] + step, angles_deg[0]]
 
     im = ax_heatmap.imshow(profiles_norm, aspect="auto", cmap="gray",
                            extent=img_extent, interpolation="nearest")
-    ax_heatmap.set_xlabel("Sample index (± from centre)")
+    ax_heatmap.set_xlabel("Distance from centre (px)")
     ax_heatmap.set_ylabel("Angle (deg)")
 
-    # Overlay fitted boundary positions (convert pixels → sample index)
-    px_to_idx = centre_idx / max_dist
-    # ── Inner boundary at ±1.5m (edge of 3×3 dark square) ──
-    ax_heatmap.plot(+1.5 * m_pos * px_to_idx, angles_deg,
-                    "-", color=C_E2, linewidth=1.5, alpha=0.5, label="1.5m (pos)")
-    ax_heatmap.plot(-1.5 * m_neg * px_to_idx, angles_deg,
-                    "-", color=C_E2, linewidth=1.5, alpha=0.5, label="1.5m (neg)")
+    # Angles aligned to imshow cell centres (half-step down) + wrap-around
+    half = step / 2.0
+    angles_ctr = angles_deg + half
+    angles_plot = np.append(angles_ctr, angles_ctr[0] + 360.0)
 
-    # ── Outer boundary at ±3.5m ──
-    ax_heatmap.plot(+3.5 * m_pos * px_to_idx, angles_deg,
-                    "o-", color=C_GOOD, markersize=3, linewidth=1.5, label="3.5m (pos)")
-    ax_heatmap.plot(-3.5 * m_neg * px_to_idx, angles_deg,
-                    "o-", color=C_GOOD, markersize=3, linewidth=1.5, label="3.5m (neg)")
+    def _wrap(a: np.ndarray) -> np.ndarray:
+        return np.append(a, a[0])
+
+    ax_heatmap.plot(1.5 * _wrap(m), angles_plot,
+                    "o-", color=C_E2, markersize=3, linewidth=1.0, alpha=0.6,
+                    label="1.5m")
+    ax_heatmap.plot(2.5 * _wrap(m), angles_plot,
+                    "o-", color=C_E1, markersize=3, linewidth=1.0, alpha=0.6,
+                    label="2.5m")
+    ax_heatmap.plot(3.5 * _wrap(m), angles_plot,
+                    "o-", color=C_GOOD, markersize=3, linewidth=1.5, alpha=0.8,
+                    label="3.5m")
+    ax_heatmap.set_ylim(img_extent[3], img_extent[2])  # [top, bottom]
     ax_heatmap.legend(fontsize=7)
 
     plt.colorbar(im, ax=ax_heatmap, shrink=0.85, label="Normalized intensity")
@@ -678,20 +648,17 @@ for ci in show_indices:
 
     diag_half = 0.5 * np.hypot(W_roi, H_roi)
     max_dist = RAY_LENGTH * diag_half
-    m_pos, m_neg, _, _, _, _ = fit_all_rays(profiles_norm, m_est, max_dist)
+    m, _, _ = fit_all_rays(profiles_norm, m_est, max_dist)
 
-    # ── Compute 3.5m boundary points for each ray ──
+    # ── Compute 3.5m boundary points for each half-ray ──
     theta_rad = np.linspace(0, 2 * np.pi, NUM_RAYS, endpoint=False)
     boundary_points = []
     for i in range(NUM_RAYS):
         dx = np.cos(theta_rad[i])
         dy = np.sin(theta_rad[i])
-        if np.isfinite(m_pos[i]):
-            rp = PITCH_CONSTANT * m_pos[i]
-            boundary_points.append(center_xy + rp * np.array([dx, dy]))
-        if np.isfinite(m_neg[i]):
-            rn = PITCH_CONSTANT * m_neg[i]
-            boundary_points.append(center_xy - rn * np.array([dx, dy]))
+        if np.isfinite(m[i]):
+            r = PITCH_CONSTANT * m[i]
+            boundary_points.append(center_xy + r * np.array([dx, dy]))
 
     if not boundary_points:
         print(f"Cluster {ci}: no valid boundary points")
@@ -711,10 +678,10 @@ for ci in show_indices:
     ax.imshow(roi, cmap="gray", extent=[0, W_roi, H_roi, 0])
     ax.plot(center_xy[0], center_xy[1], "r+", markersize=12, markeredgewidth=2)
 
-    # Boundary points
+    # Boundary points — one per half-ray
     ax.scatter(boundary_pts[:, 0], boundary_pts[:, 1],
-               c=angles_deg.repeat(2), cmap="hsv", s=20, edgecolors="white",
-               linewidths=0.3, zorder=3)
+               c=angles_deg[:len(boundary_pts)], cmap="hsv", s=20, 
+               edgecolors="white", linewidths=0.3, zorder=3)
 
     # New bounding box
     rect = plt.Rectangle((x_min, y_min), new_width, new_height,
@@ -775,10 +742,10 @@ for ci in show_indices:
 
     diag_half = 0.5 * np.hypot(W_roi, H_roi)
     max_dist = RAY_LENGTH * diag_half
-    m_pos, m_neg, _, _, _, _ = fit_all_rays(profiles_norm, m_est, max_dist)
+    m, _, _ = fit_all_rays(profiles_norm, m_est, max_dist)
     theta_rad = np.linspace(0, 2 * np.pi, NUM_RAYS, endpoint=False)
 
-    bp = compute_boundary_points(center_xy, m_pos, m_neg, theta_rad,
+    bp = compute_boundary_points(center_xy, m, theta_rad,
                                  PITCH_CONSTANT)
     valid = np.all(np.isfinite(bp), axis=1)
     valid_indices = np.flatnonzero(valid)

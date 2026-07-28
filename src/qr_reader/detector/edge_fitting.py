@@ -43,34 +43,22 @@ FAR_DISTANCE = 1.0      # Distance assigned to pairs beyond MAX_GAP
 
 def compute_boundary_points(
     center_xy: np.ndarray,
-    m_pos: np.ndarray,
-    m_neg: np.ndarray,
+    m: np.ndarray,
     theta_rad: np.ndarray,
     pitch_constant: float = PITCH_CONSTANT,
 ) -> np.ndarray:
-    """1N-circuit boundary points: one point per ray direction.
+    """One boundary point per half-ray direction.
 
-    For direction ``theta_rad[i]``, prefer the positive half-ray fit
-    ``m_pos[i]``; fall back to the negative half of the opposite ray
-    ``m_neg[(i + N/2) % N]`` (which points in the same direction).  Rows
-    with no valid fit are NaN.
-
-    Returns
-    -------
-    points : ndarray (N, 2)
-        Boundary points in (x, y), NaN where no fit succeeded.
+    ``theta_rad`` must be in ``[0, 2π)`` with one entry per half-ray.
+    Returns ``(k, 2)`` points where ``k = len(theta_rad)``, NaN rows for
+    failed fits.
     """
-    n = len(theta_rad)
-    half_n = n // 2
-    points = np.full((n, 2), np.nan, dtype=np.float64)
-    for i in range(n):
-        dir_vec = np.array([np.cos(theta_rad[i]), np.sin(theta_rad[i])])
-        if np.isfinite(m_pos[i]):
-            points[i] = center_xy + pitch_constant * m_pos[i] * dir_vec
-        else:
-            neg_idx = (i + half_n) % n
-            if np.isfinite(m_neg[neg_idx]):
-                points[i] = center_xy + pitch_constant * m_neg[neg_idx] * dir_vec
+    k = len(theta_rad)
+    points = np.full((k, 2), np.nan, dtype=np.float64)
+    for i in range(k):
+        if np.isfinite(m[i]):
+            d = np.array([np.cos(theta_rad[i]), np.sin(theta_rad[i])])
+            points[i] = center_xy + pitch_constant * m[i] * d
     return points
 
 
