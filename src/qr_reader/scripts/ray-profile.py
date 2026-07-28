@@ -333,7 +333,6 @@ for ci in show_indices:
 
 # %% [5] Normalization + template fitting helpers
 from scipy.optimize import minimize_scalar
-from scipy.signal import find_peaks
 from scipy.special import erfc
 
 
@@ -374,38 +373,53 @@ def finder_soft_template(
     return result
 
 
-def normalize_roi_intensities(roi: np.ndarray, nbins: int = 64) -> tuple[np.ndarray, float, float]:
-    """Normalize ROI intensities to [0, 1] using histogram bimodal fitting.
+def normalize_roi_intensities(
+    roi: np.ndarray,
+    center_xy: np.ndarray,
+    m_est: float,
+    sigma_factor: float = 1.0,
+) -> tuple[np.ndarray, float, float]:
+    """Normalize ROI intensities to [0, 1] using centre-weighted percentiles.
 
-    Finds the two dominant peaks in the ROI intensity histogram, maps the
-    darker peak to 0 and the brighter peak to 1.
+    Pixels near the finder-pattern centre are weighted more heavily so that
+    the dark/bright mapping reflects the finder pattern's contrast, not the
+    background's.
 
     Returns
     -------
     roi_norm : ndarray (H, W)
         Normalized intensities in [0, 1].
     dark : float
-        Intensity value mapped to 0.
+        Weighted p10 (mapped to 0).
     bright : float
-        Intensity value mapped to 1.
+        Weighted p90 (mapped to 1).
     """
-    vals = roi.ravel().astype(np.float64)
-    hist, edges = np.histogram(vals, bins=nbins)
-    centers = (edges[:-1] + edges[1:]) / 2.0
+    H, W = roi.shape
+    ys, xs = np.mgrid[0:H, 0:W]
+    dist = np.sqrt((xs.astype(np.float64) - center_xy[0]) ** 2
+                   + (ys.astype(np.float64) - center_xy[1]) ** 2)
+    sigma = sigma_factor * 3.5 * m_est
+    weights = np.exp(-0.5 * (dist / sigma) ** 2)
 
-    # Find peaks in the histogram (smoothed to avoid noise)
-    peaks, props = find_peaks(hist, prominence=0.02 * hist.max())
-    if len(peaks) < 2:
-        # Fallback: p5 and p95
-        dark = float(np.percentile(vals, 5))
-        bright = float(np.percentile(vals, 95))
-    else:
-        # Sort peaks by height, take two tallest
-        sorted_idx = np.argsort(hist[peaks])[::-1]
-        p1 = peaks[sorted_idx[0]]
-        p2 = peaks[sorted_idx[1]]
-        dark = float(centers[min(p1, p2)])
-        bright = float(centers[max(p1, p2)])
+    vals = roi.ravel().astype(np.float64)
+    w = weights.ravel()
+
+    order = np.argsort(vals)
+    vals_sorted = vals[order]
+    w_sorted = w[order]
+    cum_w = np.cumsum(w_sorted)
+    total_w = cum_w[-1]
+
+    def _weighted_percentile(percentile: float) -> float:
+        if total_w == 0.0:
+            return float(np.percentile(vals, percentile))
+        target = percentile / 100.0 * total_w
+        idx = int(np.searchsorted(cum_w, target))
+        idx = max(0, min(idx, len(vals_sorted) - 1))
+        return float(vals_sorted[idx])
+
+    dark = _weighted_percentile(10.0)
+    bright = _weighted_percentile(90.0)
 
     span = bright - dark
     if span < 1.0:
@@ -550,7 +564,7 @@ for ci in show_indices:
     width_px = float(cluster.cols[5] - cluster.cols[0])
 
     # ── Normalize ROI ──
-    roi_norm, dark_val, bright_val = normalize_roi_intensities(roi)
+    roi_norm, dark_val, bright_val = normalize_roi_intensities(roi, center_xy, m_est)
 
     # ── Sample rays ──
     profiles, ray_endpoints, angles_deg = sample_ray_profiles(
@@ -637,7 +651,7 @@ for ci in show_indices:
     center_xy = np.array([c_col, c_row], dtype=np.float64)
     m_est = float(cluster.cols[5] - cluster.cols[0]) / 7.0
 
-    roi_norm, dark_val, bright_val = normalize_roi_intensities(roi)
+    roi_norm, dark_val, bright_val = normalize_roi_intensities(roi, center_xy, m_est)
     profiles, ray_endpoints, angles_deg = sample_ray_profiles(
         roi, c_col, c_row,
         num_rays=NUM_RAYS,
@@ -733,7 +747,7 @@ for ci in show_indices:
     center_xy = np.array([c_col, c_row], dtype=np.float64)
     m_est = float(cluster.cols[5] - cluster.cols[0]) / 7.0
 
-    roi_norm, dark_val, bright_val = normalize_roi_intensities(roi)
+    roi_norm, dark_val, bright_val = normalize_roi_intensities(roi, center_xy, m_est)
     profiles, ray_endpoints, angles_deg = sample_ray_profiles(
         roi, c_col, c_row, num_rays=NUM_RAYS, num_samples=NUM_SAMPLES,
         ray_length=RAY_LENGTH,
