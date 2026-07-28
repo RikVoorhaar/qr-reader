@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # ── Config ───────────────────────────────────────────────────────────────────
-PRESET = "easy"             # 'easy', 'medium', or 'hard'
+PRESET = "hard"             # 'easy', 'medium', or 'hard'
 VERSION = 5                 # QR version (1–40)
 SAMPLE_SEED = 42            # Base seed
 NUM_RAYS = 36               # Half-ray count (36 directions in [0, 2π))
@@ -97,6 +97,9 @@ ax.axis("off")
 if TIGHT_LAYOUT:
     plt.tight_layout()
 plt.show()
+
+
+
 
 # ── Pipeline: binarize → alignment scan → cluster ──
 img_binary = binarize_image(img_gray)
@@ -763,6 +766,9 @@ for ci in show_indices:
         "bp": bp, "points": points, "valid_indices": valid_indices,
         "D": D, "pairs": pairs,
         "H_roi": H_roi, "W_roi": W_roi,
+        "profiles_norm": profiles_norm,
+        "theta_rad": theta_rad,
+        "max_dist": max_dist,
     }
 
     n_comparable = int((np.sum(D < 1.0) - M) // 2)  # off-diagonal, symmetric
@@ -899,6 +905,82 @@ for ci, data in edge_data.items():
     ax.legend(fontsize=8)
     ax.set_xlabel("x (col)")
     ax.set_ylabel("y (row)")
+    if TIGHT_LAYOUT:
+        plt.tight_layout()
+    plt.show()
+
+
+# %% [11] Step 1 — Actual vs theoretical template profiles
+
+for ci, data in edge_data.items():
+    if "top4" not in data:
+        continue
+    top4 = data["top4"]
+    profiles_norm = data["profiles_norm"]
+    center_xy = data["center_xy"]
+    theta_rad = data["theta_rad"]
+    max_dist = data["max_dist"]
+    H_roi = data["H_roi"]
+    W_roi = data["W_roi"]
+
+    half_dirs = np.column_stack([np.cos(theta_rad), np.sin(theta_rad)])
+    n_rays = len(theta_rad)
+    n_samples = profiles_norm.shape[1]
+    t_samples = np.linspace(0, max_dist, n_samples)
+
+    # Assign each half-ray to the segment with smallest positive t
+    assignment = np.full(n_rays, -1, dtype=int)
+    t_assigned = np.full(n_rays, np.nan, dtype=np.float64)
+
+    for j in range(n_rays):
+        d = half_dirs[j]
+        best_t = np.inf
+        best_idx = -1
+        for si, seg in enumerate(top4):
+            denom = seg.normal @ d
+            if abs(denom) < 1e-12:
+                continue
+            t = (seg.rho - seg.normal @ center_xy) / denom
+            if 0 < t < best_t:
+                best_t = t
+                best_idx = si
+        if best_idx >= 0:
+            assignment[j] = best_idx
+            t_assigned[j] = best_t
+
+    # Build theoretical profiles
+    theoretical = np.zeros((n_rays, n_samples), dtype=np.float64)
+    for j in range(n_rays):
+        if assignment[j] >= 0:
+            m = t_assigned[j] / PITCH_CONSTANT
+            theoretical[j] = finder_soft_template(t_samples, m, sigma=1.0)
+
+    # ── Plot: actual (left) vs theoretical (right) ──
+    fig, (ax_l, ax_r) = plt.subplots(1, 2, figsize=(16, 7))
+    fig.suptitle(f"Cluster {ci} — actual vs theoretical profiles",
+                 fontsize=13, fontweight="bold")
+
+    step = (np.rad2deg(theta_rad[1] - theta_rad[0]) if n_rays > 1
+            else 360.0 / n_rays)
+    img_extent = [0, max_dist,
+                  np.rad2deg(theta_rad[-1]) + step, np.rad2deg(theta_rad[0])]
+
+    ax_l.imshow(profiles_norm, aspect="auto", cmap="gray",
+                extent=img_extent, interpolation="nearest")
+    ax_l.set_title("Actual profiles")
+    ax_l.set_xlabel("Distance from centre (px)")
+    ax_l.set_ylabel("Angle (deg)")
+
+    ax_r.imshow(theoretical, aspect="auto", cmap="gray",
+                vmin=0.0, vmax=1.0, extent=img_extent, interpolation="nearest")
+    ax_r.set_title("Theoretical templates")
+    ax_r.set_xlabel("Distance from centre (px)")
+    ax_r.set_ylabel("Angle (deg)")
+
+    counts = [int(np.sum(assignment == si)) for si in range(len(top4))]
+    print(f"Cluster {ci}: half-ray assignment — " + ", ".join(
+        f"Edge {si}: {c}" for si, c in enumerate(counts)))
+
     if TIGHT_LAYOUT:
         plt.tight_layout()
     plt.show()
