@@ -248,6 +248,7 @@ def assign_points(clusters: list[EdgeCluster], n_points: int) -> np.ndarray:
 # ── Segment-refinement helpers (plan Step 2–3) ───────────────────────────────
 
 from scipy.special import erfc
+from scipy.optimize import least_squares, OptimizeResult
 
 
 def _finder_template(
@@ -1410,3 +1411,159 @@ def check_joint_refinement_jacobian(
     else:
         max_err = float(np.max(rel_errors))
     return J, J_fd, max_err
+
+
+# ── Phase 4 — Joint LM refinement ────────────────────────────────────────
+
+
+def _reorder_to_standard(
+    segments: list[EdgeCluster],
+) -> tuple[int, int, int, int]:
+    """Return indices of *segments* ordered (L, R, T, B).
+
+    Classification is based on the dominant component of each edge's normal and
+    the **geometric position** of the line (derived from *rho* and *normal*).
+    This handles conventions where opposite sides share a normal direction.
+    """
+    normals = np.array([s.normal for s in segments])
+    rhos = np.array([s.rho for s in segments])
+    nx = normals[:, 0]
+    ny = normals[:, 1]
+
+    is_lr = np.abs(nx) >= np.abs(ny)
+    is_tb = ~is_lr
+
+    lr_idx = np.flatnonzero(is_lr)
+    tb_idx = np.flatnonzero(is_tb)
+
+    if len(lr_idx) != 2 or len(tb_idx) != 2:
+        raise ValueError(
+            f"Expected 2 L/R and 2 T/B segments; got "
+            f"{len(lr_idx)} L/R, {len(tb_idx)} T/B. "
+            f"Normals:\n{normals}"
+        )
+
+    x_pos = rhos[lr_idx] / nx[lr_idx]
+    left_idx = lr_idx[np.argmin(x_pos)]
+    right_idx = lr_idx[np.argmax(x_pos)]
+    if left_idx == right_idx:
+        left_idx = lr_idx[np.argmin(nx[lr_idx])]
+        right_idx = lr_idx[np.argmax(nx[lr_idx])]
+
+    y_pos = rhos[tb_idx] / ny[tb_idx]
+    top_idx = tb_idx[np.argmin(y_pos)]
+    bottom_idx = tb_idx[np.argmax(y_pos)]
+    if top_idx == bottom_idx:
+        top_idx = tb_idx[np.argmin(ny[tb_idx])]
+        bottom_idx = tb_idx[np.argmax(ny[tb_idx])]
+
+    return int(left_idx), int(right_idx), int(top_idx), int(bottom_idx)
+
+
+def refine_finder_edges_joint(
+    segments: list[EdgeCluster],
+    centerpoint: np.ndarray,
+    half_profiles: np.ndarray,
+    half_dirs: np.ndarray,
+    s_samples: np.ndarray,
+    sigma: float = 1.0,
+) -> tuple[list[EdgeCluster], OptimizeResult]:
+    """Jointly refine 4 finder-pattern edge lines with a projective model.
+
+    Parameters
+    ----------
+    segments : list of EdgeCluster
+        Exactly 4 edge segments in any order.  Internally sorted to
+        LEFT/RIGHT/TOP/BOTTOM.
+    centerpoint : ndarray (2,)
+        Ray origin in ``(x, y)`` coordinates.
+    half_profiles : ndarray (N_rays, N_S)
+        Normalised intensity profiles for each half-ray.
+    half_dirs : ndarray (N_rays, 2)
+        Unit direction vectors for each ray.
+    s_samples : ndarray (N_S,)
+        Signed distances from *centerpoint* to each profile sample.
+    sigma : float
+        Edge softness in pixels (default 1.0).
+
+    Returns
+    -------
+    refined_segments : list of EdgeCluster
+        New ``EdgeCluster`` objects with updated ``.normal``, ``.rho``, and
+        ``.direction``.  Other attributes (``label``, ``support``,
+        ``pair_indices``, ``sigma_ratio``) are copied from the originals.
+    result : OptimizeResult
+        Full scipy result from ``least_squares``.
+    """
+    if len(segments) != 4:
+        raise ValueError(f"Expected 4 segments, got {len(segments)}")
+
+    l_idx, r_idx, t_idx, b_idx = _reorder_to_standard(segments)
+    ordered = [segments[l_idx], segments[r_idx],
+               segments[t_idx], segments[b_idx]]
+
+    theta0 = np.array([np.arctan2(s.normal[1], s.normal[0])
+                       for s in ordered], dtype=np.float64)
+    rho0 = np.array([s.rho for s in ordered], dtype=np.float64)
+
+    ell_L = thetarho_to_homogeneous_line(float(theta0[0]), float(rho0[0]))
+    ell_R = thetarho_to_homogeneous_line(float(theta0[1]), float(rho0[1]))
+    ell_T = thetarho_to_homogeneous_line(float(theta0[2]), float(rho0[2]))
+    ell_B = thetarho_to_homogeneous_line(float(theta0[3]), float(rho0[3]))
+
+    corners = compute_corners(ell_L, ell_R, ell_T, ell_B)
+    c = compute_projective_center(*corners)
+
+    R = float(np.mean([np.linalg.norm(corner - c) for corner in corners]))
+
+    kappa_u, kappa_v = compute_kappa(ell_L, ell_R, ell_T, ell_B, c)
+
+    N_rays, N_S = half_profiles.shape
+    pre_masks = np.zeros((N_rays, N_S), dtype=bool)
+    for k in range(N_rays):
+        s_j = compute_transition_distances(
+            centerpoint, half_dirs[k],
+            ell_L, ell_R, ell_T, ell_B, kappa_u, kappa_v,
+        )
+        pre_masks[k] = precompute_mask(s_samples, s_j, sigma)
+
+    x0 = np.zeros(8, dtype=np.float64)
+    x0[4:8] = rho0
+
+    ab_fixed = _fit_ols_params(
+        centerpoint, half_profiles, half_dirs, s_samples, pre_masks,
+        ell_L, ell_R, ell_T, ell_B, kappa_u, kappa_v, sigma,
+    )
+
+    result = least_squares(
+        fun=lambda x, *args: joint_refinement_residuals(
+            x, *args, ab_fixed=ab_fixed),
+        x0=x0,
+        jac=joint_refinement_jacobian,
+        method="lm",
+        args=(centerpoint, R, theta0, half_profiles, half_dirs,
+              s_samples, pre_masks, sigma),
+        xtol=1e-6,
+        ftol=1e-6,
+        max_nfev=200,
+    )
+
+    x_opt = result.x
+    theta_opt = theta0 + x_opt[:4] * R
+    rho_opt = x_opt[4:8]
+
+    refined = []
+    for i in range(4):
+        n_opt = np.array([np.cos(theta_opt[i]), np.sin(theta_opt[i])])
+        d_opt = np.array([-n_opt[1], n_opt[0]])
+        refined.append(EdgeCluster(
+            label=ordered[i].label,
+            pair_indices=ordered[i].pair_indices,
+            support=ordered[i].support,
+            normal=n_opt,
+            rho=float(rho_opt[i]),
+            direction=d_opt,
+            sigma_ratio=ordered[i].sigma_ratio,
+        ))
+
+    return refined, result

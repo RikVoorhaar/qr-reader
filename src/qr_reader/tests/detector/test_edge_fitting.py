@@ -12,6 +12,8 @@ import pytest
 from qr_reader.detector.edge_fitting import (
     DISTANCE_THRESHOLD,
     MAX_GAP,
+    EdgeCluster,
+    _reorder_to_standard,
     _template_deriv_wrt_junctions,
     assign_points,
     build_pair_distance_matrix,
@@ -31,6 +33,7 @@ from qr_reader.detector.edge_fitting import (
     joint_refinement_residuals,
     precompute_mask,
     ray_line_intersection,
+    refine_finder_edges_joint,
     synthesize_template,
     thetarho_to_homogeneous_line,
     tls_line,
@@ -648,3 +651,145 @@ class TestJointRefinementJacobian:
             data["s_samples"], data["pre_masks"], data["sigma"],
         )
         assert max_err <= 1e-3
+
+
+# ── Phase 4 — Joint LM refinement ────────────────────────────────────────
+
+
+def _make_edge_clusters(
+    side_radius: float = 3.5,
+) -> list[EdgeCluster]:
+    """Return 4 ``EdgeCluster`` objects for a square centred at the origin.
+
+    Order is the natural top-4 order (L, R, T, B by construction), though
+    tests should not rely on this.
+    """
+    L, R, T, B = _square_lines(side_radius)
+    clusters = []
+    for label, ell in enumerate([L, R, T, B]):
+        theta, rho = homogeneous_line_to_thetarho(ell)
+        normal = np.array([np.cos(theta), np.sin(theta)])
+        direction = np.array([-normal[1], normal[0]])
+        clusters.append(EdgeCluster(
+            label=label,
+            pair_indices=np.array([label], dtype=int),
+            support=np.array([0], dtype=int),
+            normal=normal,
+            rho=rho,
+            direction=direction,
+            sigma_ratio=1.0,
+        ))
+    return clusters
+
+
+class TestReorderToStandard:
+    def test_axis_aligned(self):
+        clusters = _make_edge_clusters()
+        l, r, t, b = _reorder_to_standard(clusters)
+        assert len({l, r, t, b}) == 4
+        assert clusters[l].rho / clusters[l].normal[0] < 0   # LEFT
+        assert clusters[r].rho / clusters[r].normal[0] > 0   # RIGHT
+        assert clusters[t].rho / clusters[t].normal[1] < 0   # TOP
+        assert clusters[b].rho / clusters[b].normal[1] > 0   # BOTTOM
+
+    def test_permuted_input(self):
+        clusters = _make_edge_clusters()
+        rng = np.random.default_rng(123)
+        perm = rng.permutation(len(clusters))
+        shuffled = [clusters[i] for i in perm]
+        l, r, t, b = _reorder_to_standard(shuffled)
+        assert len({l, r, t, b}) == 4
+        assert shuffled[l].rho / shuffled[l].normal[0] < 0
+        assert shuffled[r].rho / shuffled[r].normal[0] > 0
+        assert shuffled[t].rho / shuffled[t].normal[1] < 0
+        assert shuffled[b].rho / shuffled[b].normal[1] > 0
+
+    def test_all_four_sides_present(self):
+        """Tilted normals (3:1 dominant) should split 2 L/R + 2 T/B."""
+        normals = [
+            np.array([-3.0, -1.0]) / np.sqrt(10),   # TL-ish
+            np.array([ 3.0, -1.0]) / np.sqrt(10),   # TR-ish
+            np.array([ 1.0,  3.0]) / np.sqrt(10),   # BR-ish
+            np.array([-1.0,  3.0]) / np.sqrt(10),   # BL-ish
+        ]
+        clusters = [EdgeCluster(i, np.array([i]), np.array([0]),
+                                n, float(i + 1), np.array([-n[1], n[0]]), 1.0)
+                    for i, n in enumerate(normals)]
+        l, r, t, b = _reorder_to_standard(clusters)
+        assert len({l, r, t, b}) == 4
+
+
+class TestRefineFinderEdgesJoint:
+    @pytest.fixture(scope="class")
+    def data(self):
+        return _build_joint_test_data()
+
+    @pytest.fixture(scope="class")
+    def clusters(self):
+        return _make_edge_clusters()
+
+    def test_returns_four_segments(self, data, clusters):
+        refined, result = refine_finder_edges_joint(
+            clusters, data["centerpoint"],
+            data["half_profiles"], data["half_dirs"],
+            data["s_samples"], data["sigma"],
+        )
+        assert len(refined) == 4
+        for ec in refined:
+            assert isinstance(ec, EdgeCluster)
+            assert ec.normal.shape == (2,)
+            assert ec.direction.shape == (2,)
+            assert isinstance(ec.rho, float)
+
+    def test_converges_on_synthetic(self, data, clusters):
+        refined, result = refine_finder_edges_joint(
+            clusters, data["centerpoint"],
+            data["half_profiles"], data["half_dirs"],
+            data["s_samples"], data["sigma"],
+        )
+        assert result.success or result.cost < 1e-4
+
+    def test_small_shift_on_perfect_data(self, data, clusters):
+        refined, result = refine_finder_edges_joint(
+            clusters, data["centerpoint"],
+            data["half_profiles"], data["half_dirs"],
+            data["s_samples"], data["sigma"],
+        )
+        for i, ec in enumerate(refined):
+            assert np.allclose(ec.normal, clusters[i].normal, atol=1e-2)
+            assert abs(ec.rho - clusters[i].rho) < 0.5
+
+    def test_improves_on_perturbed(self, data):
+        clusters = _make_edge_clusters()
+        theta_orig = np.array([np.arctan2(s.normal[1], s.normal[0])
+                               for s in clusters], dtype=np.float64)
+        rho_orig = np.array([s.rho for s in clusters], dtype=np.float64)
+
+        theta_T, rho_T = homogeneous_line_to_thetarho(
+            _square_lines()[2])
+        n_T = np.array([np.cos(theta_T + 0.1), np.sin(theta_T + 0.1)])
+        d_T = np.array([-n_T[1], n_T[0]])
+        clusters[2] = EdgeCluster(2, np.array([2]), np.array([0]),
+                                  n_T, rho_T, d_T, 1.0)
+
+        refined, result = refine_finder_edges_joint(
+            clusters, data["centerpoint"],
+            data["half_profiles"], data["half_dirs"],
+            data["s_samples"], data["sigma"],
+        )
+        assert result.success
+        theta_refined = np.array([np.arctan2(ec.normal[1], ec.normal[0])
+                                  for ec in refined])
+        assert np.allclose(theta_refined[0], theta_orig[0], atol=1e-4)
+        assert np.allclose(theta_refined[1], theta_orig[1], atol=1e-4)
+        assert np.allclose(theta_refined[2], theta_orig[2], atol=0.01)
+        assert np.allclose(theta_refined[3], theta_orig[3], atol=1e-4)
+
+    def test_rejects_wrong_segment_count(self, data):
+        clusters = _make_edge_clusters()
+        with pytest.raises(ValueError, match="Expected 4"):
+            refine_finder_edges_joint(
+                clusters[:3], data["centerpoint"],
+                data["half_profiles"], data["half_dirs"],
+                data["s_samples"], data["sigma"],
+            )

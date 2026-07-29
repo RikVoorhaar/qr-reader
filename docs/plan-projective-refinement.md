@@ -28,7 +28,7 @@ valid quadrilateral while also matching the image intensity.
 | 1 — Projective geometry | done | Functions + tests: homogeneous line constructors, corner computation, projective center, κ factors, line interpolation, ray↔line intersection, canonical-uv recovery |
 | 2 — Template synthesis | done | Functions + tests: per-ray transition distances, smooth template synthesis, pre-computed mask |
 | 3 — Residual, Jacobian, FD check | done | ``joint_refinement_residuals``, ``joint_refinement_jacobian`` (analytical chain rule), ``check_joint_refinement_jacobian`` (FD ≤ 1e-3), ``_fit_ols_params`` helper, tests |
-| 4 — LM loop + diagnostic plot | pending | ``refine_finder_edges_joint`` wrapper, notebook cell with per-cluster initial-vs-refined line plot |
+| 4 — LM loop + diagnostic plot | done | ``refine_finder_edges_joint`` LM wrapper, ``_reorder_to_standard`` helper, notebook cell [14] in ``ray-profile.py``, tests |
 
 ---
 
@@ -591,12 +591,26 @@ For each cluster with valid `edge_data`:
    - Legend: L/R/T/B colours, dashed=initial, solid=refined.
    - Title: `"Cluster {ci} — Joint refinement"`.
 
-### Phase 4 verification
+### Phase 4 tests
 
-- Notebook runs cleanly on easy/medium/hard presets.
-- LM converges (not necessarily to 0, but cost ≤ initial cost).
-- Refined lines are visibly better aligned than initial lines.
-- The shift is small (a few pixels).
+- `test_reorder_standard_*`: verifies `_reorder_to_standard` on axis-aligned, permuted, and tilted normals.
+- `test_returns_four_segments`: smoke test.
+- `test_converges_on_synthetic`: LM succeeds on noise-free synthetic profiles.
+- `test_small_shift_on_perfect_data`: near-zero corrections for perfect input.
+- `test_improves_on_perturbed`: LM corrects a deliberately rotated edge back to true theta.
+- `test_rejects_wrong_segment_count`: raises `ValueError` for non-4 inputs.
+
+> **Implementation note — shared-normal convention:** The projective
+> refinement uses a convention where opposite sides share the same normal
+> direction (e.g. both LEFT and RIGHT use ``θ=0``), distinguished only by
+> the sign of *ρ*.  ``_reorder_to_standard`` handles this by computing the
+> geometric line position ``ρ/dominant_normal_component`` rather than
+> inspecting the normal sign alone.
+
+> **Implementation note — OLS freeze:** The ``(a, b)`` pair is computed from
+> ``x0`` once and held fixed across residual evaluations (``ab_fixed``
+> kwarg).  This keeps the residual differentiable and makes the analytical
+> Jacobian exact, as verified by ``check_joint_refinement_jacobian``.
 
 ---
 
