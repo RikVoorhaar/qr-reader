@@ -247,10 +247,7 @@ def assign_points(clusters: list[EdgeCluster], n_points: int) -> np.ndarray:
 
 # ── Segment-refinement helpers (plan Step 2–3) ───────────────────────────────
 
-try:
-    from scipy.special import erfc  # noqa: F811
-except ImportError:
-    pass
+from scipy.special import erfc
 
 
 def _finder_template(
@@ -556,3 +553,290 @@ def fit_finder_edges(
         clusters=clusters,
         assignment=assignment,
     )
+
+
+# ── Projective 4-line refinement helpers (plan-projective-refinement.md Phases 1–2)
+
+# Distances from the projective center to the finder-pattern transitions, in units
+# of the outer-edge distance (3.5 modules).  These are the physically standard
+# positions: 1.5m, 2.5m, 3.5m (finder edge), 4.5m (quiet-zone edge).  Using the
+# projective-center line as the inner reference makes this the fraction from the
+# center toward the physical side.
+_TRANSITION_ALPHAS = np.array([3.0, 5.0, 7.0, 9.0]) / 7.0
+
+
+def thetarho_to_homogeneous_line(theta: float, rho: float) -> np.ndarray:
+    """Return (3,) homogeneous line vector [a, b, e] with a·x + b·y + e = 0."""
+    return np.array([np.cos(theta), np.sin(theta), -rho], dtype=np.float64)
+
+
+def homogeneous_line_to_thetarho(ell: np.ndarray) -> tuple[float, float]:
+    """Inverse of ``thetarho_to_homogeneous_line``; returns (theta, rho)."""
+    a, b, e = np.asarray(ell, dtype=np.float64).ravel()
+    norm = np.hypot(a, b)
+    if norm < 1e-15:
+        return float(np.arctan2(b, a)), float(-e)
+    a, b, e = a / norm, b / norm, e / norm
+    theta = float(np.arctan2(b, a))
+    rho = float(-e)
+    return theta, rho
+
+
+def _homog_point(p: np.ndarray) -> np.ndarray:
+    """Convert a Euclidean (x, y) point to homogeneous coordinates."""
+    p = np.asarray(p, dtype=np.float64).ravel()
+    if len(p) == 3:
+        return p
+    return np.array([p[0], p[1], 1.0], dtype=np.float64)
+
+
+def _euclidean(p: np.ndarray, eps: float = 1e-12) -> np.ndarray:
+    """De-homogenise a 3-vector, returning NaNs if w == 0."""
+    p = np.asarray(p, dtype=np.float64).ravel()
+    if abs(p[2]) < eps:
+        return np.full(2, np.nan, dtype=np.float64)
+    return np.array([p[0] / p[2], p[1] / p[2]], dtype=np.float64)
+
+
+def compute_corners(
+    ell_L: np.ndarray,
+    ell_R: np.ndarray,
+    ell_T: np.ndarray,
+    ell_B: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Return the four finder corners from its four side lines.
+
+    The ordering is (p_LT, p_RT, p_RB, p_LB) in Euclidean (x, y) coordinates.
+    """
+    ell_L = np.asarray(ell_L, dtype=np.float64).ravel()
+    ell_R = np.asarray(ell_R, dtype=np.float64).ravel()
+    ell_T = np.asarray(ell_T, dtype=np.float64).ravel()
+    ell_B = np.asarray(ell_B, dtype=np.float64).ravel()
+
+    p_LT = _euclidean(np.cross(ell_L, ell_T))
+    p_RT = _euclidean(np.cross(ell_R, ell_T))
+    p_RB = _euclidean(np.cross(ell_R, ell_B))
+    p_LB = _euclidean(np.cross(ell_L, ell_B))
+    return p_LT, p_RT, p_RB, p_LB
+
+
+def compute_projective_center(
+    p_LT: np.ndarray,
+    p_RT: np.ndarray,
+    p_RB: np.ndarray,
+    p_LB: np.ndarray,
+) -> np.ndarray:
+    """Return the projective center of the finder-pattern quadrilateral.
+
+    The center is the intersection of the two diagonal lines.
+    """
+    p_LT = _homog_point(p_LT)
+    p_RT = _homog_point(p_RT)
+    p_RB = _homog_point(p_RB)
+    p_LB = _homog_point(p_LB)
+
+    diag1 = np.cross(p_LT, p_RB)
+    diag2 = np.cross(p_RT, p_LB)
+    return _euclidean(np.cross(diag1, diag2))
+
+
+def compute_kappa(
+    ell_L: np.ndarray,
+    ell_R: np.ndarray,
+    ell_T: np.ndarray,
+    ell_B: np.ndarray,
+    c: np.ndarray,
+) -> tuple[float, float]:
+    """Return the pair of opposite-line scale factors (kappa_u, kappa_v)."""
+    ell_L = np.asarray(ell_L, dtype=np.float64).ravel()
+    ell_R = np.asarray(ell_R, dtype=np.float64).ravel()
+    ell_T = np.asarray(ell_T, dtype=np.float64).ravel()
+    ell_B = np.asarray(ell_B, dtype=np.float64).ravel()
+    c_h = _homog_point(c)
+
+    dot_L = float(ell_L @ c_h)
+    dot_R = float(ell_R @ c_h)
+    dot_T = float(ell_T @ c_h)
+    dot_B = float(ell_B @ c_h)
+
+    kappa_u = -dot_L / dot_R if abs(dot_R) > 1e-15 else np.nan
+    kappa_v = -dot_T / dot_B if abs(dot_B) > 1e-15 else np.nan
+    return float(kappa_u), float(kappa_v)
+
+
+def interpolate_line(
+    alpha: float,
+    ell_inner: np.ndarray,
+    ell_outer: np.ndarray,
+    kappa: float,
+) -> np.ndarray:
+    """Interpolate two homogeneous lines: ``ℓ(α) = (1-α)ℓ_inner + α·κ·ℓ_outer``."""
+    ell_inner = np.asarray(ell_inner, dtype=np.float64).ravel()
+    ell_outer = np.asarray(ell_outer, dtype=np.float64).ravel()
+    return (1.0 - alpha) * ell_inner + alpha * kappa * ell_outer
+
+
+def ray_line_intersection(
+    origin: np.ndarray,
+    direction: np.ndarray,
+    line: np.ndarray,
+    eps: float = 1e-12,
+) -> float:
+    """Distance ``s >= 0`` where ``origin + s·direction`` meets ``line``.
+
+    The ``line`` may be given either as a homogeneous 3-vector ``[a, b, e]`` or
+    a Euclidean 2-vector ``[a, b]`` (``e`` is taken as 0).  Returns NaN if the
+    ray is parallel to the line.
+    """
+    origin = np.asarray(origin, dtype=np.float64).ravel()[:2]
+    direction = np.asarray(direction, dtype=np.float64).ravel()[:2]
+    line = np.asarray(line, dtype=np.float64).ravel()
+
+    a, b = line[0], line[1]
+    e = line[2] if line.size > 2 else 0.0
+
+    denom = a * direction[0] + b * direction[1]
+    if abs(denom) < eps:
+        return float(np.nan)
+
+    numer = -(a * origin[0] + b * origin[1] + e)
+    return float(numer / denom)
+
+
+def canonical_uv(
+    point: np.ndarray,
+    ell_L: np.ndarray,
+    ell_R: np.ndarray,
+    ell_T: np.ndarray,
+    ell_B: np.ndarray,
+    kappa_u: float,
+    kappa_v: float,
+) -> tuple[float, float]:
+    """Map a Euclidean point to canonical finder coordinates ``(u, v)``.
+
+    The left and top sides map to ``u = 0`` and ``v = 0`` respectively; the right
+    and bottom sides map to ``u = 1`` and ``v = 1``.
+    """
+    p = _homog_point(point)
+    ell_L = np.asarray(ell_L, dtype=np.float64).ravel()
+    ell_R = np.asarray(ell_R, dtype=np.float64).ravel()
+    ell_T = np.asarray(ell_T, dtype=np.float64).ravel()
+    ell_B = np.asarray(ell_B, dtype=np.float64).ravel()
+
+    dot_L = float(ell_L @ p)
+    dot_R = float(ell_R @ p)
+    dot_T = float(ell_T @ p)
+    dot_B = float(ell_B @ p)
+
+    denom_u = dot_L - kappa_u * dot_R
+    denom_v = dot_T - kappa_v * dot_B
+    u = np.nan if abs(denom_u) < 1e-15 else dot_L / denom_u
+    v = np.nan if abs(denom_v) < 1e-15 else dot_T / denom_v
+    return float(u), float(v)
+
+
+def _central_line(line: np.ndarray, c: np.ndarray) -> np.ndarray:
+    """Return the line through ``c`` parallel to ``line``.
+
+    The returned line has the same (a, b) coefficients as ``line``.
+    """
+    line = np.asarray(line, dtype=np.float64).ravel()
+    c = np.asarray(c, dtype=np.float64).ravel()[:2]
+    a, b = line[0], line[1]
+    return np.array([a, b, -(a * c[0] + b * c[1])], dtype=np.float64)
+
+
+def compute_transition_distances(
+    centerpoint: np.ndarray,
+    direction: np.ndarray,
+    ell_L: np.ndarray,
+    ell_R: np.ndarray,
+    ell_T: np.ndarray,
+    ell_B: np.ndarray,
+    kappa_u: float,
+    kappa_v: float,
+) -> np.ndarray:
+    """Return the four sorted transition distances ``s₁..s₄`` for one half-ray.
+    """
+    centerpoint = np.asarray(centerpoint, dtype=np.float64).ravel()[:2]
+    direction = np.asarray(direction, dtype=np.float64).ravel()[:2]
+
+    side_lines = [
+        np.asarray(ell_L, dtype=np.float64).ravel(),
+        np.asarray(ell_R, dtype=np.float64).ravel(),
+        np.asarray(ell_T, dtype=np.float64).ravel(),
+        np.asarray(ell_B, dtype=np.float64).ravel(),
+    ]
+
+    # Projective center is computed from the four side lines.
+    corners = compute_corners(*side_lines)
+    c = compute_projective_center(*corners)
+    if not np.all(np.isfinite(c)):
+        return np.full(4, np.nan, dtype=np.float64)
+
+    positive: list[float] = []
+    for line in side_lines:
+        central = _central_line(line, c)
+        for alpha in _TRANSITION_ALPHAS:
+            ell_alpha = interpolate_line(alpha, central, line, kappa=1.0)
+            s = ray_line_intersection(centerpoint, direction, ell_alpha)
+            if np.isfinite(s) and s > 1e-9:
+                positive.append(s)
+
+    positive = np.sort(np.asarray(positive, dtype=np.float64))
+    if len(positive) >= 4:
+        return positive[:4]
+
+    out = np.full(4, np.nan, dtype=np.float64)
+    out[: len(positive)] = positive
+    return out
+
+
+def synthesize_template(
+    s_samples: np.ndarray,
+    s_junctions: np.ndarray,
+    sigma: float = 1.0,
+) -> np.ndarray:
+    """Synthesise the smooth finder-pattern intensity template.
+
+    Parameters
+    ----------
+    s_samples
+        Sample distances along the half-ray.
+    s_junctions
+        The four transition distances ``s₁ < s₂ < s₃ < s₄``.
+    sigma
+        Edge softness in pixels.
+
+    Returns
+    -------
+    template : ndarray
+        Values in ``[0, 1]`` with the transition sign pattern
+        ``(+1, -1, +1, -1)``.
+    """
+    s_samples = np.asarray(s_samples, dtype=np.float64)
+    s_junctions = np.asarray(s_junctions, dtype=np.float64).ravel()
+    if len(s_junctions) < 4:
+        return np.full_like(s_samples, np.nan, dtype=np.float64)
+
+    template = np.zeros_like(s_samples, dtype=np.float64)
+    signs = np.array([1.0, -1.0, 1.0, -1.0], dtype=np.float64)
+    for j in range(4):
+        template += signs[j] * 0.5 * erfc(-(s_samples - s_junctions[j]) / sigma)
+    return template
+
+
+def precompute_mask(
+    s_samples: np.ndarray,
+    s_junctions: np.ndarray,
+    sigma: float = 1.0,
+) -> np.ndarray:
+    """Return a boolean mask that is True inside the quiet zone / pattern.
+
+    Samples beyond ``s₄ + 2·σ`` are masked out (returned False).
+    """
+    s_samples = np.asarray(s_samples, dtype=np.float64)
+    s_junctions = np.asarray(s_junctions, dtype=np.float64).ravel()
+    if len(s_junctions) < 4:
+        return np.ones_like(s_samples, dtype=bool)
+    return s_samples <= s_junctions[-1] + 2.0 * sigma

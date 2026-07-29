@@ -13,9 +13,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # ── Config ───────────────────────────────────────────────────────────────────
-PRESET = "hard"             # 'easy', 'medium', or 'hard'
-VERSION = 5                 # QR version (1–40)
-SAMPLE_SEED = 42            # Base seed
+PRESET = "medium"             # 'easy', 'medium', or 'hard'
+VERSION = 8                 # QR version (1–40)
+SAMPLE_SEED = 44            # Base seed
 NUM_RAYS = 36               # Half-ray count (36 directions in [0, 2π))
 NUM_SAMPLES = 120           # Samples per half-ray
 RAY_LENGTH = 1.0            # Ray length as fraction of half-ROI diagonal

@@ -14,10 +14,21 @@ from qr_reader.detector.edge_fitting import (
     MAX_GAP,
     assign_points,
     build_pair_distance_matrix,
+    canonical_uv,
     cluster_pairs,
     compute_boundary_points,
+    compute_corners,
+    compute_kappa,
+    compute_projective_center,
+    compute_transition_distances,
     extract_top_clusters,
     fit_finder_edges,
+    homogeneous_line_to_thetarho,
+    interpolate_line,
+    precompute_mask,
+    ray_line_intersection,
+    synthesize_template,
+    thetarho_to_homogeneous_line,
     tls_line,
 )
 
@@ -246,30 +257,231 @@ class TestExtractTopClusters:
             assert min(sizes) >= max(leftover)
 
 
-class TestAssignPoints:
-    def test_tie_break_prefers_lower_sigma_ratio(self):
-        from qr_reader.detector.edge_fitting import EdgeCluster
 
-        eps = np.zeros(2)
-        c0 = EdgeCluster(
-            label=0,
-            pair_indices=np.array([0]),
-            support=np.array([0, 1]),
-            normal=np.array([0.0, 1.0]),
-            rho=0.0,
-            direction=np.array([1.0, 0.0]),
-            sigma_ratio=0.05,
+
+# ── helpers for projective tests ──────────────────────────────────────────────
+
+
+def _square_lines(side_radius: float = 3.5):
+    """Return (ell_L, ell_R, ell_T, ell_B) for an axis-aligned square.
+
+    The square is centred at the origin with sides ``x = ±side_radius`` and
+    ``y = ±side_radius``.  The line convention here uses theta/rho such that
+    opposite sides share the same normal direction, giving ``κ_u = κ_v = 1``.
+    """
+    L = thetarho_to_homogeneous_line(0.0, -side_radius)          # x = -side_radius
+    R = thetarho_to_homogeneous_line(0.0, side_radius)           # x = +side_radius
+    T = thetarho_to_homogeneous_line(np.pi / 2.0, -side_radius)  # y = -side_radius
+    B = thetarho_to_homogeneous_line(np.pi / 2.0, side_radius)   # y = +side_radius
+    return L, R, T, B
+
+
+# ── projective geometry (Phase 1) ────────────────────────────────────────────
+
+
+class TestHomogeneousLines:
+    @pytest.mark.parametrize("seed", [0, 1, 2])
+    def test_roundtrip(self, seed):
+        rng = np.random.default_rng(seed)
+        theta = rng.uniform(-np.pi, np.pi)
+        rho = rng.uniform(-50.0, 50.0)
+        ell = thetarho_to_homogeneous_line(theta, rho)
+        theta2, rho2 = homogeneous_line_to_thetarho(ell)
+        # angles are normalised to (-π, π]
+        assert theta2 == pytest.approx(np.arctan2(np.sin(theta), np.cos(theta)))
+        assert rho2 == pytest.approx(rho)
+
+
+class TestComputeCorners:
+    def test_axis_aligned_square(self):
+        L, R, T, B = _square_lines(10.0)
+        p_LT, p_RT, p_RB, p_LB = compute_corners(L, R, T, B)
+        np.testing.assert_allclose(p_LT, [-10.0, -10.0], atol=1e-12)
+        np.testing.assert_allclose(p_RT, [10.0, -10.0], atol=1e-12)
+        np.testing.assert_allclose(p_RB, [10.0, 10.0], atol=1e-12)
+        np.testing.assert_allclose(p_LB, [-10.0, 10.0], atol=1e-12)
+
+
+class TestComputeProjectiveCenter:
+    def test_square_centroid(self):
+        lines = _square_lines(10.0)
+        corners = compute_corners(*lines)
+        c = compute_projective_center(*corners)
+        np.testing.assert_allclose(c, [0.0, 0.0], atol=1e-12)
+        np.testing.assert_allclose(c, np.mean(corners, axis=0), atol=1e-12)
+
+
+class TestComputeKappa:
+    def test_square_same_orientation(self):
+        L, R, T, B = _square_lines(10.0)
+        corners = compute_corners(L, R, T, B)
+        c = compute_projective_center(*corners)
+        kappa_u, kappa_v = compute_kappa(L, R, T, B, c)
+        assert kappa_u == pytest.approx(1.0)
+        assert kappa_v == pytest.approx(1.0)
+
+    def test_outward_normals_give_minus_one(self):
+        # Lines with outward normals: left normal points left, right points right.
+        L = thetarho_to_homogeneous_line(np.pi, 10.0)   # x = -10
+        R = thetarho_to_homogeneous_line(0.0, 10.0)     # x = +10
+        T = thetarho_to_homogeneous_line(-np.pi / 2, 10.0)  # y = -10
+        B = thetarho_to_homogeneous_line(np.pi / 2, 10.0)   # y = +10
+        corners = compute_corners(L, R, T, B)
+        c = compute_projective_center(*corners)
+        kappa_u, kappa_v = compute_kappa(L, R, T, B, c)
+        assert kappa_u == pytest.approx(-1.0)
+        assert kappa_v == pytest.approx(-1.0)
+
+
+class TestInterpolateLine:
+    def test_endpoints(self):
+        L, R, _, _ = _square_lines(7.0)
+        np.testing.assert_allclose(interpolate_line(0.0, L, R, 1.0), L, atol=1e-12)
+        # α = 1 is the same line as the outer side up to a non-zero scale.
+        ell_1 = interpolate_line(1.0, L, R, 1.0)
+        # Line scale is irrelevant; compare point sets by cross-product with R.
+        assert np.linalg.norm(np.cross(ell_1, R)[:2]) < 1e-12
+
+    def test_central_line_at_half(self):
+        L, R, _, _ = _square_lines(7.0)
+        ell_half = interpolate_line(0.5, L, R, 1.0)
+        # Central line should be x = 0.
+        assert abs(ell_half[2]) < 1e-12
+
+
+class TestRayLineIntersection:
+    def test_axis_aligned_hits(self):
+        _, R, _, _ = _square_lines(5.0)  # x = 5
+        origin = np.array([0.0, 0.0])
+        s = ray_line_intersection(origin, np.array([1.0, 0.0]), R)
+        assert s == pytest.approx(5.0)
+
+    def test_parallel_returns_nan(self):
+        _, R, _, _ = _square_lines(5.0)
+        origin = np.array([0.0, 0.0])
+        s = ray_line_intersection(origin, np.array([0.0, 1.0]), R)
+        assert np.isnan(s)
+
+    def test_behind_is_negative(self):
+        _, R, _, _ = _square_lines(5.0)
+        s = ray_line_intersection(np.zeros(2), np.array([-1.0, 0.0]), R)
+        assert s < 0.0
+        assert np.isfinite(s)
+
+
+class TestCanonicalUv:
+    def test_square_corners(self):
+        lines = _square_lines(3.5)
+        L, R, T, B = lines
+        corners = compute_corners(*lines)
+        c = compute_projective_center(*corners)
+        kappa_u, kappa_v = compute_kappa(*lines, c)
+        expected = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+        for corner, (ue, ve) in zip(corners, expected):
+            u, v = canonical_uv(corner, L, R, T, B, kappa_u, kappa_v)
+            assert u == pytest.approx(ue, abs=1e-12)
+            assert v == pytest.approx(ve, abs=1e-12)
+
+    def test_center_is_half(self):
+        lines = _square_lines(10.0)
+        L, R, T, B = lines
+        corners = compute_corners(*lines)
+        c = compute_projective_center(*corners)
+        kappa_u, kappa_v = compute_kappa(*lines, c)
+        u, v = canonical_uv(c, L, R, T, B, kappa_u, kappa_v)
+        assert u == pytest.approx(0.5, abs=1e-12)
+        assert v == pytest.approx(0.5, abs=1e-12)
+
+
+# ── template synthesis (Phase 2) ─────────────────────────────────────────────
+
+
+class TestComputeTransitionDistances:
+    def test_square_rightward(self):
+        L, R, T, B = _square_lines(3.5)
+        corners = compute_corners(L, R, T, B)
+        c = compute_projective_center(*corners)
+        kappa_u, kappa_v = compute_kappa(L, R, T, B, c)
+        s = compute_transition_distances(
+            np.zeros(2), np.array([1.0, 0.0]), L, R, T, B, kappa_u, kappa_v
         )
-        c1 = EdgeCluster(
-            label=1,
-            pair_indices=np.array([1]),
-            support=np.array([1, 2]),
-            normal=np.array([1.0, 0.0]),
-            rho=0.0,
-            direction=np.array([0.0, 1.0]),
-            sigma_ratio=0.02,
+        np.testing.assert_allclose(s, [1.5, 2.5, 3.5, 4.5], atol=1e-12)
+
+    def test_square_leftward(self):
+        L, R, T, B = _square_lines(3.5)
+        corners = compute_corners(L, R, T, B)
+        c = compute_projective_center(*corners)
+        kappa_u, kappa_v = compute_kappa(L, R, T, B, c)
+        s = compute_transition_distances(
+            np.zeros(2), np.array([-1.0, 0.0]), L, R, T, B, kappa_u, kappa_v
         )
-        assignment = assign_points([c0, c1], n_points=3)
-        assert assignment[0] == 0
-        assert assignment[1] == 1  # shared → lower sigma_ratio wins
-        assert assignment[2] == 1
+        np.testing.assert_allclose(s, [1.5, 2.5, 3.5, 4.5], atol=1e-12)
+
+    def test_offset_centerpoint_differs(self):
+        L, R, T, B = _square_lines(3.5)
+        corners = compute_corners(L, R, T, B)
+        c = compute_projective_center(*corners)
+        kappa_u, kappa_v = compute_kappa(L, R, T, B, c)
+        s_center = compute_transition_distances(
+            np.zeros(2), np.array([1.0, 0.0]), L, R, T, B, kappa_u, kappa_v
+        )
+        s_offset = compute_transition_distances(
+            np.array([0.5, 0.0]), np.array([1.0, 0.0]),
+            L, R, T, B, kappa_u, kappa_v,
+        )
+        np.testing.assert_allclose(s_center, [1.5, 2.5, 3.5, 4.5], atol=1e-12)
+        assert not np.allclose(s_offset, s_center, atol=1e-9)
+
+    def test_returns_four_valid_distances(self):
+        L, R, T, B = _square_lines(3.5)
+        corners = compute_corners(L, R, T, B)
+        c = compute_projective_center(*corners)
+        kappa_u, kappa_v = compute_kappa(L, R, T, B, c)
+        rng = np.random.default_rng(3)
+        for _ in range(20):
+            theta = rng.uniform(0.0, 2.0 * np.pi)
+            d = np.array([np.cos(theta), np.sin(theta)])
+            s = compute_transition_distances(
+                np.zeros(2), d, L, R, T, B, kappa_u, kappa_v
+            )
+            assert s.shape == (4,)
+            assert np.all(np.isfinite(s))
+            assert np.all(s[:-1] <= s[1:])
+            assert np.all(s > 0.0)
+
+
+class TestSynthesizeTemplate:
+    def test_junction_values_are_half(self):
+        # Use widely spaced junctions so that only the local step matters.
+        s_j = np.array([10.0, 20.0, 30.0, 40.0])
+        out = synthesize_template(s_j, s_j, sigma=1.0)
+        # At each junction the rising/falling step contributes 0.5; the other
+        # steps are far enough away to be negligible.
+        np.testing.assert_allclose(out, np.full_like(out, 0.5), atol=1e-3)
+
+    def test_alternating_regions(self):
+        s_j = np.array([10.0, 20.0, 30.0, 40.0])
+        sigma = 1.0
+        val_dark_ring = synthesize_template(np.array([25.0]), s_j, sigma=sigma)
+        val_light_quiet = synthesize_template(np.array([35.0]), s_j, sigma=sigma)
+        val_outside = synthesize_template(np.array([50.0]), s_j, sigma=sigma)
+        assert val_dark_ring[0] < 0.1
+        assert val_light_quiet[0] > 0.9
+        assert val_outside[0] < 0.1
+
+    def test_baseline_normalized(self):
+        s_j = np.array([10.0, 20.0, 30.0, 40.0])
+        s = np.linspace(-10.0, 50.0, 601)
+        out = synthesize_template(s, s_j, sigma=1.0)
+        assert np.min(out) < 0.05
+        assert np.max(out) > 0.95
+
+
+class TestPrecomputeMask:
+    def test_inside_and_beyond(self):
+        s_j = np.array([1.5, 2.5, 3.5, 4.5])
+        sigma = 1.0
+        mask = precompute_mask(np.array([0.0, 4.0, 10.0]), s_j, sigma)
+        assert mask[0]
+        assert mask[1]
+        assert not mask[2]

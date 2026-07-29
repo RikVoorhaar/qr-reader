@@ -25,8 +25,8 @@ valid quadrilateral while also matching the image intensity.
 
 | Phase | Status | Deliverable |
 |-------|--------|-------------|
-| 1 — Projective geometry | pending | Functions + tests: homogeneous line constructors, corner computation, projective center, κ factors, line interpolation, ray↔line intersection |
-| 2 — Template synthesis | pending | Functions + tests: ray side-determination, per-ray transition distances, smooth template synthesis, pre-computed mask |
+| 1 — Projective geometry | done | Functions + tests: homogeneous line constructors, corner computation, projective center, κ factors, line interpolation, ray↔line intersection, canonical-uv recovery |
+| 2 — Template synthesis | done | Functions + tests: per-ray transition distances, smooth template synthesis, pre-computed mask |
 | 3 — Residual, Jacobian, FD check | pending | `joint_refinement_residuals`, `joint_refinement_jacobian`, test verifying FD ≤ 1e-3 |
 | 4 — LM loop + diagnostic plot | pending | `refine_finder_edges_joint` wrapper, notebook cell with per-cluster initial-vs-refined line plot |
 
@@ -190,9 +190,15 @@ which is light).  From the projective center outward, the transitions are:
 | Boundary | Canonical α | Transition | Modules from center |
 |----------|-------------|------------|---------------------|
 | Inner dark→light | α = 3/7 | +1 | 1.5m |
-| Inner light→dark | α = 4/7 | -1 | 2.5m |
+| Inner light→dark | α = 5/7 | -1 | 2.5m |
 | Finder edge (dark→quiet zone) | α = 1 | +1 | 3.5m |
-| Quiet zone edge (light→outside) | α = 8/7 | -1 | 4.5m |
+| Quiet zone edge (light→outside) | α = 9/7 | -1 | 4.5m |
+
+> **Correction from earlier draft**: the original plan used `{3/7, 4/7, 1, 8/7}`
+> for α, but those values do not produce the physically correct module-unit
+> distances (1.5m, 2.5m, 3.5m, 4.5m). The correct values are
+> `{3/7, 5/7, 1, 9/7}`, with the projective-center line as the inner reference
+> (α=0). See `_TRANSITION_ALPHAS` in `edge_fitting.py`.
 
 These module-unit distances are valid *only from the projective center*.  From
 the centerpoint (which is offset from the projective center), the distances
@@ -211,7 +217,7 @@ The solution: compute the canonical `(u, v)` of the *centerpoint* itself
 using `canonical_uv`.  This tells us which region the origin is in.
 
 Then for each side the ray exits, compute the sorted intersection distances
-for α ∈ {3/7, 4/7, 1, 8/7}.  Retain only those with α > the origin's canonical
+for α ∈ {3/7, 5/7, 1, 9/7}.  Retain only those with α > the origin's canonical
 coordinate (if exiting through the x-side) or α > the origin's canonical
 coordinate (if exiting through the y-side).
 
@@ -223,8 +229,8 @@ build the template from them.  This handles any centerpoint position.
 
 For each half-ray:
 1. Intersect the ray from `centerpoint` with direction `d` against all 8 lines:
-   ℓ_u(3/7), ℓ_u(4/7), ℓ_u(1.0), ℓ_u(8/7),
-   ℓ_v(3/7), ℓ_v(4/7), ℓ_v(1.0), ℓ_v(8/7).
+   ℓ_u(3/7), ℓ_u(5/7), ℓ_u(1.0), ℓ_u(9/7),
+   ℓ_v(3/7), ℓ_v(5/7), ℓ_v(1.0), ℓ_v(9/7).
 2. Sort the resulting positive intersection distances `s`.
 3. Keep the smallest 4 (corresponding to the 4 transitions the ray actually
    encounters).
