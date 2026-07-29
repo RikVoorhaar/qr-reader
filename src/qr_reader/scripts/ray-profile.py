@@ -94,87 +94,9 @@ for i, lbl in enumerate(["TL", "TR", "BR", "BL"]):
 ax.set_title(f"Input — v{QR_VERSION} ({PRESET.upper()})  bg: {bg_path.name}")
 ax.legend(fontsize=8)
 ax.axis("off")
-    if TIGHT_LAYOUT:
-        plt.tight_layout()
-    plt.show()
-
-
-# %% [14] Step 4 — Joint projective refinement + diagnostic plot
-from qr_reader.detector.edge_fitting import refine_finder_edges_joint
-
-EDGE_COLORS = ["#e41a1c", "#377eb8", "#4daf4a", "#984ea3"]
-
-for ci, data in edge_data.items():
-    if "top4" not in data:
-        continue
-    top4 = data["top4"]
-    profiles_norm = data["profiles_norm"]
-    center_xy = data["center_xy"]
-    theta_rad = data["theta_rad"]
-    max_dist = data["max_dist"]
-    roi = data["roi"]
-    H_roi, W_roi = data["H_roi"], data["W_roi"]
-    points = data["points"]
-    assignment = data.get("assignment")
-
-    half_dirs = np.column_stack([np.cos(theta_rad), np.sin(theta_rad)])
-    n_samples = profiles_norm.shape[1]
-    s_samples = np.linspace(0, max_dist, n_samples)
-
-    refined, result = refine_finder_edges_joint(
-        top4, center_xy, profiles_norm, half_dirs, s_samples,
-    )
-
-    print(f"\nCluster {ci}: LM converged={result.success}, "
-          f"cost={result.cost:.4f}, nfev={result.nfev}")
-    side_names = ["L", "R", "T", "B"]
-    for k in range(4):
-        orig = top4[k]
-        new = refined[k]
-        theta_orig = float(np.arctan2(orig.normal[1], orig.normal[0]))
-        theta_new = float(np.arctan2(new.normal[1], new.normal[0]))
-        print(f"  {side_names[k]}: "
-              f"(\u03b8={theta_orig:.4f}, \u03c1={orig.rho:.2f}) "
-              f"\u2192 (\u03b8={theta_new:.4f}, \u03c1={new.rho:.2f})")
-
-    fig, ax = plt.subplots(figsize=(9, 9))
-    ax.imshow(roi, cmap="gray", extent=[0, W_roi, H_roi, 0])
-    ax.plot(center_xy[0], center_xy[1], "r+", markersize=12, markeredgewidth=2)
-
-    for k, ec in enumerate(top4):
-        assigned_pts = points[assignment == k] if assignment is not None else None
-        if assigned_pts is None or len(assigned_pts) == 0:
-            continue
-        proj = assigned_pts @ ec.direction
-        lo, hi = float(proj.min()), float(proj.max())
-        ext = (hi - lo) * 0.2
-        t_vals = np.array([lo - ext, hi + ext])
-        line_pts = ec.rho * ec.normal + t_vals[:, None] * ec.direction
-        ax.plot(line_pts[:, 0], line_pts[:, 1], "--", color=EDGE_COLORS[k],
-                linewidth=1.5, alpha=0.5)
-
-    for k, ec in enumerate(refined):
-        assigned_pts = points[assignment == k] if assignment is not None else None
-        if assigned_pts is None or len(assigned_pts) == 0:
-            continue
-        proj = assigned_pts @ ec.direction
-        lo, hi = float(proj.min()), float(proj.max())
-        ext = (hi - lo) * 0.2
-        t_vals = np.array([lo - ext, hi + ext])
-        line_pts = ec.rho * ec.normal + t_vals[:, None] * ec.direction
-        ax.plot(line_pts[:, 0], line_pts[:, 1], "-", color=EDGE_COLORS[k],
-                linewidth=2.5, alpha=0.9, label=side_names[k])
-
-    ax.plot([], [], "--", color="gray", label="Initial")
-    ax.plot([], [], "-", color="black", linewidth=2.5, label="Refined (joint)")
-    ax.set_title(f"Cluster {ci} \u2014 Joint refinement")
-    ax.legend(fontsize=8, loc="upper right")
-    ax.set_xlabel("x (col)")
-    ax.set_ylabel("y (row)")
-    if TIGHT_LAYOUT:
-        plt.tight_layout()
-    plt.show()
-
+if TIGHT_LAYOUT:
+    plt.tight_layout()
+plt.show()
 
 
 # ── Pipeline: binarize → alignment scan → cluster ──
@@ -1256,6 +1178,83 @@ for ci, data in edge_data.items():
             ax.plot([], [], "o", color=EDGE_COLORS[k], markersize=8, label=f"Seg {k}")
 
     ax.set_title(f"Cluster {ci} — LM refinement")
+    ax.legend(fontsize=8, loc="upper right")
+    ax.set_xlabel("x (col)")
+    ax.set_ylabel("y (row)")
+    if TIGHT_LAYOUT:
+        plt.tight_layout()
+    plt.show()
+
+
+# %% [14] Step 4 — Joint projective refinement + diagnostic plot
+from qr_reader.detector.edge_fitting import refine_finder_edges_joint
+
+EDGE_COLORS = ["#e41a1c", "#377eb8", "#4daf4a", "#984ea3"]
+
+for ci, data in edge_data.items():
+    if "top4" not in data:
+        continue
+    top4 = data["top4"]
+    profiles_norm = data["profiles_norm"]
+    center_xy = data["center_xy"]
+    theta_rad = data["theta_rad"]
+    max_dist = data["max_dist"]
+    roi = data["roi"]
+    H_roi, W_roi = data["H_roi"], data["W_roi"]
+    points = data["points"]
+    assignment = data.get("assignment")
+
+    half_dirs = np.column_stack([np.cos(theta_rad), np.sin(theta_rad)])
+    n_samples = profiles_norm.shape[1]
+    s_samples = np.linspace(0, max_dist, n_samples)
+
+    refined, result = refine_finder_edges_joint(
+        top4, center_xy, profiles_norm, half_dirs, s_samples,
+    )
+
+    print(f"\nCluster {ci}: LM converged={result.success}, "
+          f"cost={result.cost:.4f}, nfev={result.nfev}")
+    side_names = ["L", "R", "T", "B"]
+    for k in range(4):
+        orig = top4[k]
+        new = refined[k]
+        theta_orig = float(np.arctan2(orig.normal[1], orig.normal[0]))
+        theta_new = float(np.arctan2(new.normal[1], new.normal[0]))
+        print(f"  {side_names[k]}: "
+              f"(\u03b8={theta_orig:.4f}, \u03c1={orig.rho:.2f}) "
+              f"\u2192 (\u03b8={theta_new:.4f}, \u03c1={new.rho:.2f})")
+
+    fig, ax = plt.subplots(figsize=(9, 9))
+    ax.imshow(roi, cmap="gray", extent=[0, W_roi, H_roi, 0])
+    ax.plot(center_xy[0], center_xy[1], "r+", markersize=12, markeredgewidth=2)
+
+    for k, ec in enumerate(top4):
+        assigned_pts = points[assignment == k] if assignment is not None else None
+        if assigned_pts is None or len(assigned_pts) == 0:
+            continue
+        proj = assigned_pts @ ec.direction
+        lo, hi = float(proj.min()), float(proj.max())
+        ext = (hi - lo) * 0.2
+        t_vals = np.array([lo - ext, hi + ext])
+        line_pts = ec.rho * ec.normal + t_vals[:, None] * ec.direction
+        ax.plot(line_pts[:, 0], line_pts[:, 1], "--", color=EDGE_COLORS[k],
+                linewidth=1.5, alpha=0.5)
+
+    for k, ec in enumerate(refined):
+        assigned_pts = points[assignment == k] if assignment is not None else None
+        if assigned_pts is None or len(assigned_pts) == 0:
+            continue
+        proj = assigned_pts @ ec.direction
+        lo, hi = float(proj.min()), float(proj.max())
+        ext = (hi - lo) * 0.2
+        t_vals = np.array([lo - ext, hi + ext])
+        line_pts = ec.rho * ec.normal + t_vals[:, None] * ec.direction
+        ax.plot(line_pts[:, 0], line_pts[:, 1], "-", color=EDGE_COLORS[k],
+                linewidth=2.5, alpha=0.9, label=side_names[k])
+
+    ax.plot([], [], "--", color="gray", label="Initial")
+    ax.plot([], [], "-", color="black", linewidth=2.5, label="Refined (joint)")
+    ax.set_title(f"Cluster {ci} \u2014 Joint refinement")
     ax.legend(fontsize=8, loc="upper right")
     ax.set_xlabel("x (col)")
     ax.set_ylabel("y (row)")
