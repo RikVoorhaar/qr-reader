@@ -12,9 +12,11 @@ import pytest
 from qr_reader.detector.edge_fitting import (
     DISTANCE_THRESHOLD,
     MAX_GAP,
+    _template_deriv_wrt_junctions,
     assign_points,
     build_pair_distance_matrix,
     canonical_uv,
+    check_joint_refinement_jacobian,
     cluster_pairs,
     compute_boundary_points,
     compute_corners,
@@ -25,6 +27,8 @@ from qr_reader.detector.edge_fitting import (
     fit_finder_edges,
     homogeneous_line_to_thetarho,
     interpolate_line,
+    joint_refinement_jacobian,
+    joint_refinement_residuals,
     precompute_mask,
     ray_line_intersection,
     synthesize_template,
@@ -485,3 +489,162 @@ class TestPrecomputeMask:
         assert mask[0]
         assert mask[1]
         assert not mask[2]
+
+
+# ── test data helpers for Phase 3 ──────────────────────────────────────────
+
+
+def _build_joint_test_data(
+    side_radius: float = 3.5,
+    n_rays: int = 36,
+    n_samples: int = 100,
+    sigma: float = 1.0,
+    rng_seed: int = 42,
+) -> dict:
+    """Synthetic test data for the joint refinement residual and Jacobian.
+
+    Returns a dict with all the positional args for ``joint_refinement_residuals``
+    and ``joint_refinement_jacobian``, plus the natural *x0*.
+    """
+    rng = np.random.default_rng(rng_seed)
+    L, R, T, B = _square_lines(side_radius)
+    theta_L, rho_L = homogeneous_line_to_thetarho(L)
+    theta_R, rho_R = homogeneous_line_to_thetarho(R)
+    theta_T, rho_T = homogeneous_line_to_thetarho(T)
+    theta_B, rho_B = homogeneous_line_to_thetarho(B)
+
+    theta0 = np.array([theta_L, theta_R, theta_T, theta_B], dtype=np.float64)
+    rho0 = np.array([rho_L, rho_R, rho_T, rho_B], dtype=np.float64)
+    x0 = np.concatenate([np.zeros(4, dtype=np.float64), rho0])
+
+    centerpoint = np.zeros(2, dtype=np.float64)
+    corners = compute_corners(L, R, T, B)
+    c = compute_projective_center(*corners)
+    R_val = float(np.mean([np.linalg.norm(p) for p in corners]))
+
+    half_dirs = np.column_stack([
+        np.cos(np.linspace(0, 2 * np.pi, n_rays, endpoint=False)),
+        np.sin(np.linspace(0, 2 * np.pi, n_rays, endpoint=False)),
+    ])
+
+    max_s = side_radius * 2.0
+    s_samples = np.linspace(0.0, max_s, n_samples, dtype=np.float64)
+
+    # Build "perfect" profiles from the template, then add tiny noise so that a~1,b~0.
+    half_profiles = np.zeros((n_rays, n_samples), dtype=np.float64)
+    pre_masks = np.zeros((n_rays, n_samples), dtype=bool)
+    kappa_u, kappa_v = compute_kappa(L, R, T, B, c)
+    for k in range(n_rays):
+        s_j = compute_transition_distances(
+            centerpoint, half_dirs[k], L, R, T, B, kappa_u, kappa_v,
+        )
+        half_profiles[k] = synthesize_template(s_samples, s_j, sigma)
+        pre_masks[k] = precompute_mask(s_samples, s_j, sigma)
+
+    # No noise — perfect match for Jacobian FD check
+    return {
+        "centerpoint": centerpoint,
+        "R": R_val,
+        "theta0": theta0,
+        "half_profiles": half_profiles,
+        "half_dirs": half_dirs,
+        "s_samples": s_samples,
+        "pre_masks": pre_masks,
+        "sigma": sigma,
+        "x0": x0,
+        "rho0": rho0,
+    }
+
+
+# ── Phase 3 — Joint refinement ────────────────────────────────────────────
+
+
+class TestTemplateDerivWrtJunctions:
+    def test_shape_scalar(self):
+        s_j = np.array([1.5, 2.5, 3.5, 4.5])
+        out = _template_deriv_wrt_junctions(0.0, s_j, sigma=1.0)
+        assert out.shape == (4,)
+
+    def test_shape_vector(self):
+        s_j = np.array([1.5, 2.5, 3.5, 4.5])
+        s = np.linspace(0, 5, 10)
+        out = _template_deriv_wrt_junctions(s, s_j, sigma=1.0)
+        assert out.shape == (10, 4)
+
+    def test_fd_check(self):
+        s_j = np.array([1.5, 2.5, 3.5, 4.5])
+        s = 2.0
+        eps = 1e-6
+        analytic = _template_deriv_wrt_junctions(s, s_j, sigma=1.0)
+        for j in range(4):
+            h = np.zeros(4)
+            h[j] = eps
+            Tp = synthesize_template(np.array([s]), s_j + h, sigma=1.0)[0]
+            Tm = synthesize_template(np.array([s]), s_j - h, sigma=1.0)[0]
+            fd = (Tp - Tm) / (2.0 * eps)
+            assert analytic[j] == pytest.approx(fd, rel=1e-3, abs=1e-6)
+
+
+class TestJointRefinementResiduals:
+    @pytest.fixture(scope="class")
+    def data(self):
+        return _build_joint_test_data()
+
+    def test_residual_shape(self, data):
+        res = joint_refinement_residuals(
+            data["x0"], data["centerpoint"], data["R"],
+            data["theta0"], data["half_profiles"], data["half_dirs"],
+            data["s_samples"], data["pre_masks"], data["sigma"],
+        )
+        n_rays, n_s = data["half_profiles"].shape
+        assert res.shape == (n_rays * n_s,)
+        assert res.dtype == np.float64
+
+    def test_residual_near_zero_at_identity(self, data):
+        res = joint_refinement_residuals(
+            data["x0"], data["centerpoint"], data["R"],
+            data["theta0"], data["half_profiles"], data["half_dirs"],
+            data["s_samples"], data["pre_masks"], data["sigma"],
+        )
+        nonzero_mask = np.abs(res) > 0.0
+        if np.any(nonzero_mask):
+            assert np.max(np.abs(res[nonzero_mask])) < 1e-4
+
+    def test_residual_nonzero_when_shifted(self, data):
+        res0 = joint_refinement_residuals(
+            data["x0"], data["centerpoint"], data["R"],
+            data["theta0"], data["half_profiles"], data["half_dirs"],
+            data["s_samples"], data["pre_masks"], data["sigma"],
+        )
+        x_shifted = data["x0"].copy()
+        x_shifted[0] += 0.01  # Perturb theta_L
+        res1 = joint_refinement_residuals(
+            x_shifted, data["centerpoint"], data["R"],
+            data["theta0"], data["half_profiles"], data["half_dirs"],
+            data["s_samples"], data["pre_masks"], data["sigma"],
+        )
+        assert np.max(np.abs(res1)) > np.max(np.abs(res0))
+
+
+class TestJointRefinementJacobian:
+    @pytest.fixture(scope="class")
+    def data(self):
+        return _build_joint_test_data()
+
+    def test_jacobian_shape(self, data):
+        J = joint_refinement_jacobian(
+            data["x0"], data["centerpoint"], data["R"],
+            data["theta0"], data["half_profiles"], data["half_dirs"],
+            data["s_samples"], data["pre_masks"], data["sigma"],
+        )
+        n_total = data["half_profiles"].shape[0] * data["half_profiles"].shape[1]
+        assert J.shape == (n_total, 8)
+        assert J.dtype == np.float64
+
+    def test_jacobian_vs_fd(self, data):
+        J, J_fd, max_err = check_joint_refinement_jacobian(
+            data["x0"], data["centerpoint"], data["R"],
+            data["theta0"], data["half_profiles"], data["half_dirs"],
+            data["s_samples"], data["pre_masks"], data["sigma"],
+        )
+        assert max_err <= 1e-3

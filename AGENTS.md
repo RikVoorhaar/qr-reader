@@ -35,7 +35,7 @@ Every source file under `src/qr_reader/` and its role.
 | `roi.py` | Compute padded bounding box from `CandidateCluster`, extract clamped sub-image cutout | `clustering.py` |
 | `finder_fit.py` | Per-finder orientation (4-fold histogram / two-family von-Mises), 1-D projection-profile fitting (equal spacing / projective scanlines), optional 8-DOF homography refinement | — |
 | `edges.py` | Thin edge extraction: Gaussian blur → Sobel → L2 magnitude → interpolated NMS → (magnitude, angle) | `scipy` |
-| `edge_fitting.py` | Finder edge fitting from per-ray boundary points: pairwise σ₂/σ₁ distance matrix → single-linkage agglomerative clustering → top-4 TLS lines + tie-broken point assignment; projective 4-line helpers and template synthesis for joint refinement | `sklearn`, `scipy.special.erfc` |
+| `edge_fitting.py` | Finder edge fitting from boundary points: TLS, clustering, segment refinement, projective 4-line helpers, template synthesis, and joint-refinement residual/Jacobian | `sklearn`, `scipy.special.erfc` |
 
 ### Decoder (`decoder/`)
 

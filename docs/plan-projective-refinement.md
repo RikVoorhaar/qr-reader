@@ -27,8 +27,8 @@ valid quadrilateral while also matching the image intensity.
 |-------|--------|-------------|
 | 1 — Projective geometry | done | Functions + tests: homogeneous line constructors, corner computation, projective center, κ factors, line interpolation, ray↔line intersection, canonical-uv recovery |
 | 2 — Template synthesis | done | Functions + tests: per-ray transition distances, smooth template synthesis, pre-computed mask |
-| 3 — Residual, Jacobian, FD check | pending | `joint_refinement_residuals`, `joint_refinement_jacobian`, test verifying FD ≤ 1e-3 |
-| 4 — LM loop + diagnostic plot | pending | `refine_finder_edges_joint` wrapper, notebook cell with per-cluster initial-vs-refined line plot |
+| 3 — Residual, Jacobian, FD check | done | ``joint_refinement_residuals``, ``joint_refinement_jacobian`` (analytical chain rule), ``check_joint_refinement_jacobian`` (FD ≤ 1e-3), ``_fit_ols_params`` helper, tests |
+| 4 — LM loop + diagnostic plot | pending | ``refine_finder_edges_joint`` wrapper, notebook cell with per-cluster initial-vs-refined line plot |
 
 ---
 
@@ -500,6 +500,12 @@ deterministic (no QR image needed).  The test generates:
 - `test_residual_shape`: returns correct-length vector.
 - `test_residual_zero_for_perfect_match`: if template = profile, residual ≈ 0.
 - `test_jacobian_shape`: returns (R_total, 8).
+
+> **Implementation note:** The OLS pair `(a, b)` that maps profile intensity to
+> template intensity is pre-computed from `x0` and held fixed across residual
+> evaluations (via the `ab_fixed` kwarg).  This keeps the residual function
+> differentiable and makes the analytical Jacobian exact.  ``check_joint_refinement_jacobian``
+> confirms FD agreement to machine precision.
 
 ---
 

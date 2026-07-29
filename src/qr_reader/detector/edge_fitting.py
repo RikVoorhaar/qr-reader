@@ -840,3 +840,573 @@ def precompute_mask(
     if len(s_junctions) < 4:
         return np.ones_like(s_samples, dtype=bool)
     return s_samples <= s_junctions[-1] + 2.0 * sigma
+
+
+# ── Phase 3 — Joint refinement residual and Jacobian ──────────────────────
+
+
+def _cross_mat(v: np.ndarray) -> np.ndarray:
+    """Return the (3, 3) cross-product matrix for a 3-vector."""
+    x, y, z = np.asarray(v, dtype=np.float64).ravel()
+    return np.array(
+        [[0.0, -z, y], [z, 0.0, -x], [-y, x, 0.0]], dtype=np.float64
+    )
+
+
+def _dehomog_jac(p_h: np.ndarray) -> np.ndarray:
+    """Return the (2, 3) Jacobian of Euclidean homogenisation w.r.t. *p_h*."""
+    x, y, w = np.asarray(p_h, dtype=np.float64).ravel()
+    if abs(w) < 1e-15:
+        return np.zeros((2, 3), dtype=np.float64)
+    iw = 1.0 / w
+    iw2 = iw * iw
+    return np.array(
+        [[iw, 0.0, -x * iw2], [0.0, iw, -y * iw2]], dtype=np.float64
+    )
+
+
+def _cross_deriv(a: np.ndarray, b: np.ndarray,
+                da: np.ndarray, db: np.ndarray) -> np.ndarray:
+    """Return ``d(a × b)/dp`` given the point-wise derivatives *da*, *db*."""
+    a = np.asarray(a, dtype=np.float64).ravel()
+    b = np.asarray(b, dtype=np.float64).ravel()
+    da = np.asarray(da, dtype=np.float64).ravel()
+    db = np.asarray(db, dtype=np.float64).ravel()
+    return _cross_mat(da) @ b + _cross_mat(a) @ db
+
+
+def _template_deriv_wrt_junctions(
+    s_sample: float | np.ndarray,
+    s_junctions: np.ndarray,
+    sigma: float = 1.0,
+) -> np.ndarray:
+    r"""Return ``(4,)`` or ``(N, 4)`` array of :math:`\partial T/\partial s_j`.
+
+    Template definition: ``T(s) = Σ Δ_j·½·erfc(-(s - s_j)/σ)`` with
+    ``Δ = [+1, -1, +1, -1]``.  The derivative w.r.t. a single junction is
+
+    .. math::
+        \frac{\partial T}{\partial s_j}
+        = -\Delta_j\,\frac{1}{\sigma\sqrt{\pi}}\,
+          \exp\!\Bigl(-\bigl(\tfrac{s-s_j}{\sigma}\bigr)^2\Bigr).
+    """
+    s_sample = np.asarray(s_sample, dtype=np.float64)
+    s_junctions = np.asarray(s_junctions, dtype=np.float64).ravel()
+    signs = np.array([1.0, -1.0, 1.0, -1.0], dtype=np.float64)
+    z = -(s_sample[..., None] - s_junctions[None, :]) / sigma
+    derfc_z = -(2.0 / np.sqrt(np.pi)) * np.exp(-z * z)
+    result = signs[None, :] * 0.5 * derfc_z / sigma
+    if result.ndim == 2 and result.shape[0] == 1:
+        result = result[0]
+    return result
+
+
+def _line_deriv_wrt_theta(theta: float) -> np.ndarray:
+    """Return ``(3,)`` ``∂ℓ/∂θ`` for ``ℓ = [cos θ, sin θ, -ρ]``."""
+    return np.array([-np.sin(theta), np.cos(theta), 0.0], dtype=np.float64)
+
+
+def _line_deriv_wrt_rho() -> np.ndarray:
+    """Return ``(3,)`` ``∂ℓ/∂ρ``."""
+    return np.array([0.0, 0.0, -1.0], dtype=np.float64)
+
+
+def _projective_center_deriv(
+    ell_L: np.ndarray, ell_R: np.ndarray,
+    ell_T: np.ndarray, ell_B: np.ndarray,
+    dL: np.ndarray, dR: np.ndarray,
+    dT: np.ndarray, dB: np.ndarray,
+) -> np.ndarray:
+    """Chain-rule derivative of the 2-D projective center w.r.t. one parameter.
+
+    Parameters
+    ----------
+    ell_L … ell_B : ndarray (3,)
+        Current homogeneous side lines.
+    dL … dB : ndarray (3,)
+        ``∂ℓ/∂param`` for each of the four side lines.  Zero for lines that
+        are independent of the parameter.
+
+    Returns
+    -------
+    dc_dp : ndarray (2,)
+        ``∂c/∂param`` where *c* is the Euclidean projective centre.
+    """
+    ell_L = np.asarray(ell_L, dtype=np.float64).ravel()
+    ell_R = np.asarray(ell_R, dtype=np.float64).ravel()
+    ell_T = np.asarray(ell_T, dtype=np.float64).ravel()
+    ell_B = np.asarray(ell_B, dtype=np.float64).ravel()
+    dL = np.asarray(dL, dtype=np.float64).ravel()
+    dR = np.asarray(dR, dtype=np.float64).ravel()
+    dT = np.asarray(dT, dtype=np.float64).ravel()
+    dB = np.asarray(dB, dtype=np.float64).ravel()
+
+    p_LT = np.cross(ell_L, ell_T)
+    p_RT = np.cross(ell_R, ell_T)
+    p_RB = np.cross(ell_R, ell_B)
+    p_LB = np.cross(ell_L, ell_B)
+
+    dp_LT = _cross_deriv(ell_L, ell_T, dL, dT)
+    dp_RT = _cross_deriv(ell_R, ell_T, dR, dT)
+    dp_RB = _cross_deriv(ell_R, ell_B, dR, dB)
+    dp_LB = _cross_deriv(ell_L, ell_B, dL, dB)
+
+    diag1 = np.cross(p_LT, p_RB)
+    diag2 = np.cross(p_RT, p_LB)
+    d_diag1 = _cross_deriv(p_LT, p_RB, dp_LT, dp_RB)
+    d_diag2 = _cross_deriv(p_RT, p_LB, dp_RT, dp_LB)
+
+    dc_h = _cross_deriv(diag1, diag2, d_diag1, d_diag2)
+    c_h = np.cross(diag1, diag2)
+    return _dehomog_jac(c_h) @ dc_h
+
+# ── Transition-distance chain-rule helpers ────────────────────────────────
+
+
+def _all_candidate_info(
+    centerpoint: np.ndarray,
+    direction: np.ndarray,
+    ell_L: np.ndarray, ell_R: np.ndarray,
+    ell_T: np.ndarray, ell_B: np.ndarray,
+    c: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return sorted transition distances, side indices, and alpha indices.
+
+    Returns
+    -------
+    s_vals : ndarray (K,)
+        Sorted positive intersection distances.  ``K <= 16``.
+    side_idx : ndarray (K,) int
+        Which side line produced each distance (0=L, 1=R, 2=T, 3=B).
+    alpha_idx : ndarray (K,) int
+        Which ``_TRANSITION_ALPHAS`` index (0..3) produced each distance.
+    """
+    centerpoint = np.asarray(centerpoint, dtype=np.float64).ravel()[:2]
+    direction = np.asarray(direction, dtype=np.float64).ravel()[:2]
+
+    side_lines = [
+        np.asarray(ell_L, dtype=np.float64).ravel(),
+        np.asarray(ell_R, dtype=np.float64).ravel(),
+        np.asarray(ell_T, dtype=np.float64).ravel(),
+        np.asarray(ell_B, dtype=np.float64).ravel(),
+    ]
+    s_all: list[float] = []
+    side_all: list[int] = []
+    alpha_all: list[int] = []
+
+    for si, line in enumerate(side_lines):
+        central = _central_line(line, c)
+        for ai, alpha in enumerate(_TRANSITION_ALPHAS):
+            ell_alpha = interpolate_line(alpha, central, line, kappa=1.0)
+            s_val = ray_line_intersection(centerpoint, direction, ell_alpha)
+            if np.isfinite(s_val) and s_val > 1e-9:
+                s_all.append(s_val)
+                side_all.append(si)
+                alpha_all.append(ai)
+
+    order = np.argsort(s_all)
+    return (
+        np.asarray(s_all, dtype=np.float64)[order],
+        np.asarray(side_all, dtype=np.int64)[order],
+        np.asarray(alpha_all, dtype=np.int64)[order],
+    )
+
+
+def _ds_dparams_one_candidate(
+    centerpoint: np.ndarray,
+    direction: np.ndarray,
+    ell_side: np.ndarray,
+    d_side: np.ndarray,
+    c: np.ndarray,
+    dc: np.ndarray,
+    alpha: float,
+) -> float:
+    """Return ``ds/dp`` for one interpolated transition line.
+
+    Parameters
+    ----------
+    d_side : ndarray (3,)
+        ``partial ell_side / partial p``.
+    dc : ndarray (2,)
+        ``partial c / partial p`` for the projective centre.
+    """
+    a_s, b_s, _ = np.asarray(ell_side, dtype=np.float64).ravel()
+    ox, oy = np.asarray(centerpoint, dtype=np.float64).ravel()[:2]
+    dx, dy = np.asarray(direction, dtype=np.float64).ravel()[:2]
+    cx, cy = np.asarray(c, dtype=np.float64).ravel()[:2]
+    da_s, db_s, de_s = np.asarray(d_side, dtype=np.float64).ravel()
+    dcx, dcy = np.asarray(dc, dtype=np.float64).ravel()[:2]
+
+    # Reference (a, b) — same for side line and central line, constant through
+    # the interpolation because both use the same (a_s, b_s).
+    a_r = a_s
+    b_r = b_s
+    # e for the interpolated line: (1-alpha)*(-a_r*cx - b_r*cy) + alpha*e_s
+    e_r = (1.0 - alpha) * (-a_r * cx - b_r * cy) + alpha * float(
+        np.asarray(ell_side, dtype=np.float64).ravel()[2]
+    )
+
+    den = float(a_r * dx + b_r * dy)
+    if abs(den) < 1e-15:
+        return float(np.nan)
+    num = float(-(a_r * ox + b_r * oy + e_r))
+    inv_den2 = 1.0 / (den * den)
+
+    # Chain: d(e_r)/dp
+    de_r = (1.0 - alpha) * (
+        -da_s * cx - a_r * dcx - db_s * cy - b_r * dcy
+    ) + alpha * de_s
+
+    # d(num)/dp = -(da*ox + db*oy + de_r)
+    dnum = -(da_s * ox + db_s * oy + de_r)
+    # d(den)/dp = da*dx + db*dy
+    dden = da_s * dx + db_s * dy
+
+    # ds/dp = (dnum * den - num * dden) / den^2
+    return float((dnum * den - num * dden) * inv_den2)
+
+
+def _transition_derivs_one_ray(
+    centerpoint: np.ndarray,
+    direction: np.ndarray,
+    ell_L: np.ndarray, ell_R: np.ndarray,
+    ell_T: np.ndarray, ell_B: np.ndarray,
+    c: np.ndarray,
+    dlines_dparams: list[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]],
+) -> np.ndarray:
+    """Return ``(4, 8)`` ``partial s_j / partial p`` for one half-ray.
+
+    Parameters
+    ----------
+    dlines_dparams : list of 8 items
+        Each item is ``(dL, dR, dT, dB)`` — the ``(3,)`` derivative of
+        each side line w.r.t. that parameter.  Unaffected lines get zeros.
+    """
+    s_vals, side_idx, alpha_idx = _all_candidate_info(
+        centerpoint, direction, ell_L, ell_R, ell_T, ell_B, c,
+    )
+    if len(s_vals) < 4:
+        return np.full((4, 8), np.nan, dtype=np.float64)
+
+    side_lines = [
+        np.asarray(ell_L, dtype=np.float64).ravel(),
+        np.asarray(ell_R, dtype=np.float64).ravel(),
+        np.asarray(ell_T, dtype=np.float64).ravel(),
+        np.asarray(ell_B, dtype=np.float64).ravel(),
+    ]
+
+    ds_dp = np.zeros((4, 8), dtype=np.float64)
+    for p in range(8):
+        dL, dR, dT, dB = dlines_dparams[p]
+        dlines_list = [dL, dR, dT, dB]
+        dc_dp = _projective_center_deriv(
+            ell_L, ell_R, ell_T, ell_B, dL, dR, dT, dB,
+        )
+        for j in range(4):
+            si = int(side_idx[j])
+            ai = int(alpha_idx[j])
+            d_side = np.asarray(dlines_list[si], dtype=np.float64).ravel()
+            ds_dp[j, p] = _ds_dparams_one_candidate(
+                centerpoint, direction,
+                side_lines[si], d_side,
+                c, dc_dp,
+                float(_TRANSITION_ALPHAS[ai]),
+            )
+    return ds_dp
+
+
+# ── Residual ──────────────────────────────────────────────────────────────
+
+
+def _fit_ols_params(
+    centerpoint: np.ndarray,
+    half_profiles: np.ndarray,
+    half_dirs: np.ndarray,
+    s_samples: np.ndarray,
+    pre_masks: np.ndarray,
+    ell_L: np.ndarray, ell_R: np.ndarray,
+    ell_T: np.ndarray, ell_B: np.ndarray,
+    kappa_u: float, kappa_v: float,
+    sigma: float = 1.0,
+) -> tuple[float, float]:
+    """Compute the OLS brightness/contrast pair ``(a, b)``.
+
+    Fits ``template ≈ a·profile + b`` on all unmasked samples and returns
+    the least-squares estimates.
+    """
+    T_list: list[np.ndarray] = []
+    P_list: list[np.ndarray] = []
+    for k in range(half_profiles.shape[0]):
+        mask = pre_masks[k]
+        if not np.any(mask):
+            continue
+        s_j = compute_transition_distances(
+            centerpoint, half_dirs[k],
+            ell_L, ell_R, ell_T, ell_B, kappa_u, kappa_v,
+        )
+        if not np.all(np.isfinite(s_j)) or len(s_j) < 4:
+            continue
+        T_k = synthesize_template(s_samples, s_j, sigma)
+        T_list.append(T_k[mask])
+        P_list.append(half_profiles[k, mask])
+    if len(T_list) == 0:
+        return 1.0, 0.0
+    T_all = np.concatenate(T_list)
+    P_all = np.concatenate(P_list)
+    A = np.column_stack([P_all, np.ones(len(P_all), dtype=np.float64)])
+    ab, _, _, _ = np.linalg.lstsq(A, T_all, rcond=None)
+    return float(ab[0]), float(ab[1])
+
+
+def joint_refinement_residuals(
+    x: np.ndarray,
+    centerpoint: np.ndarray,
+    R: float,
+    theta0: np.ndarray,
+    half_profiles: np.ndarray,
+    half_dirs: np.ndarray,
+    s_samples: np.ndarray,
+    pre_masks: np.ndarray,
+    sigma: float = 1.0,
+    ab_fixed: tuple[float, float] | None = None,
+) -> np.ndarray:
+    """Residual vector for joint refinement of 4 finder edges.
+
+    Parameters
+    ----------
+    x : ndarray (8,)
+        State ``[phi0/R, phi1/R, phi2/R, phi3/R, rho0, rho1, rho2, rho3]``.
+    ab_fixed : tuple of float or None
+        If provided, use these fixed ``(a, b)`` for the residual.  When
+        ``None``, the pair is re-fitted from the current state via OLS.
+        Passing the pair computed from ``x0`` makes the residual function
+        smoothly differentiable and keeps the analytical Jacobian exact.
+
+    Returns
+    -------
+    residuals : ndarray (N_rays * N_S,)
+        ``a * profile + b - template``; masked entries are 0.
+    """
+    x = np.asarray(x, dtype=np.float64).ravel()
+    theta0 = np.asarray(theta0, dtype=np.float64).ravel()
+    half_profiles = np.asarray(half_profiles, dtype=np.float64)
+    half_dirs = np.asarray(half_dirs, dtype=np.float64)
+    s_samples = np.asarray(s_samples, dtype=np.float64)
+    pre_masks = np.asarray(pre_masks, dtype=bool)
+
+    theta = theta0 + x[:4] * R
+    rho = x[4:8]
+
+    ell_L = thetarho_to_homogeneous_line(float(theta[0]), float(rho[0]))
+    ell_R = thetarho_to_homogeneous_line(float(theta[1]), float(rho[1]))
+    ell_T = thetarho_to_homogeneous_line(float(theta[2]), float(rho[2]))
+    ell_B = thetarho_to_homogeneous_line(float(theta[3]), float(rho[3]))
+
+    corners = compute_corners(ell_L, ell_R, ell_T, ell_B)
+    c = compute_projective_center(*corners)
+    kappa_u, kappa_v = compute_kappa(ell_L, ell_R, ell_T, ell_B, c)
+
+    N_rays, N_S = half_profiles.shape
+    n_total = N_rays * N_S
+
+    if ab_fixed is not None:
+        a_val, b_val = ab_fixed
+    else:
+        a_val, b_val = _fit_ols_params(
+            centerpoint, half_profiles, half_dirs, s_samples, pre_masks,
+            ell_L, ell_R, ell_T, ell_B, kappa_u, kappa_v, sigma,
+        )
+
+    residuals = np.zeros(n_total, dtype=np.float64)
+    for k in range(N_rays):
+        mask = pre_masks[k]
+        if not np.any(mask):
+            continue
+        s_j = compute_transition_distances(
+            centerpoint, half_dirs[k],
+            ell_L, ell_R, ell_T, ell_B, kappa_u, kappa_v,
+        )
+        if not np.all(np.isfinite(s_j)) or len(s_j) < 4:
+            continue
+        T_k = synthesize_template(s_samples, s_j, sigma)
+        raw = a_val * half_profiles[k, mask] + b_val - T_k[mask]
+        idx_start = k * N_S
+        residuals[idx_start:idx_start + N_S][mask] = raw
+
+    return residuals
+
+
+# ── Jacobian ──────────────────────────────────────────────────────────────
+
+
+def joint_refinement_jacobian(
+    x: np.ndarray,
+    centerpoint: np.ndarray,
+    R: float,
+    theta0: np.ndarray,
+    half_profiles: np.ndarray,
+    half_dirs: np.ndarray,
+    s_samples: np.ndarray,
+    pre_masks: np.ndarray,
+    sigma: float = 1.0,
+) -> np.ndarray:
+    """Analytical Jacobian of ``joint_refinement_residuals``.
+
+    The residual is ``r = a*P + b - T``.  We treat *a*, *b* as constant
+    (the OLS fit is re-evaluated each residual call but held fixed for the
+    gradient), so ``partial r / partial p = -partial T / partial p``.
+
+    Returns
+    -------
+    Jac : ndarray (R_total, 8)
+    """
+    x = np.asarray(x, dtype=np.float64).ravel()
+    theta0 = np.asarray(theta0, dtype=np.float64).ravel()
+    half_profiles = np.asarray(half_profiles, dtype=np.float64)
+    half_dirs = np.asarray(half_dirs, dtype=np.float64)
+    s_samples = np.asarray(s_samples, dtype=np.float64)
+    pre_masks = np.asarray(pre_masks, dtype=bool)
+
+    theta = theta0 + x[:4] * R
+    rho = x[4:8]
+
+    ell_L = thetarho_to_homogeneous_line(float(theta[0]), float(rho[0]))
+    ell_R = thetarho_to_homogeneous_line(float(theta[1]), float(rho[1]))
+    ell_T = thetarho_to_homogeneous_line(float(theta[2]), float(rho[2]))
+    ell_B = thetarho_to_homogeneous_line(float(theta[3]), float(rho[3]))
+
+    corners = compute_corners(ell_L, ell_R, ell_T, ell_B)
+    c = compute_projective_center(*corners)
+    kappa_u, kappa_v = compute_kappa(ell_L, ell_R, ell_T, ell_B, c)
+
+    N_rays, N_S = half_profiles.shape
+    n_total = N_rays * N_S
+    Jac = np.zeros((n_total, 8), dtype=np.float64)
+
+    # Line derivatives per parameter.
+    # Params 0-3 are scaled angle: d(theta)/dp = R.
+    # Params 4-7 are rho: d(rho)/dp = 1.
+    zero3 = np.zeros(3, dtype=np.float64)
+    dlines_dparams: list[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = []
+    for p in range(8):
+        dL = dR = dT = dB = zero3.copy()
+        if p < 4:
+            d_val = _line_deriv_wrt_theta(float(theta[p])) * R
+        else:
+            d_val = _line_deriv_wrt_rho()
+        if p == 0 or p == 4:
+            dL = d_val.copy()
+        elif p == 1 or p == 5:
+            dR = d_val.copy()
+        elif p == 2 or p == 6:
+            dT = d_val.copy()
+        elif p == 3 or p == 7:
+            dB = d_val.copy()
+        dlines_dparams.append((dL, dR, dT, dB))
+
+    for k in range(N_rays):
+        mask = pre_masks[k]
+        if not np.any(mask):
+            continue
+        s_j = compute_transition_distances(
+            centerpoint, half_dirs[k],
+            ell_L, ell_R, ell_T, ell_B, kappa_u, kappa_v,
+        )
+        if not np.all(np.isfinite(s_j)) or len(s_j) < 4:
+            continue
+
+        ds_dp = _transition_derivs_one_ray(
+            centerpoint, half_dirs[k],
+            ell_L, ell_R, ell_T, ell_B,
+            c, dlines_dparams,
+        )
+        if not np.all(np.isfinite(ds_dp)):
+            continue
+
+        dT_ds = _template_deriv_wrt_junctions(s_samples, s_j, sigma)
+        # dT/dp = dT/ds @ ds/dp  →  shape: (N_S, 4) @ (4, 8) → (N_S, 8)
+        dT_dp = dT_ds @ ds_dp
+
+        row_start = k * N_S
+        masked_rows = np.flatnonzero(mask)
+        Jac[row_start + masked_rows, :] = -dT_dp[masked_rows, :]
+
+    return Jac
+
+
+# ── FD verification ───────────────────────────────────────────────────────
+
+
+def check_joint_refinement_jacobian(
+    x0: np.ndarray,
+    centerpoint: np.ndarray,
+    R: float,
+    theta0: np.ndarray,
+    half_profiles: np.ndarray,
+    half_dirs: np.ndarray,
+    s_samples: np.ndarray,
+    pre_masks: np.ndarray,
+    sigma: float = 1.0,
+    eps: float = 5e-6,
+) -> tuple[np.ndarray, np.ndarray, float]:
+    """Compare analytical Jacobian to central-difference FD.
+
+    The OLS pair ``(a, b)`` is computed from *x0* once and held fixed
+    so that FD and analytical derivatives are consistent.
+
+    Returns
+    -------
+    J_analytical : ndarray (R_total, 8)
+    J_fd : ndarray (R_total, 8)
+    max_rel_error : float
+        Maximum relative error on entries where ``|J| > 1e-8``.
+    """
+    x0 = np.asarray(x0, dtype=np.float64).ravel()
+    half_profiles = np.asarray(half_profiles, dtype=np.float64)
+    half_dirs = np.asarray(half_dirs, dtype=np.float64)
+    s_samples = np.asarray(s_samples, dtype=np.float64)
+    pre_masks = np.asarray(pre_masks, dtype=bool)
+
+    theta = np.asarray(theta0, dtype=np.float64).ravel()
+    rho_val = x0[4:8]
+
+    ell_L = thetarho_to_homogeneous_line(float(theta[0]), float(rho_val[0]))
+    ell_R = thetarho_to_homogeneous_line(float(theta[1]), float(rho_val[1]))
+    ell_T = thetarho_to_homogeneous_line(float(theta[2]), float(rho_val[2]))
+    ell_B = thetarho_to_homogeneous_line(float(theta[3]), float(rho_val[3]))
+
+    corners = compute_corners(ell_L, ell_R, ell_T, ell_B)
+    c = compute_projective_center(*corners)
+    kappa_u, kappa_v = compute_kappa(ell_L, ell_R, ell_T, ell_B, c)
+
+    ab_fixed = _fit_ols_params(
+        centerpoint, half_profiles, half_dirs, s_samples, pre_masks,
+        ell_L, ell_R, ell_T, ell_B, kappa_u, kappa_v, sigma,
+    )
+
+    J = joint_refinement_jacobian(
+        x0, centerpoint, R, theta0, half_profiles, half_dirs,
+        s_samples, pre_masks, sigma,
+    )
+    J_fd = np.zeros_like(J)
+    for col in range(8):
+        h = np.zeros(8, dtype=np.float64)
+        h[col] = eps
+        fp = joint_refinement_residuals(
+            x0 + h, centerpoint, R, theta0, half_profiles, half_dirs,
+            s_samples, pre_masks, sigma, ab_fixed=ab_fixed,
+        )
+        fm = joint_refinement_residuals(
+            x0 - h, centerpoint, R, theta0, half_profiles, half_dirs,
+            s_samples, pre_masks, sigma, ab_fixed=ab_fixed,
+        )
+        J_fd[:, col] = (fp - fm) / (2.0 * eps)
+
+    denom = np.maximum(np.abs(J), 1e-12)
+    rel_errors = np.abs(J - J_fd) / denom
+    significant = np.abs(J) > 1e-8
+    if np.any(significant):
+        max_err = float(np.max(rel_errors[significant]))
+    else:
+        max_err = float(np.max(rel_errors))
+    return J, J_fd, max_err
