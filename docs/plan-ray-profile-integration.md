@@ -6,7 +6,7 @@
 |-------|------|--------|
 | 0 | Benchmark current pipeline | ✅ done |
 | 1 | Homography-based version estimation | ✅ done |
-| 2 | New `detector/ray_fit.py` module | ⬜ pending |
+| 2 | New `detector/ray_fit.py` module | ✅ done |
 | 3 | Unit tests for `ray_fit` | ⬜ pending |
 | 4 | Replace `fit_finder_full` in `_run_detection` | ⬜ pending |
 | 5 | Simplify `find_valid_triplets` | ⬜ pending |
@@ -340,6 +340,13 @@ in `src/`.  `AGENTS.md` audit via `doc-maintenance` skill.
 - Full-range N search (21-177 step 4) with `combined_err = err - timing` scoring.
 - Fixed `_score_timing_pattern`: changed `np.median` → `np.mean` threshold; median failed when dark/light count was unbalanced (e.g., 5 dark/4 light in V=2 timing pattern), causing zero alternation score on clean images.
 - `fit_map[idx].m` no longer used in `_run_detection`; `fit_map` still passed to `find_valid_triplets` (Phase 5 will change that).
+
+### Phase 2
+- Created `detector/ray_fit.py` with `RayFitResult` dataclass and `fit_finder_ray` public function.
+- Moved helpers from `ray-profile.py`: `sample_ray_profiles`, `normalize_roi_intensities`, `finder_soft_template`, `_masked_mse`, `fit_half_ray`, `fit_all_rays`.
+- Wired into `edge_fitting.py` Phases 0–4 (clustering, TLS, assignment, joint refinement).
+- `roi_scale` parameter accepted but ignored (ROI scaling done by caller via `cluster_to_bbox`).
+- Score formula: `frac_valid * (1 - mean_sigma_ratio)`.
 - Detection rate: ~38-47% depending on preset. When it works, corner error typically ~0.6-1.5px.
 - V=1 often misdetected as V=2 (a known finder_fit issue); many high-version detections have large corner errors (>100px).
 
