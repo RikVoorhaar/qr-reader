@@ -7,7 +7,7 @@
 | 0 | Benchmark current pipeline | ✅ done |
 | 1 | Homography-based version estimation | ✅ done |
 | 2 | New `detector/ray_fit.py` module | ✅ done |
-| 3 | Unit tests for `ray_fit` | ⬜ pending |
+| 3 | Unit tests for `ray_fit` | ✅ done |
 | 4 | Replace `fit_finder_full` in `_run_detection` | ⬜ pending |
 | 5 | Simplify `find_valid_triplets` | ⬜ pending |
 | 6 | Full benchmark of new pipeline | ⬜ pending |
@@ -347,6 +347,11 @@ in `src/`.  `AGENTS.md` audit via `doc-maintenance` skill.
 - Wired into `edge_fitting.py` Phases 0–4 (clustering, TLS, assignment, joint refinement).
 - `roi_scale` parameter accepted but ignored (ROI scaling done by caller via `cluster_to_bbox`).
 - Score formula: `frac_valid * (1 - mean_sigma_ratio)`.
+
+### Phase 3
+- 18 tests: `sample_ray_profiles` (4), `normalize_roi_intensities` (3), `fit_all_rays` (3), `fit_finder_ray` integration (3), concentration filter (1), `finder_soft_template` (4).
+- Synthetic finder uses Chebyshev distance (L∞) + Gaussian blur; Euclidean-distance template produced a circularly-symmetric pseudo-finder that gave identical m for all rays.
+- `fit_finder_ray` produces valid corners for axis-aligned synthetic finders with < 3px mean error.
 - Detection rate: ~38-47% depending on preset. When it works, corner error typically ~0.6-1.5px.
 - V=1 often misdetected as V=2 (a known finder_fit issue); many high-version detections have large corner errors (>100px).
 
