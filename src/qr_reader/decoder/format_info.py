@@ -38,58 +38,35 @@ def _read_format_info_bits(matrix, size: int, location: int) -> int:
     bits = 0
 
     if location == 1:
-        # Top-left copy (around the finder pattern at row=0..8, col=0..8).
-        # Per ISO 18004:2015 Figure 25, bits are read MSB at (8,0) to LSB at (0,8).
-        # Bit order (MSB → LSB):
-        #   bit 14 (MSB): (8,0)
-        #   bit 13:       (8,1)
+        # LSB-first order (bit 0 at position 0 in the list).
+        # Positions are (row, col) in the QR symbol.
+        #   bit 0 (LSB):  (0, 8)
+        #   bit 1:        (1, 8)
         #   ...
-        #   bit 9:        (8,5)
-        #   bit 8:        (8,7)  ← skip timing at (8,6)
-        #   bit 7:        (7,8)  ← skip timing at (6,8)
-        #   bit 6:        (8,8)
-        #   bit 5:        (5,8)
+        #   bit 6:        (7, 8)  ← skip timing at (6, 8)
+        #   bit 7:        (8, 8)
+        #   bit 8:        (8, 7)  ← skip timing at (8, 6)
         #   ...
-        #   bit 0 (LSB):  (0,8)
-        order = [
-            (0, 8),
-            (1, 8),
-            (2, 8),
-            (3, 8),
-            (4, 8),
-            (5, 8),
-            (7, 8),  # skip timing at (6, 8)
-            (8, 8),
-            (8, 7),
-            (8, 5),  # skip timing at (8, 6)
-            (8, 4),
-            (8, 3),
-            (8, 2),
-            (8, 1),
-            (8, 0),
+        #   bit 14 (MSB): (8, 0)
+        order: list[tuple[int, int]] = [
+            (0, 8),   (1, 8),   (2, 8),   (3, 8),   (4, 8),
+            (5, 8),   (7, 8),   (8, 8),   (8, 7),   (8, 5),
+            (8, 4),   (8, 3),   (8, 2),   (8, 1),   (8, 0),
         ]
     else:
-        # Location 2: along the bottom-left column and top-right row.
-        # Bit order (MSB → LSB):
-        #   bit 14 (MSB): (8, size-1)
-        #   bit 13:       (8, size-2)
-        #   ...
-        #   bit 8:        (8, size-7)
-        #   bit 7:        (size-8, 8)
-        #   bit 6:        (size-7, 8)
-        #   ...
+        # LSB-first: bit 0 → bit 14.
         #   bit 0 (LSB):  (size-1, 8)
-        # The dark module at (8, size-8) is NOT a format bit; we skip it.
-        # Verified against nayuki's _draw_format_bits() and zxing-cpp's
-        # ReadFormatInformation() / DecodeQR().
-        order = [
-            (8, size - 1 - i) for i in range(7)
-        ]  # bits 14..8, skipping dark module
-        order += [(size - 8 + i, 8) for i in range(8)]  # bits 7..0
+        #   ...
+        #   bit 7:        (size-7, 8)
+        #   bit 8:        (8, size-7)
+        #   ...
+        #   bit 14 (MSB): (8, size-1)
+        order = [(size - 1 - i, 8) for i in range(8)]            # bits 0..7
+        order += [(8, size - 1 - i) for i in range(7)]           # bits 8..14
 
-    for shift, (x, y) in enumerate(order):
-        if matrix[y, x]:
-            bits |= 1 << (14 - shift)
+    for shift, (row, col) in enumerate(order):
+        if matrix[col, row]:
+            bits |= 1 << shift
 
     return bits
 

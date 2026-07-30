@@ -209,4 +209,12 @@ __marimo__/
 # Dataset downloads
 data/
 
+# Experiment outputs
+out/
+
 .idea
+diagnose_images/
+diagnose_composited.json
+benchmark_current.json
+benchmark_ray.json
+data/bench/

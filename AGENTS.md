@@ -5,6 +5,10 @@
 > "Data Flow" and "Module Map" sections below, and `README.md`'s "Architecture"
 > section. When you add or rename a domain concept, update `CONTEXT.md`.
 > Run the `doc-maintenance` skill afterward to audit for drift.
+>
+> **Markdown files always live in `docs/`.** Never create `.md` files in the
+> repository root. This includes plans, reports, research notes, and agent
+> session artifacts.
 
 ## Module Map
 
@@ -32,6 +36,9 @@ Every source file under `src/qr_reader/` and its role.
 | `region.py` | Wave-front fill, 8-connected boundary trace, connected-components on boundaries | `scipy`, `networkx` |
 | `sample.py` | Sample the module bit matrix from the rectified QR image using the homography | `homography.py`, `scipy` |
 | `version.py` | Cross-ratio measurement, constraint building/filtering, version estimation | `landmarks.py` |
+| `roi.py` | Compute padded bounding box from `CandidateCluster`, extract clamped sub-image cutout | `clustering.py` |
+| `ray_fit.py` | Ray-profile finder fitting: ``fit_finder_ray(roi, center_xy, m_est) → RayFitResult``. Samples radial profiles, fits per-ray module pitch, clusters boundary points into edges. | `edge_fitting.py`, `scipy` |
+| `edge_fitting.py` | Finder edge fitting from boundary points: TLS, clustering, projective 4-line helpers, template synthesis, joint-refinement residual/Jacobian, ``refine_finder_edges_joint`` LM wrapper | `sklearn`, `scipy.special.erfc`, `scipy.optimize.least_squares` |
 
 ### Decoder (`decoder/`)
 
@@ -51,9 +58,14 @@ Every source file under `src/qr_reader/` and its role.
 
 | File | Purpose |
 |------|---------|
-| `full-pipeline.py` | End-to-end pipeline: generate test image → detect → decode, with visualization |
-| `qr_benchmark.py` | Benchmark detection/decoding across versions, seeds, and transforms |
+| `full-pipeline-current.py` | End-to-end pipeline with per-seed backgrounds (composited QR); ray-profile finder fitting |
+| `qr_benchmark.py` | Benchmark detection/decoding across presets, versions, and seeds |
 | `debug_find_all_associations.py` | Targeted debug script for the `find_all_associations` high-version failure |
+| `ray-profile.py` | Diagnostic script for ray-profile fitting; reference implementation (plotting) |
+
+**Notebook-style scripts** (diagnostic/visual scripts with `# %%` cells):
+use default matplotlib backend and `plt.show()` — never save images to disk.
+These are human-inspectable; the user opens them interactively.
 
 ### Tests (`tests/`)
 
@@ -74,36 +86,21 @@ Image (ndarray)
 qr_gen.binarize_image()                    → binary image
   │
   ▼
-alignment.find_alignment_patterns_2d()     → (rows, cols_all) candidate positions
+alignment.find_alignment_patterns_2d()   → (rows, cols_all) candidate positions
   │
   ▼
-clustering.cluster_candidates()            → list[CandidateCluster]
+clustering.cluster_candidates()          → list[CandidateCluster]
   │
   ▼ (per cluster)
-region.region_fill_wave_front()            → region mask
-region.region_boundary_8()                 → boundary trace
-region.boundary_connected_components_ndimage() → boundary components
-corner.angular_nms_top_radial_indices()    → 4 corners per component
+ray_fit.fit_finder_ray()                   → RayFitResult (corners, score, valid)
   │
   ▼
-finder_pattern.extract_finder_patterns()   → list[FinderPattern]
-finder_pattern.find_all_associations()     → list[Association]
-finder_pattern.find_triplets()             → list[Triplet] (take first)
+detector._run_detection() : deduplicate → find triplets →
+  estimate version → fit global homography (similarity init, optional DLT,
+  LM-refined)                                  → (H, V)
   │
   ▼
-landmarks.build_named_landmarks()          → NamedLandmarks (image_lm)
-version.build_constraints()                → list[Constraint]
-version.filter_constraints()               → filtered constraints
-version.estimate_version()                 → version (V), module count (N)
-  │
-  ▼
-landmarks.canonical_grid_landmarks()       → grid landmarks
-landmarks.build_named_landmarks() [2nd]    → NamedLandmarks (image_lm)
-homography.ransac_homography()             → H (initial)
-homography.refine_homography_lm()          → H (refined)
-  │
-  ▼
-sample.sample_qr_bits()                    → (N, N) bool bit matrix
+homography.compute_qr_corners() / sample.sample_qr_bits() → decoded text string
   │
   ▼
 decoder.decode()                           → decoded text string
@@ -131,6 +128,7 @@ bit matrix (N×N bool)
 - **`Constraint`** (`version.py`): `type` ("outer"/"inner"), `label`, `r_measured`, `line_error`, `span`.
 - **`CandidateCluster`** (`clustering.py`): `row`, `cols` (6 boundaries), `height`, `num_candidates`.
 - **`Quadruple`** (`landmarks.py`): `points` (4×2), `type` ("outer"/"inner"), `label` — four colinear points for cross-ratio measurement.
+- **`RayFitResult`** (`ray_fit.py`): `corners` (4×2), `score` (float), `valid` (bool). Returned by ``fit_finder_ray``. Corners are in (x, y).
 - **`DataBlock`** (`data_block.py`): `data: bytes`, `ec: bytes` — one error-correction block after de-interleaving.
 
 ## Coordinate Conventions
@@ -148,7 +146,7 @@ bit matrix (N×N bool)
 - **Add a new QR version table entry**: edit `tables.py` `VERSIONS` dict (EC block layout, alignment pattern positions, etc.).
 - **Fix a version estimation issue**: work in `detector/version.py` (cross-ratio computation, constraint filtering, `estimate_version`).
 - **Change binarization**: edit `qr_gen.binarize_image`. The default uses Otsu thresholding.
-- **Run the full pipeline for debugging**: `python src/qr_reader/scripts/full-pipeline.py`.
+- **Run the full pipeline for debugging**: `python src/qr_reader/scripts/full-pipeline-current.py`.
 - **Run benchmarks**: `python src/qr_reader/scripts/qr_benchmark.py`.
 
 ## Testing

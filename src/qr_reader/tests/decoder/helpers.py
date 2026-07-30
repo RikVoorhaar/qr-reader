@@ -44,4 +44,4 @@ def make_qr_bitmatrix(
     )
     qr.add_data(content)
     qr.make(fit=False)
-    return np.array(qr.modules, dtype=bool)
+    return np.array(qr.modules, dtype=bool).T

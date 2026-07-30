@@ -91,6 +91,34 @@ An 18-bit pattern encoding the QR version number (6 bits) and its complement,
 present only in versions ≥ 7.
 _Avoid_: Version bits
 
+**Thin Edges**:
+An edge image produced by Gaussian blur → Sobel gradient → L2 magnitude →
+interpolated non-maximum suppression. Returns per-pixel gradient magnitude
+(suppressed at non-edges) and edge-normal angle (atan2) for downstream Hough voting.
+_Avoid_: Canny edges, ridge, NMS edges
+
+**Hough Line**:
+A line detected via gradient-guided Hough voting on thin edges. Represented as
+a ``LineSegment`` with a unit normal, signed distance from ROI origin,
+segment endpoints (projected extent of the longest contiguous support run),
+and accumulator vote score.  Used for downstream finder-pattern corner extraction.
+_Avoid_: Hough peak, accumulator bin
+
+**Projective Center**:
+The image of the canonical finder-pattern centre (1/2, 1/2) under the
+projective transformation defined by the four boundary lines of the finder
+pattern.  Computed as the intersection of the two diagonals of the quadrilateral
+formed by the four line intersections.  Used to calibrate the relative
+scales κ_u, κ_v of opposite boundary-line pairs for projective line interpolation.
+_Avoid_: True centre, geometric centre, finder centroid
+
+**Centerpoint**:
+The point from which half-rays are sampled outward to produce radial intensity
+profiles.  This is NOT the projective center — it is estimated from boundary
+points and may be offset by several pixels from the true centre of the finder
+pattern.
+_Avoid_: Centre, ray origin, sampling centre
+
 ### Synthesis
 
 **Synthetic Image**:

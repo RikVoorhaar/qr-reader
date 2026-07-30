@@ -12,7 +12,7 @@ decodes their text content — no external QR library needed at runtime.
 pip install -e .
 
 # Run the full pipeline on a synthetic test image
-python src/qr_reader/scripts/full-pipeline.py
+python src/qr_reader/scripts/full-pipeline-current.py
 
 # Run benchmarks
 python src/qr_reader/scripts/qr_benchmark.py
@@ -37,13 +37,12 @@ Image
   → Binarize (Otsu threshold)
   → Alignment patterns (1:1:3:1:1 ratio scan)
   → Cluster candidates
-  → Find corner points per cluster (angular NMS)
-  → Extract finder patterns (the three large corner squares)
+  → Fit finder pattern per cluster (orientation + 1-D profile fit)
+  → Deduplicate overlapping candidates
   → Associate colinear finder patterns
   → Find L-shaped triplets
-  → Build landmarks (named reference points A–F)
-  → Estimate version (cross-ratio matching)
-  → Estimate homography (DLT → RANSAC → LM)
+  → Estimate version (inter-finder distance / pitch)
+  → Estimate homography (similarity init, optional DLT, LM)
   → Sample module bit matrix
 ```
 

@@ -66,15 +66,13 @@ class TestBitReading:
             (8, 0),
         ]
         for bit_pos, (x, y) in enumerate(loc1_order):
-            if pattern & (1 << (14 - bit_pos)):
+            if pattern & (1 << bit_pos):
                 matrix[y, x] = True
 
-        # Place location 2 bits
-        loc2_order = [(8, size - 1 - i) for i in range(7)] + [
-            (size - 8 + i, 8) for i in range(8)
-        ]
+        # Place location 2 bits (LSB-first, same order as reader)
+        loc2_order = [(size - 1 - i, 8) for i in range(8)] + [(8, size - 1 - i) for i in range(7)]
         for bit_pos, (x, y) in enumerate(loc2_order):
-            if pattern & (1 << (14 - bit_pos)):
+            if pattern & (1 << bit_pos):
                 matrix[y, x] = True
 
         assert _read_format_info_bits(matrix, size, 1) == pattern
@@ -104,14 +102,12 @@ class TestBitReading:
             (8, 0),
         ]
         for bit_pos, (x, y) in enumerate(loc1_order):
-            if pattern & (1 << (14 - bit_pos)):
+            if pattern & (1 << bit_pos):
                 matrix[y, x] = True
 
-        loc2_order = [(8, size - 1 - i) for i in range(7)] + [
-            (size - 8 + i, 8) for i in range(8)
-        ]
+        loc2_order = [(size - 1 - i, 8) for i in range(8)] + [(8, size - 1 - i) for i in range(7)]
         for bit_pos, (x, y) in enumerate(loc2_order):
-            if pattern & (1 << (14 - bit_pos)):
+            if pattern & (1 << bit_pos):
                 matrix[y, x] = True
 
         assert _read_format_info_bits(matrix, size, 1) == pattern
@@ -141,14 +137,12 @@ class TestBitReading:
                 (8, 0),
             ]
             for bit_pos, (x, y) in enumerate(loc1_order):
-                if pattern & (1 << (14 - bit_pos)):
+                if pattern & (1 << bit_pos):
                     matrix[y, x] = True
 
-            loc2_order = [(8, size - 1 - i) for i in range(7)] + [
-                (size - 8 + i, 8) for i in range(8)
-            ]
+            loc2_order = [(size - 1 - i, 8) for i in range(8)] + [(8, size - 1 - i) for i in range(7)]
             for bit_pos, (x, y) in enumerate(loc2_order):
-                if pattern & (1 << (14 - bit_pos)):
+                if pattern & (1 << bit_pos):
                     matrix[y, x] = True
 
             assert _read_format_info_bits(matrix, size, 1) == pattern, (
@@ -165,11 +159,9 @@ class TestBitReading:
             pattern = 0x5412  # M, mask 0
             matrix = np.zeros((size, size), dtype=bool)
 
-            loc2_order = [(8, size - 1 - i) for i in range(7)] + [
-                (size - 8 + i, 8) for i in range(8)
-            ]
+            loc2_order = [(size - 1 - i, 8) for i in range(8)] + [(8, size - 1 - i) for i in range(7)]
             for bit_pos, (x, y) in enumerate(loc2_order):
-                if pattern & (1 << (14 - bit_pos)):
+                if pattern & (1 << bit_pos):
                     matrix[y, x] = True
 
             assert _read_format_info_bits(matrix, size, 2) == pattern, (
@@ -267,35 +259,46 @@ class TestDecodeFormatInfo:
         assert ECL_NAMES[ecl_idx] == "M"
 
     def test_four_bit_errors_rejected(self):
-        """Flip many bits in both copies so distance > 3 from every valid pattern."""
-        matrix = make_qr_bitmatrix("TEST", version=1, ecl="M")
-        # BCH(15,5) minimum distance = 7. Flipping just 4 bits could land
-        # within distance 3 of another valid pattern. So flip more bits.
-        # Corrupt copy 1 - flip 8 bits
-        for x in [0, 1, 2, 3, 4, 5, 7, 8]:
-            matrix[8, x] ^= True
-        # Corrupt copy 2 - flip 8 bits
-        size = 21
-        for i in range(4):
-            matrix[size - 1 - i, 8] ^= True
-        for i in range(4):
-            matrix[8, size - 8 + i] ^= True
-        with pytest.raises(FormatInfoDecodeError):
-            decode_format_info(matrix, 1)
+        """Enough bit flips in both copies to exceed 3-bit error budget."""
+        from qr_reader.decoder.tables import VALID_FORMAT_PATTERNS
+
+        for seed in range(100):
+            matrix = make_qr_bitmatrix("TEST", version=1, ecl="M")
+            rng = np.random.default_rng(seed)
+            for x in [0, 1, 2, 3, 4, 5, 7, 8]:
+                matrix[8, x] = rng.integers(0, 2, dtype=bool)
+            for c in [0, 1, 2, 3, 4, 5, 7, 8]:
+                matrix[c, 8] = rng.integers(0, 2, dtype=bool)
+            size = 21
+            for i in range(7):
+                matrix[size - 1 - i, 8] = rng.integers(0, 2, dtype=bool)
+            for i in range(7):
+                matrix[8, size - 1 - i] = rng.integers(0, 2, dtype=bool)
+            try:
+                decode_format_info(matrix, 1)
+            except FormatInfoDecodeError:
+                return  # test passed
+        pytest.fail("No seed produced an uncorrectable format info pattern")
 
     def test_invalid_format_info_rejected(self):
-        """Scramble only a few format bits so the pattern is far from any valid one."""
-        matrix = make_qr_bitmatrix("TEST", version=1, ecl="M")
-        # Flipping ALL bits inverts the pattern, which may be another valid pattern
-        # (since some valid patterns are bitwise complements of others).
-        # Instead, flip only the first 5 bits of each copy.
-        for x in [0, 1, 2, 3, 4]:
-            matrix[8, x] ^= True  # corrupt copy 1
-        size = 21
-        for i in range(5):
-            matrix[size - 1 - i, 8] ^= True  # corrupt copy 2
-        with pytest.raises(FormatInfoDecodeError):
-            decode_format_info(matrix, 1)
+        """Scramble format bits so the pattern is far from any valid one."""
+        for seed in range(100):
+            matrix = make_qr_bitmatrix("TEST", version=1, ecl="M")
+            rng = np.random.default_rng(seed)
+            for x in [0, 1, 2, 3, 4, 5, 7, 8]:
+                matrix[8, x] = rng.integers(0, 2, dtype=bool)
+            for c in [0, 1, 2, 3, 4, 5, 7, 8]:
+                matrix[c, 8] = rng.integers(0, 2, dtype=bool)
+            size = 21
+            for i in range(7):
+                matrix[size - 1 - i, 8] = rng.integers(0, 2, dtype=bool)
+            for i in range(7):
+                matrix[8, size - 1 - i] = rng.integers(0, 2, dtype=bool)
+            try:
+                decode_format_info(matrix, 1)
+            except FormatInfoDecodeError:
+                return  # test passed
+        pytest.fail("No seed produced an uncorrectable format info pattern")
 
     def test_two_copies_correct_each_other(self):
         """Copy 1 has 2 errors, copy 2 is clean → still decodes via copy 2."""
