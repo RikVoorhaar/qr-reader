@@ -28,6 +28,7 @@ class FinderPattern:
         return [(c[0], c[1]), (c[1], c[2]), (c[2], c[3]), (c[3], c[0])]
 
 
+# Deprecated: replaced by find_valid_triplets in the main pipeline
 def extract_finder_patterns(
     all_corners: List[Tuple[int, np.ndarray]],
 ) -> List[FinderPattern]:
@@ -144,6 +145,7 @@ def check_association(
     return min(candidates, key=lambda candidate: (candidate[0], candidate[1]))[2]
 
 
+# Deprecated: replaced by find_valid_triplets in the main pipeline
 def find_all_associations(
     fps: List[FinderPattern], angle_tol=0.1, offset_tol=0.30
 ) -> List[Association]:
@@ -163,6 +165,7 @@ class Triplet:
     bottom_left_idx: int
 
 
+# Deprecated: replaced by find_valid_triplets in the main pipeline
 def find_triplets(
     fps: List[FinderPattern], associations: List[Association]
 ) -> List[Triplet]:

@@ -13,12 +13,12 @@ from qr_reader.detector.edge_fitting import (
     DISTANCE_THRESHOLD,
     MAX_GAP,
     EdgeCluster,
+    _fit_ols_params,
     _reorder_to_standard,
     _template_deriv_wrt_junctions,
     assign_points,
     build_pair_distance_matrix,
     canonical_uv,
-    check_joint_refinement_jacobian,
     cluster_pairs,
     compute_boundary_points,
     compute_corners,
@@ -267,6 +267,75 @@ class TestExtractTopClusters:
 
 
 # ── helpers for projective tests ──────────────────────────────────────────────
+
+
+def check_joint_refinement_jacobian(
+    x0: np.ndarray,
+    centerpoint: np.ndarray,
+    R: float,
+    theta0: np.ndarray,
+    half_profiles: np.ndarray,
+    half_dirs: np.ndarray,
+    s_samples: np.ndarray,
+    pre_masks: np.ndarray,
+    sigma: float = 1.0,
+    eps: float = 5e-6,
+    per_ray_side: np.ndarray | None = None,
+    ray_weights: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, float]:
+    x0 = np.asarray(x0, dtype=np.float64).ravel()
+    half_profiles = np.asarray(half_profiles, dtype=np.float64)
+    half_dirs = np.asarray(half_dirs, dtype=np.float64)
+    s_samples = np.asarray(s_samples, dtype=np.float64)
+    pre_masks = np.asarray(pre_masks, dtype=np.float64)
+
+    theta = np.asarray(theta0, dtype=np.float64).ravel()
+    rho_val = x0[4:8]
+
+    ell_L = thetarho_to_homogeneous_line(float(theta[0]), float(rho_val[0]))
+    ell_R = thetarho_to_homogeneous_line(float(theta[1]), float(rho_val[1]))
+    ell_T = thetarho_to_homogeneous_line(float(theta[2]), float(rho_val[2]))
+    ell_B = thetarho_to_homogeneous_line(float(theta[3]), float(rho_val[3]))
+
+    corners = compute_corners(ell_L, ell_R, ell_T, ell_B)
+    c = compute_projective_center(*corners)
+    kappa_u, kappa_v = compute_kappa(ell_L, ell_R, ell_T, ell_B, c)
+
+    ab_fixed = _fit_ols_params(
+        centerpoint, half_profiles, half_dirs, s_samples, pre_masks,
+        ell_L, ell_R, ell_T, ell_B, kappa_u, kappa_v, sigma,
+        per_ray_side=per_ray_side, ray_weights=ray_weights,
+    )
+
+    J = joint_refinement_jacobian(
+        x0, centerpoint, R, theta0, half_profiles, half_dirs,
+        s_samples, pre_masks, sigma, per_ray_side=per_ray_side,
+        ray_weights=ray_weights,
+    )
+    J_fd = np.zeros_like(J)
+    for col in range(8):
+        h = np.zeros(8, dtype=np.float64)
+        h[col] = eps
+        fp = joint_refinement_residuals(
+            x0 + h, centerpoint, R, theta0, half_profiles, half_dirs,
+            s_samples, pre_masks, sigma, ab_fixed=ab_fixed,
+            per_ray_side=per_ray_side, ray_weights=ray_weights,
+        )
+        fm = joint_refinement_residuals(
+            x0 - h, centerpoint, R, theta0, half_profiles, half_dirs,
+            s_samples, pre_masks, sigma, ab_fixed=ab_fixed,
+            per_ray_side=per_ray_side, ray_weights=ray_weights,
+        )
+        J_fd[:, col] = (fp - fm) / (2.0 * eps)
+
+    denom = np.maximum(np.abs(J), 1e-12)
+    rel_errors = np.abs(J - J_fd) / denom
+    significant = np.abs(J) > 1e-8
+    if np.any(significant):
+        max_err = float(np.max(rel_errors[significant]))
+    else:
+        max_err = float(np.max(rel_errors))
+    return J, J_fd, max_err
 
 
 def _square_lines(side_radius: float = 3.5):

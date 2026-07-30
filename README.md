@@ -12,7 +12,7 @@ decodes their text content — no external QR library needed at runtime.
 pip install -e .
 
 # Run the full pipeline on a synthetic test image
-python src/qr_reader/scripts/full-pipeline.py
+python src/qr_reader/scripts/full-pipeline-current.py
 
 # Run benchmarks
 python src/qr_reader/scripts/qr_benchmark.py

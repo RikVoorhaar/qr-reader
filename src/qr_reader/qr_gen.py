@@ -184,6 +184,8 @@ def generate_test_image(
 
 # ---------------------------------------------------------------------------
 # Finder pattern geometry (ground truth extraction)
+# These functions are for validation and benchmarking only — not part of the
+# production detection pipeline.
 # ---------------------------------------------------------------------------
 
 

@@ -5,6 +5,10 @@
 > "Data Flow" and "Module Map" sections below, and `README.md`'s "Architecture"
 > section. When you add or rename a domain concept, update `CONTEXT.md`.
 > Run the `doc-maintenance` skill afterward to audit for drift.
+>
+> **Markdown files always live in `docs/`.** Never create `.md` files in the
+> repository root. This includes plans, reports, research notes, and agent
+> session artifacts.
 
 ## Module Map
 
@@ -34,8 +38,7 @@ Every source file under `src/qr_reader/` and its role.
 | `version.py` | Cross-ratio measurement, constraint building/filtering, version estimation | `landmarks.py` |
 | `roi.py` | Compute padded bounding box from `CandidateCluster`, extract clamped sub-image cutout | `clustering.py` |
 | `ray_fit.py` | Ray-profile finder fitting: ``fit_finder_ray(roi, center_xy, m_est) → RayFitResult``. Samples radial profiles, fits per-ray module pitch, clusters boundary points into edges. | `edge_fitting.py`, `scipy` |
-| `edges.py` | Thin edge extraction: Gaussian blur → Sobel → L2 magnitude → interpolated NMS → (magnitude, angle). **Deprecated** — no longer used by main pipeline; kept for reference. | `scipy` |
-| `edge_fitting.py` | Finder edge fitting from boundary points: TLS, clustering, segment refinement, projective 4-line helpers, template synthesis, joint-refinement residual/Jacobian, ``refine_finder_edges_joint`` LM wrapper | `sklearn`, `scipy.special.erfc`, `scipy.optimize.least_squares` |
+| `edge_fitting.py` | Finder edge fitting from boundary points: TLS, clustering, projective 4-line helpers, template synthesis, joint-refinement residual/Jacobian, ``refine_finder_edges_joint`` LM wrapper | `sklearn`, `scipy.special.erfc`, `scipy.optimize.least_squares` |
 
 ### Decoder (`decoder/`)
 
