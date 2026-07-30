@@ -5,7 +5,7 @@
 | Phase | Name | Status |
 |-------|------|--------|
 | 0 | Benchmark current pipeline | ✅ done |
-| 1 | Homography-based version estimation | ⬜ pending |
+| 1 | Homography-based version estimation | ✅ done |
 | 2 | New `detector/ray_fit.py` module | ⬜ pending |
 | 3 | Unit tests for `ray_fit` | ⬜ pending |
 | 4 | Replace `fit_finder_full` in `_run_detection` | ⬜ pending |
@@ -332,6 +332,14 @@ in `src/`.  `AGENTS.md` audit via `doc-maintenance` skill.
 - No `generate_sample` function exists; used `generate_test_image` with preset parameter values instead.
 - GT corner error computed by re-running deterministic RNG chain (rotation + perspective) from same seed.
 - Benchmark JSON at `benchmark_current.json` (74KB, 180 results).
+- Detection rate: ~38-47% depending on preset. When it works, corner error typically ~0.6-1.5px.
+- V=1 often misdetected as V=2 (a known finder_fit issue); many high-version detections have large corner errors (>100px).
+
+### Phase 1
+- Removed `m_avg`, `dx`, `dy`, `dh`, `s_hat`, `N_est`, `N_legal` computation from `_run_detection`.
+- Full-range N search (21-177 step 4) with `combined_err = err - timing` scoring.
+- Fixed `_score_timing_pattern`: changed `np.median` → `np.mean` threshold; median failed when dark/light count was unbalanced (e.g., 5 dark/4 light in V=2 timing pattern), causing zero alternation score on clean images.
+- `fit_map[idx].m` no longer used in `_run_detection`; `fit_map` still passed to `find_valid_triplets` (Phase 5 will change that).
 - Detection rate: ~38-47% depending on preset. When it works, corner error typically ~0.6-1.5px.
 - V=1 often misdetected as V=2 (a known finder_fit issue); many high-version detections have large corner errors (>100px).
 

@@ -67,7 +67,7 @@ def _score_timing_pattern(img_gray: np.ndarray, H: np.ndarray, N: int) -> float:
     )
 
     all_vals = np.concatenate([row6_vals, col6_vals])
-    thr = float(np.median(all_vals))
+    thr = float(np.mean(all_vals))
 
     row6_bits = row6_vals >= thr
     col6_bits = col6_vals >= thr
@@ -179,18 +179,11 @@ def _run_detection(image: np.ndarray) -> tuple[np.ndarray, int]:
     rows = {idx: float(fp_map[idx].outer_corners.mean(axis=0)[0]) for idx in [tl_idx, tr_idx, bl_idx]}
     cols = {idx: float(fp_map[idx].outer_corners.mean(axis=0)[1]) for idx in [tl_idx, tr_idx, bl_idx]}
 
-    # 6. Version estimation via inter-finder distance / module pitch
+    # 6. Version estimation via homography + timing-pattern scoring.
+    #    Search all legal N values (N = 17 + 4*V, V ∈ [1, 40]).
     center_tl_xy = np.array([cols[tl_idx], rows[tl_idx]], dtype=np.float64)
     c_tr = np.array([cols[tr_idx], rows[tr_idx]], dtype=np.float64)
     c_bl = np.array([cols[bl_idx], rows[bl_idx]], dtype=np.float64)
-    m_avg = (fit_map[tl_idx].m + fit_map[tr_idx].m + fit_map[bl_idx].m) / 3.0
-    dx = float(np.linalg.norm(c_tr - center_tl_xy))
-    dy = float(np.linalg.norm(c_bl - center_tl_xy))
-    dh = float(np.linalg.norm(c_tr - c_bl))
-    s_hat = (dx + dy + dh / np.sqrt(2)) / (3.0 * m_avg)
-    N_est = int(round(s_hat + 7))
-    N_legal = ((N_est - 17) // 4) * 4 + 21
-    N_legal = max(21, min(177, N_legal))
 
     global_u = c_tr - center_tl_xy
     global_u = global_u / (float(np.linalg.norm(global_u)) + 1e-12)
@@ -216,9 +209,9 @@ def _run_detection(image: np.ndarray) -> tuple[np.ndarray, int]:
 
     best_err = np.inf
     best_H: np.ndarray | None = None
-    best_N = N_legal
+    best_N = 0
 
-    for N_cand in range(max(21, N_legal - 4), min(181, N_legal + 5), 4):
+    for N_cand in range(21, 178, 4):
         src_xy: list[list[float]] = []
         dst_xy: list[list[float]] = []
         for corners, origin in [
@@ -240,7 +233,7 @@ def _run_detection(image: np.ndarray) -> tuple[np.ndarray, int]:
         proj = project_points(H, src_arr)
         err = float(np.mean(np.linalg.norm(proj - dst_arr, axis=1)))
         timing = _score_timing_pattern(img_gray, H, N_cand)
-        combined_err = err - 0.5 * m_avg * timing
+        combined_err = err - timing  # combine reprojection error + timing score
         if combined_err < best_err:
             best_err = combined_err
             best_H = H
