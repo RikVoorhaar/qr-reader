@@ -213,3 +213,7 @@ data/
 out/
 
 .idea
+diagnose_images/
+diagnose_composited.json
+benchmark_current.json
+benchmark_ray.json
