@@ -270,22 +270,21 @@ def find_triplets(
 
 def find_valid_triplets(
     fps: list[FinderPattern],
-    fit_map: dict[int, object],
+    score_map: dict[int, float],
     module_size_tol: float = 0.3,
     min_module_size: float = 2.0,
     dist_min: float = 2.0,
     dist_max: float = 200.0,
 ) -> list[Triplet]:
-    """Find triplets using center geometry, axis alignment, and module-size compatibility.
+    """Find triplets using centre geometry, axis alignment, and module-size compatibility.
 
     Replaces the ``find_all_associations → find_triplets`` pipeline when fine-grained
-    per-finder ``FinderFit`` information is available.  The algorithm:
+    per-finder geometry is available from the finder corners.  The algorithm:
 
     1. **Pair connectivity** — Two finders are connected if their module sizes are
-       compatible (``|mi - mj| / max(mi, mj) < module_size_tol``), their centers are
-       within ``[dist_min * m_avg, dist_max * m_avg]``, and the inter-center vector
-       is approximately aligned with one finder axis (parallel to e1/e2, perpendicular
-       to the other).
+       compatible (``|mi - mj| / max(mi, mj) < module_size_tol``), their centres are
+       within ``[dist_min * m_avg, dist_max * m_avg]``, and the inter-centre vector
+       is approximately aligned with one of the finder's corner-edge directions.
 
     2. **Triplet discovery** — A finder with >= 2 neighbours forms a candidate triplet
        when its two neighbours are not directly connected and the angle at the centre
@@ -296,8 +295,8 @@ def find_valid_triplets(
 
     Args:
         fps: Finder patterns (already deduplicated).
-        fit_map: ``FinderFit`` objects keyed by ``cluster_idx``, providing ``center``,
-            ``e1``, ``e2``, and ``m``.
+        score_map: Fit quality scores keyed by ``cluster_idx`` (unused here, kept
+            for future compatibility).
         module_size_tol: Maximum relative module-pitch difference.
         dist_min: Minimum inter-centre distance as a multiple of average module pitch.
         dist_max: Maximum inter-centre distance as a multiple of average module pitch.
@@ -311,24 +310,47 @@ def find_valid_triplets(
         return []
 
     idx_to_pos = {fp.cluster_idx: i for i, fp in enumerate(fps)}
-    centers = np.array([fp.outer_corners.mean(axis=0) for fp in fps])
+    centers_rc = np.array([fp.outer_corners.mean(axis=0) for fp in fps])
+
+    # Pre-compute per-finder m and axes from corners
+    finder_m: dict[int, float] = {}
+    finder_e1: dict[int, np.ndarray] = {}
+    finder_e2: dict[int, np.ndarray] = {}
+    for fp in fps:
+        ci = fp.cluster_idx
+        corners_rc = fp.outer_corners
+        # Module pitch: mean side length / 7
+        sides = []
+        for k in range(4):
+            v = corners_rc[(k + 1) % 4] - corners_rc[k]
+            sides.append(float(np.linalg.norm(v)))
+        finder_m[ci] = float(np.mean(sides)) / 7.0
+
+        # Axis directions from corners (in (col, row) = (x, y) order)
+        corners_xy = corners_rc[:, ::-1]
+        e1_xy = corners_xy[1] - corners_xy[0]
+        e2_xy = corners_xy[3] - corners_xy[0]
+        n1 = float(np.linalg.norm(e1_xy))
+        n2 = float(np.linalg.norm(e2_xy))
+        if n1 > 1e-9:
+            e1_xy = e1_xy / n1
+        if n2 > 1e-9:
+            e2_xy = e2_xy / n2
+        finder_e1[ci] = e1_xy
+        finder_e2[ci] = e2_xy
 
     adj: dict[int, list[int]] = {fp.cluster_idx: [] for fp in fps}
 
     for i in range(n):
         idx_i = fps[i].cluster_idx
-        if idx_i not in fit_map:
-            continue
-        fi = fit_map[idx_i]
-        mi = fi.m
-        ci_rc = centers[i]
+        mi = finder_m[idx_i]
+        ci_rc = centers_rc[i]
+        e1_i = finder_e1[idx_i]
+        e2_i = finder_e2[idx_i]
 
         for j in range(i + 1, n):
             idx_j = fps[j].cluster_idx
-            if idx_j not in fit_map:
-                continue
-            fj = fit_map[idx_j]
-            mj = fj.m
+            mj = finder_m[idx_j]
 
             if mi < min_module_size or mj < min_module_size:
                 continue
@@ -336,7 +358,7 @@ def find_valid_triplets(
             if abs(mi - mj) / max(mi, mj) > module_size_tol:
                 continue
 
-            cj_rc = centers[j]
+            cj_rc = centers_rc[j]
             delta_rc = cj_rc - ci_rc
             dist = float(np.linalg.norm(delta_rc))
             m_avg = (mi + mj) / 2.0
@@ -349,8 +371,8 @@ def find_valid_triplets(
             delta_xy = delta_rc[::-1]
             delta_unit = delta_xy / dist
 
-            dot1 = abs(float(np.dot(delta_unit, fi.e1)))
-            dot2 = abs(float(np.dot(delta_unit, fi.e2)))
+            dot1 = abs(float(np.dot(delta_unit, e1_i)))
+            dot2 = abs(float(np.dot(delta_unit, e2_i)))
             parallel_score = max(dot1, dot2)
             perp_score = min(dot1, dot2)
 
@@ -373,9 +395,9 @@ def find_valid_triplets(
                 if a_idx in adj.get(c_idx, []) or c_idx in adj.get(a_idx, []):
                     continue
 
-                ca = centers[idx_to_pos[a_idx]]
-                cb = centers[idx_to_pos[b_idx]]
-                cc = centers[idx_to_pos[c_idx]]
+                ca = centers_rc[idx_to_pos[a_idx]]
+                cb = centers_rc[idx_to_pos[b_idx]]
+                cc = centers_rc[idx_to_pos[c_idx]]
 
                 vec_ba = ca - cb
                 vec_bc = cc - cb
@@ -390,12 +412,9 @@ def find_valid_triplets(
                 if abs(angle - np.pi / 2) > np.deg2rad(15):
                     continue
 
-                for idx in (a_idx, b_idx, c_idx):
-                    if idx not in fit_map:
-                        continue
-                ma = fit_map[a_idx].m
-                mb = fit_map[b_idx].m
-                mc = fit_map[c_idx].m
+                ma = finder_m[a_idx]
+                mb = finder_m[b_idx]
+                mc = finder_m[c_idx]
                 m_max = max(ma, mb, mc)
                 m_min = min(ma, mb, mc)
                 if m_max < 1e-9 or (m_max - m_min) / m_max > module_size_tol:

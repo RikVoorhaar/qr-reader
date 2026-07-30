@@ -8,8 +8,8 @@
 | 1 | Homography-based version estimation | ✅ done |
 | 2 | New `detector/ray_fit.py` module | ✅ done |
 | 3 | Unit tests for `ray_fit` | ✅ done |
-| 4 | Replace `fit_finder_full` in `_run_detection` | ⬜ pending |
-| 5 | Simplify `find_valid_triplets` | ⬜ pending |
+| 4 | Replace `fit_finder_full` in `_run_detection` | ✅ done |
+| 5 | Simplify `find_valid_triplets` | ✅ done |
 | 6 | Full benchmark of new pipeline | ⬜ pending |
 | 7 | Joint refinement benchmark | ⬜ pending |
 | 8 | Remove deprecated code | ⬜ pending |
@@ -352,6 +352,19 @@ in `src/`.  `AGENTS.md` audit via `doc-maintenance` skill.
 - 18 tests: `sample_ray_profiles` (4), `normalize_roi_intensities` (3), `fit_all_rays` (3), `fit_finder_ray` integration (3), concentration filter (1), `finder_soft_template` (4).
 - Synthetic finder uses Chebyshev distance (L∞) + Gaussian blur; Euclidean-distance template produced a circularly-symmetric pseudo-finder that gave identical m for all rays.
 - `fit_finder_ray` produces valid corners for axis-aligned synthetic finders with < 3px mean error.
+
+### Phase 4
+- Replaced `extract_thin_edges` + `fit_finder_full` with `fit_finder_ray(roi, center_xy, m_est)`.
+- Removed `FinderFit`, `fit_finder_full`, `extract_thin_edges` imports from `detector.py`.
+- Added degenerate-finding sanity check (width/height < 2*m_est rejects).
+- `fit_map` replaced with `score_map: dict[int, float]`.
+- `_reorder_to_standard` made more robust: falls back to dot-product pairing when dominant-component split fails (rotated finders).
+
+### Phase 5
+- `find_valid_triplets` now takes `score_map: dict[int, float]` instead of `fit_map`.
+- Per-finder `m` computed from `outer_corners` side length / 7.
+- Per-finder axis directions `e1`, `e2` computed from corner edge vectors.
+- Removed all `fit_map[idx].m`, `.e1`, `.e2`, `.center` references.
 - Detection rate: ~38-47% depending on preset. When it works, corner error typically ~0.6-1.5px.
 - V=1 often misdetected as V=2 (a known finder_fit issue); many high-version detections have large corner errors (>100px).
 

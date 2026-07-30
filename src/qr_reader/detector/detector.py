@@ -16,8 +16,8 @@ from scipy.ndimage import map_coordinates
 
 from qr_reader.detector.alignment import find_alignment_patterns_2d
 from qr_reader.detector.clustering import cluster_candidates
-from qr_reader.detector.edges import extract_thin_edges
-from qr_reader.detector.finder_fit import FinderFit, fit_finder_full
+from qr_reader.detector.edge_fitting import MAX_GAP, DISTANCE_THRESHOLD
+from qr_reader.detector.ray_fit import RayFitResult, fit_finder_ray
 from qr_reader.detector.finder_pattern import (
     FinderPattern,
     find_valid_triplets,
@@ -108,33 +108,39 @@ def _run_detection(image: np.ndarray) -> tuple[np.ndarray, int]:
 
     # 4. Per-cluster finder fitting
     fps: list[FinderPattern] = []
-    fit_map: dict[int, FinderFit] = {}
+    score_map: dict[int, float] = {}
     global_corners_xy: dict[int, np.ndarray] = {}
     for ci, cluster in enumerate(clusters):
         bbox = cluster_to_bbox(cluster, scale=1.5)
-        r0_orig, r1_orig, c0_orig, c1_orig = bbox
         roi = cutout(img_gray, bbox)
         if roi.size == 0:
             continue
 
-        r0 = max(0, r0_orig)
-        c0 = max(0, c0_orig)
-
-        nms, angle = extract_thin_edges(roi, blur_sigma=1.0)
-        if nms.size == 0 or np.count_nonzero(nms) == 0:
-            continue
+        r0 = max(0, int(bbox[0]))
+        c0 = max(0, int(bbox[2]))
 
         c_col = float(cluster.cols[2] + cluster.cols[3]) / 2.0 - c0
         c_row = float(cluster.row) - r0
         center_xy = np.array([c_col, c_row], dtype=np.float64)
         m_est = float(cluster.cols[5] - cluster.cols[0]) / 7.0
 
-        fit = fit_finder_full(nms, angle, roi, center_xy, m_est)
+        result = fit_finder_ray(
+            roi, center_xy, m_est,
+            max_gap=MAX_GAP,
+            distance_threshold=DISTANCE_THRESHOLD,
+        )
+        if not result.valid:
+            continue
 
-        corners_xy_global = fit.corners + np.array([c0, r0], dtype=np.float64)
+        corners_xy_global = result.corners + np.array([c0, r0], dtype=np.float64)
+        # Sanity: remove degenerate (flat) findings
+        wh = np.ptp(corners_xy_global, axis=0)
+        if wh[0] < 2.0 * m_est or wh[1] < 2.0 * m_est:
+            continue
+
         corners_rc = corners_xy_global[:, ::-1]
         fps.append(FinderPattern(cluster_idx=ci, outer_corners=corners_rc))
-        fit_map[ci] = fit
+        score_map[ci] = result.score
         global_corners_xy[ci] = corners_xy_global
 
     if not fps:
@@ -155,7 +161,7 @@ def _run_detection(image: np.ndarray) -> tuple[np.ndarray, int]:
             cj = fps[j].outer_corners.mean(axis=0)
             seg_j = float(np.linalg.norm(fps[j].outer_corners[0] - fps[j].outer_corners[1]))
             if float(np.linalg.norm(ci - cj)) < 1.0 * min(seg_i, seg_j):
-                if fit_map[fps[i].cluster_idx].score >= fit_map[fps[j].cluster_idx].score:
+                if score_map[fps[i].cluster_idx] >= score_map[fps[j].cluster_idx]:
                     keep_mask[j] = False
                 else:
                     keep_mask[i] = False
@@ -166,7 +172,7 @@ def _run_detection(image: np.ndarray) -> tuple[np.ndarray, int]:
         raise ValueError("No finder patterns after deduplication")
 
     # 5. Find triplets via centre geometry + axis alignment
-    raw_triplets = find_valid_triplets(fps, fit_map)
+    raw_triplets = find_valid_triplets(fps, score_map)
     if not raw_triplets:
         raise ValueError("No finder-pattern triplet found")
 

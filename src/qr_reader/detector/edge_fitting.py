@@ -1574,6 +1574,9 @@ def _reorder_to_standard(
     Classification is based on the dominant component of each edge's normal and
     the **geometric position** of the line (derived from *rho* and *normal*).
     This handles conventions where opposite sides share a normal direction.
+
+    When the dominant-component split fails (e.g. rotated finder with diagonally
+    oriented edges), falls back to pairing normals by dot product.
     """
     normals = np.array([s.normal for s in segments])
     rhos = np.array([s.rho for s in segments])
@@ -1587,11 +1590,23 @@ def _reorder_to_standard(
     tb_idx = np.flatnonzero(is_tb)
 
     if len(lr_idx) != 2 or len(tb_idx) != 2:
-        raise ValueError(
-            f"Expected 2 L/R and 2 T/B segments; got "
-            f"{len(lr_idx)} L/R, {len(tb_idx)} T/B. "
-            f"Normals:\n{normals}"
-        )
+        # Fallback: pair by dot product; look for two opposite-sign pairs
+        pairs = _pair_opposite_normals(normals)
+        if len(pairs) != 2:
+            raise ValueError(
+                f"Could not pair normals into two opposite pairs; normals:\n{normals}"
+            )
+        # Classify each pair as horizontal or vertical by dominant component
+        pair_a = (pairs[0][0], pairs[0][1])
+        pair_b = (pairs[1][0], pairs[1][1])
+        avg_a = normals[pair_a[0]] + normals[pair_a[1]]
+        avg_b = normals[pair_b[0]] + normals[pair_b[1]]
+        if abs(avg_a[0]) >= abs(avg_b[0]):
+            lr_pair, tb_pair = pair_a, pair_b
+        else:
+            lr_pair, tb_pair = pair_b, pair_a
+        lr_idx = np.array(list(lr_pair))
+        tb_idx = np.array(list(tb_pair))
 
     x_pos = rhos[lr_idx] / nx[lr_idx]
     left_idx = lr_idx[np.argmin(x_pos)]
@@ -1608,6 +1623,30 @@ def _reorder_to_standard(
         bottom_idx = tb_idx[np.argmax(ny[tb_idx])]
 
     return int(left_idx), int(right_idx), int(top_idx), int(bottom_idx)
+
+
+def _pair_opposite_normals(
+    normals: np.ndarray,
+) -> list[tuple[int, int]]:
+    """Pair 4 normals into two opposite-sign pairs by greedy dot-product matching."""
+    used = [False] * 4
+    pairs: list[tuple[int, int]] = []
+    for i in range(4):
+        if used[i]:
+            continue
+        best_j = -1
+        best_dot = 1.0
+        for j in range(i + 1, 4):
+            if used[j]:
+                continue
+            d = float(normals[i] @ normals[j])
+            if d < best_dot:
+                best_dot = d
+                best_j = j
+        if best_j >= 0:
+            pairs.append((i, best_j))
+            used[i] = used[best_j] = True
+    return pairs
 
 
 def refine_finder_edges_joint(
