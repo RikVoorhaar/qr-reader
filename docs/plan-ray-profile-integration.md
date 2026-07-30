@@ -11,8 +11,8 @@
 | 4 | Replace `fit_finder_full` in `_run_detection` | ✅ done |
 | 5 | Simplify `find_valid_triplets` | ✅ done |
 | 6 | Full benchmark of new pipeline | ✅ done |
-| 7 | Joint refinement benchmark | ⬜ pending |
-| 8 | Remove deprecated code | ⬜ pending |
+| 7 | Joint refinement benchmark | ✅ done |
+| 8 | Remove deprecated code | ✅ done |
 
 ## Implementation instructions
 

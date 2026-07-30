@@ -33,8 +33,8 @@ Every source file under `src/qr_reader/` and its role.
 | `sample.py` | Sample the module bit matrix from the rectified QR image using the homography | `homography.py`, `scipy` |
 | `version.py` | Cross-ratio measurement, constraint building/filtering, version estimation | `landmarks.py` |
 | `roi.py` | Compute padded bounding box from `CandidateCluster`, extract clamped sub-image cutout | `clustering.py` |
-| `finder_fit.py` | Per-finder orientation (4-fold histogram / two-family von-Mises), 1-D projection-profile fitting (equal spacing / projective scanlines), optional 8-DOF homography refinement | — |
-| `edges.py` | Thin edge extraction: Gaussian blur → Sobel → L2 magnitude → interpolated NMS → (magnitude, angle) | `scipy` |
+| `ray_fit.py` | Ray-profile finder fitting: ``fit_finder_ray(roi, center_xy, m_est) → RayFitResult``. Samples radial profiles, fits per-ray module pitch, clusters boundary points into edges. | `edge_fitting.py`, `scipy` |
+| `edges.py` | Thin edge extraction: Gaussian blur → Sobel → L2 magnitude → interpolated NMS → (magnitude, angle). **Deprecated** — no longer used by main pipeline; kept for reference. | `scipy` |
 | `edge_fitting.py` | Finder edge fitting from boundary points: TLS, clustering, segment refinement, projective 4-line helpers, template synthesis, joint-refinement residual/Jacobian, ``refine_finder_edges_joint`` LM wrapper | `sklearn`, `scipy.special.erfc`, `scipy.optimize.least_squares` |
 
 ### Decoder (`decoder/`)
@@ -55,9 +55,10 @@ Every source file under `src/qr_reader/` and its role.
 
 | File | Purpose |
 |------|---------|
-| `full-pipeline.py` | End-to-end pipeline: generate test image → detect → decode, with visualization |
-| `qr_benchmark.py` | Benchmark detection/decoding across versions, seeds, and transforms |
+| `full-pipeline-current.py` | End-to-end pipeline with per-seed backgrounds (composited QR); ray-profile finder fitting |
+| `qr_benchmark.py` | Benchmark detection/decoding across presets, versions, and seeds |
 | `debug_find_all_associations.py` | Targeted debug script for the `find_all_associations` high-version failure |
+| `ray-profile.py` | Diagnostic script for ray-profile fitting; reference implementation (plotting) |
 
 **Notebook-style scripts** (diagnostic/visual scripts with `# %%` cells):
 use default matplotlib backend and `plt.show()` — never save images to disk.
@@ -88,11 +89,10 @@ alignment.find_alignment_patterns_2d()   → (rows, cols_all) candidate position
 clustering.cluster_candidates()          → list[CandidateCluster]
   │
   ▼ (per cluster)
-edges.extract_thin_edges()                 → NMS magnitudes + edge-normal angles
-finder_fit.fit_finder_full()               → FinderFit (centre, axes, pitch, corners)
+ray_fit.fit_finder_ray()                   → RayFitResult (corners, score, valid)
   │
   ▼
-detector._run_detection() : deduplicate → find associations → find triplets →
+detector._run_detection() : deduplicate → find triplets →
   estimate version → fit global homography (similarity init, optional DLT,
   LM-refined)                                  → (H, V)
   │
@@ -125,6 +125,7 @@ bit matrix (N×N bool)
 - **`Constraint`** (`version.py`): `type` ("outer"/"inner"), `label`, `r_measured`, `line_error`, `span`.
 - **`CandidateCluster`** (`clustering.py`): `row`, `cols` (6 boundaries), `height`, `num_candidates`.
 - **`Quadruple`** (`landmarks.py`): `points` (4×2), `type` ("outer"/"inner"), `label` — four colinear points for cross-ratio measurement.
+- **`RayFitResult`** (`ray_fit.py`): `corners` (4×2), `score` (float), `valid` (bool). Returned by ``fit_finder_ray``. Corners are in (x, y).
 - **`DataBlock`** (`data_block.py`): `data: bytes`, `ec: bytes` — one error-correction block after de-interleaving.
 
 ## Coordinate Conventions
@@ -142,7 +143,7 @@ bit matrix (N×N bool)
 - **Add a new QR version table entry**: edit `tables.py` `VERSIONS` dict (EC block layout, alignment pattern positions, etc.).
 - **Fix a version estimation issue**: work in `detector/version.py` (cross-ratio computation, constraint filtering, `estimate_version`).
 - **Change binarization**: edit `qr_gen.binarize_image`. The default uses Otsu thresholding.
-- **Run the full pipeline for debugging**: `python src/qr_reader/scripts/full-pipeline.py`.
+- **Run the full pipeline for debugging**: `python src/qr_reader/scripts/full-pipeline-current.py`.
 - **Run benchmarks**: `python src/qr_reader/scripts/qr_benchmark.py`.
 
 ## Testing

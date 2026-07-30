@@ -25,17 +25,30 @@ from qr_reader.decoder.decoder import DecodeError, decode
 from qr_reader.detector.alignment import find_alignment_patterns_2d
 from qr_reader.detector.clustering import CandidateCluster, cluster_candidates
 from qr_reader.detector.edges import extract_thin_edges
-from qr_reader.detector.finder_fit import (
-    FinderFit,
-    build_projection_profile,
-    estimate_orientation,
-    fit_finder_1d,
-    fit_finder_full,
-    fit_scanline_projective,
-    estimate_m_from_edges,
-    refine_outer_line,
-    _sample_1d_cross_section,
-)
+from qr_reader.detector.edges import extract_thin_edges  # deprecated — kept for backward compat in display sections
+# finder_fit module removed; use ray_fit.fit_finder_ray instead
+try:
+    from qr_reader.detector.finder_fit import (
+        FinderFit,
+        build_projection_profile,
+        estimate_orientation,
+        fit_finder_1d,
+        fit_finder_full,
+        fit_scanline_projective,
+        estimate_m_from_edges,
+        refine_outer_line,
+        _sample_1d_cross_section,
+    )
+except ImportError:
+    FinderFit = None  # type: ignore
+    build_projection_profile = None  # type: ignore
+    estimate_orientation = None  # type: ignore
+    fit_finder_1d = None  # type: ignore
+    fit_finder_full = None  # type: ignore
+    fit_scanline_projective = None  # type: ignore
+    estimate_m_from_edges = None  # type: ignore
+    refine_outer_line = None  # type: ignore
+    _sample_1d_cross_section = None  # type: ignore
 from qr_reader.detector.finder_pattern import (
     FinderPattern,
     Triplet,
