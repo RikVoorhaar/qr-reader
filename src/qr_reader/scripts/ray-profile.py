@@ -785,6 +785,7 @@ for ci in show_indices:
         "profiles_norm": profiles_norm,
         "theta_rad": theta_rad,
         "max_dist": max_dist,
+        "r0": r0, "c0": c0,
     }
 
     n_comparable = int((np.sum(D < 1.0) - M) // 2)  # off-diagonal, symmetric
@@ -1194,6 +1195,7 @@ from qr_reader.detector.edge_fitting import (
     compute_projective_center, compute_kappa,
     synthesize_template,
 )
+from qr_reader.qr_gen import find_finder_for_center
 
 EDGE_COLORS = ["#e41a1c", "#377eb8", "#4daf4a", "#984ea3"]
 
@@ -1233,6 +1235,26 @@ for ci, data in edge_data.items():
     H_roi, W_roi = data["H_roi"], data["W_roi"]
     points = data["points"]
     assignment = data.get("assignment")
+    r0 = data.get("r0", 0)
+    c0 = data.get("c0", 0)
+
+    # Ground-truth finder pattern quadrilateral in ROI-local coordinates
+    center_img = center_xy + np.array([c0, r0], dtype=np.float64)
+    match = find_finder_for_center(
+        center_img,
+        np.array([
+            metadata["corners_qr"]["TL"], metadata["corners_qr"]["TR"],
+            metadata["corners_qr"]["BR"], metadata["corners_qr"]["BL"],
+        ], dtype=np.float64),
+        VERSION,
+    )
+    if match is not None:
+        flabel, gt_quad = match
+        gt_quad = gt_quad - np.array([c0, r0], dtype=np.float64)
+        print(f"  GT finder: {flabel}")
+    else:
+        gt_quad = None
+        print(f"  GT finder: none")
 
     half_dirs = np.column_stack([np.cos(theta_rad), np.sin(theta_rad)])
     n_samples = profiles_norm.shape[1]
@@ -1323,6 +1345,12 @@ for ci, data in edge_data.items():
         if clipped is not None:
             ax.plot(clipped[:, 0], clipped[:, 1], "-", color=EDGE_COLORS[k],
                     linewidth=2.5, alpha=0.9, label=side_names[k])
+
+    # Ground-truth quadrilateral
+    if gt_quad is not None:
+        gt_poly = np.vstack([gt_quad, gt_quad[:1]])
+        ax.plot(gt_poly[:, 0], gt_poly[:, 1], "-", color="#ffdd00",
+                linewidth=2.0, label="GT", zorder=3)
 
     ax.plot([], [], "--", color="gray", label="Initial")
     ax.plot([], [], "-", color="black", linewidth=2.5, label="Refined (joint)")

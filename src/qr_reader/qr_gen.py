@@ -180,3 +180,122 @@ def generate_test_image(
 
     img = gaussian_blur(img, kernel_size=final_blur_kernel)
     return img
+
+
+# ---------------------------------------------------------------------------
+# Finder pattern geometry (ground truth extraction)
+# ---------------------------------------------------------------------------
+
+
+def finder_pattern_corners(
+    qr_corners: np.ndarray,
+    version: int,
+    which: str,
+) -> np.ndarray:
+    """Return the four corners of one finder pattern within a QR code.
+
+    A finder pattern is the 7×7-module square at a corner of the QR code.
+    The function computes its pixel-space corners by interpolating along
+    the QR edges from the outer QR corner inward.
+
+    Parameters
+    ----------
+    qr_corners : ndarray (4, 2)
+        QR corners in order ``[TL, TR, BR, BL]``, in ``(x, y)`` image
+        coordinates.
+    version : int
+        QR version (1–40).  The module count per side is ``17 + 4·V``.
+    which : {'TL', 'TR', 'BL'}
+        Which finder pattern to compute.
+
+    Returns
+    -------
+    corners : ndarray (4, 2)
+        Finder corners ``(p0, p1, p2, p3)`` cycling clockwise around the
+        finder.  *p0* is the outer QR corner itself.
+    """
+    total = 17 + 4 * version
+    frac = 7.0 / total
+
+    TL = np.asarray(qr_corners[0], dtype=np.float64)
+    TR = np.asarray(qr_corners[1], dtype=np.float64)
+    BR = np.asarray(qr_corners[2], dtype=np.float64)
+    BL = np.asarray(qr_corners[3], dtype=np.float64)
+
+    if which == "TL":
+        p0 = TL
+        p1 = TL + frac * (TR - TL)
+        p2 = TL + frac * (TR - TL) + frac * (BL - TL)
+        p3 = TL + frac * (BL - TL)
+    elif which == "TR":
+        p0 = TR + frac * (TL - TR)
+        p1 = TR
+        p2 = TR + frac * (BR - TR)
+        p3 = TR + frac * (TL - TR) + frac * (BR - TR)
+    elif which == "BL":
+        p0 = BL + frac * (TL - BL)
+        p1 = BL + frac * (TL - BL) + frac * (BR - BL)
+        p2 = BL + frac * (BR - BL)
+        p3 = BL
+    else:
+        raise ValueError(f"Unknown finder label: {which}")
+
+    return np.array([p0, p1, p2, p3], dtype=np.float64)
+
+
+def find_finder_for_center(
+    center_xy: np.ndarray,
+    qr_corners: np.ndarray,
+    version: int,
+) -> tuple[str, np.ndarray] | None:
+    """Return ``(label, corners)`` if *center_xy* lies inside a finder pattern.
+
+    The point is tested against all three finder quadrilaterals.  If it
+    falls inside (or on the boundary of) one of them, that finder's label
+    and corners are returned.  Otherwise ``None``.
+
+    Parameters
+    ----------
+    center_xy : ndarray (2,)
+        Point in ``(x, y)`` image coordinates.
+    qr_corners : ndarray (4, 2)
+        QR corners ``[TL, TR, BR, BL]``.
+    version : int
+        QR version.
+
+    Returns
+    -------
+    (label, corners) or None
+        *label* is ``'TL'``, ``'TR'``, or ``'BL'``.
+        *corners* is ``(4, 2)`` as returned by ``finder_pattern_corners``.
+    """
+    for label in ["TL", "TR", "BL"]:
+        quad = finder_pattern_corners(qr_corners, version, label)
+        if _point_in_convex_quad(center_xy, quad):
+            return label, quad
+    return None
+
+
+def _point_in_convex_quad(
+    pt: np.ndarray,
+    quad: np.ndarray,
+) -> bool:
+    """True if *pt* is inside or on the boundary of a convex quadrilateral.
+
+    The quadrilateral must be ordered consistently (clockwise or
+    counter-clockwise).  Uses the cross-product sign test.
+    """
+    pt = np.asarray(pt, dtype=np.float64).ravel()[:2]
+    quad = np.asarray(quad, dtype=np.float64)
+    n_positive = 0
+    n_negative = 0
+    for i in range(4):
+        j = (i + 1) % 4
+        edge = quad[j] - quad[i]
+        to_pt = pt - quad[i]
+        cross = edge[0] * to_pt[1] - edge[1] * to_pt[0]
+        if cross > 1e-12:
+            n_positive += 1
+        elif cross < -1e-12:
+            n_negative += 1
+    return n_positive == 0 or n_negative == 0
