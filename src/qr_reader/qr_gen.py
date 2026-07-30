@@ -195,8 +195,10 @@ def finder_pattern_corners(
     """Return the four corners of one finder pattern within a QR code.
 
     A finder pattern is the 7×7-module square at a corner of the QR code.
-    The function computes its pixel-space corners by interpolating along
-    the QR edges from the outer QR corner inward.
+    The module grid is a perspective projection of a flat regular grid, so
+    the finder inner corner is computed by projecting through the
+    homography from canonical QR space rather than linear interpolation
+    along the QR edges.
 
     Parameters
     ----------
@@ -214,33 +216,29 @@ def finder_pattern_corners(
         Finder corners ``(p0, p1, p2, p3)`` cycling clockwise around the
         finder.  *p0* is the outer QR corner itself.
     """
-    total = 17 + 4 * version
-    frac = 7.0 / total
+    N = 17 + 4 * version
 
-    TL = np.asarray(qr_corners[0], dtype=np.float64)
-    TR = np.asarray(qr_corners[1], dtype=np.float64)
-    BR = np.asarray(qr_corners[2], dtype=np.float64)
-    BL = np.asarray(qr_corners[3], dtype=np.float64)
+    image_pts = np.asarray(qr_corners, dtype=np.float32)
+    canonical_pts = np.array(
+        [[0, 0], [N, 0], [N, N], [0, N]], dtype=np.float32)
+
+    H = cv2.getPerspectiveTransform(canonical_pts, image_pts)
 
     if which == "TL":
-        p0 = TL
-        p1 = TL + frac * (TR - TL)
-        p2 = TL + frac * (TR - TL) + frac * (BL - TL)
-        p3 = TL + frac * (BL - TL)
+        canonical_finder = np.array(
+            [[0, 0], [7, 0], [7, 7], [0, 7]], dtype=np.float32)
     elif which == "TR":
-        p0 = TR + frac * (TL - TR)
-        p1 = TR
-        p2 = TR + frac * (BR - TR)
-        p3 = TR + frac * (TL - TR) + frac * (BR - TR)
+        canonical_finder = np.array(
+            [[N - 7, 0], [N, 0], [N, 7], [N - 7, 7]], dtype=np.float32)
     elif which == "BL":
-        p0 = BL + frac * (TL - BL)
-        p1 = BL + frac * (TL - BL) + frac * (BR - BL)
-        p2 = BL + frac * (BR - BL)
-        p3 = BL
+        canonical_finder = np.array(
+            [[0, N - 7], [7, N - 7], [7, N], [0, N]], dtype=np.float32)
     else:
         raise ValueError(f"Unknown finder label: {which}")
 
-    return np.array([p0, p1, p2, p3], dtype=np.float64)
+    projected = cv2.perspectiveTransform(
+        canonical_finder.reshape(1, -1, 2), H)
+    return projected.reshape(4, 2).astype(np.float64)
 
 
 def find_finder_for_center(
