@@ -7,3 +7,6 @@
 [submodule "third_party/nayuki-qr-code-generator"]
 	path = third_party/nayuki-qr-code-generator
 	url = https://github.com/nayuki/QR-Code-generator.git
+[submodule "blog"]
+	path = blog
+	url = git@github.com:RikVoorhaar/blog.git
