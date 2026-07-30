@@ -612,6 +612,18 @@ For each cluster with valid `edge_data`:
 > kwarg).  This keeps the residual differentiable and makes the analytical
 > Jacobian exact, as verified by ``check_joint_refinement_jacobian``.
 
+> **Implementation note — per-ray side assignment:** Each half-ray is
+> assigned to its nearest side (smallest positive line intersection) once,
+> frozen from the initial lines via ``_assign_rays_to_sides``.
+> ``compute_transition_distances`` and ``_all_candidate_info`` accept a
+> ``side_idx`` parameter and only use that side's 4 interpolated lines.
+> This prevents diagonal rays from mixing transitions from multiple sides,
+> which produced wrong templates and a discontinuous Jacobian.
+
+> **Implementation note — parameter scaling:** ``x_scale='jac'`` is passed
+> to ``least_squares`` to balance the ~1000:1 column norm ratio between
+> phi/R parameters (~6000) and rho parameters (~7).
+
 ---
 
 ## Parameters

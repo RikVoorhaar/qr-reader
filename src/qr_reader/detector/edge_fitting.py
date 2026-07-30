@@ -756,8 +756,16 @@ def compute_transition_distances(
     ell_B: np.ndarray,
     kappa_u: float,
     kappa_v: float,
+    side_idx: int | None = None,
 ) -> np.ndarray:
     """Return the four sorted transition distances ``s₁..s₄`` for one half-ray.
+
+    Parameters
+    ----------
+    side_idx : int or None
+        If provided (0=L, 1=R, 2=T, 3=B), compute transitions from that
+        side only.  If None, use the 4 smallest positive intersections
+        from all sides (legacy behaviour).
     """
     centerpoint = np.asarray(centerpoint, dtype=np.float64).ravel()[:2]
     direction = np.asarray(direction, dtype=np.float64).ravel()[:2]
@@ -774,6 +782,23 @@ def compute_transition_distances(
     c = compute_projective_center(*corners)
     if not np.all(np.isfinite(c)):
         return np.full(4, np.nan, dtype=np.float64)
+
+    if side_idx is not None:
+        # Use only the specified side's 4 interpolated lines.
+        line = side_lines[side_idx]
+        central = _central_line(line, c)
+        dists: list[float] = []
+        for alpha in _TRANSITION_ALPHAS:
+            ell_alpha = interpolate_line(alpha, central, line, kappa=1.0)
+            s = ray_line_intersection(centerpoint, direction, ell_alpha)
+            if np.isfinite(s) and s > 1e-9:
+                dists.append(s)
+        dists = np.sort(np.asarray(dists, dtype=np.float64))
+        if len(dists) >= 4:
+            return dists[:4]
+        out = np.full(4, np.nan, dtype=np.float64)
+        out[: len(dists)] = dists
+        return out
 
     positive: list[float] = []
     for line in side_lines:
@@ -970,14 +995,22 @@ def _all_candidate_info(
     ell_L: np.ndarray, ell_R: np.ndarray,
     ell_T: np.ndarray, ell_B: np.ndarray,
     c: np.ndarray,
+    side_idx: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return sorted transition distances, side indices, and alpha indices.
+
+    Parameters
+    ----------
+    side_idx : int or None
+        If provided (0=L, 1=R, 2=T, 3=B), only return candidates from
+        that side.  If None, return candidates from all sides.
 
     Returns
     -------
     s_vals : ndarray (K,)
-        Sorted positive intersection distances.  ``K <= 16``.
-    side_idx : ndarray (K,) int
+        Sorted positive intersection distances.  ``K <= 16`` (or ``K <= 4``
+        when ``side_idx`` is given).
+    side_idx_arr : ndarray (K,) int
         Which side line produced each distance (0=L, 1=R, 2=T, 3=B).
     alpha_idx : ndarray (K,) int
         Which ``_TRANSITION_ALPHAS`` index (0..3) produced each distance.
@@ -995,7 +1028,9 @@ def _all_candidate_info(
     side_all: list[int] = []
     alpha_all: list[int] = []
 
-    for si, line in enumerate(side_lines):
+    sides_to_iter = [side_idx] if side_idx is not None else range(4)
+    for si in sides_to_iter:
+        line = side_lines[si]
         central = _central_line(line, c)
         for ai, alpha in enumerate(_TRANSITION_ALPHAS):
             ell_alpha = interpolate_line(alpha, central, line, kappa=1.0)
@@ -1074,6 +1109,7 @@ def _transition_derivs_one_ray(
     ell_T: np.ndarray, ell_B: np.ndarray,
     c: np.ndarray,
     dlines_dparams: list[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]],
+    side_idx: int | None = None,
 ) -> np.ndarray:
     """Return ``(4, 8)`` ``partial s_j / partial p`` for one half-ray.
 
@@ -1082,9 +1118,12 @@ def _transition_derivs_one_ray(
     dlines_dparams : list of 8 items
         Each item is ``(dL, dR, dT, dB)`` — the ``(3,)`` derivative of
         each side line w.r.t. that parameter.  Unaffected lines get zeros.
+    side_idx : int or None
+        If provided, only use that side's candidates (0=L, 1=R, 2=T, 3=B).
     """
-    s_vals, side_idx, alpha_idx = _all_candidate_info(
+    s_vals, side_idx_arr, alpha_idx = _all_candidate_info(
         centerpoint, direction, ell_L, ell_R, ell_T, ell_B, c,
+        side_idx=side_idx,
     )
     if len(s_vals) < 4:
         return np.full((4, 8), np.nan, dtype=np.float64)
@@ -1104,7 +1143,7 @@ def _transition_derivs_one_ray(
             ell_L, ell_R, ell_T, ell_B, dL, dR, dT, dB,
         )
         for j in range(4):
-            si = int(side_idx[j])
+            si = int(side_idx_arr[j])
             ai = int(alpha_idx[j])
             d_side = np.asarray(dlines_list[si], dtype=np.float64).ravel()
             ds_dp[j, p] = _ds_dparams_one_candidate(
@@ -1119,6 +1158,41 @@ def _transition_derivs_one_ray(
 # ── Residual ──────────────────────────────────────────────────────────────
 
 
+def _assign_rays_to_sides(
+    centerpoint: np.ndarray,
+    half_dirs: np.ndarray,
+    ell_L: np.ndarray,
+    ell_R: np.ndarray,
+    ell_T: np.ndarray,
+    ell_B: np.ndarray,
+) -> np.ndarray:
+    """Assign each half-ray to its nearest side (0=L, 1=R, 2=T, 3=B).
+
+    The nearest side is the one whose line the ray intersects at the
+    smallest positive distance.
+    """
+    centerpoint = np.asarray(centerpoint, dtype=np.float64).ravel()[:2]
+    half_dirs = np.asarray(half_dirs, dtype=np.float64)
+    side_lines = [
+        np.asarray(ell_L, dtype=np.float64).ravel(),
+        np.asarray(ell_R, dtype=np.float64).ravel(),
+        np.asarray(ell_T, dtype=np.float64).ravel(),
+        np.asarray(ell_B, dtype=np.float64).ravel(),
+    ]
+    n_rays = len(half_dirs)
+    assignment = np.full(n_rays, -1, dtype=np.int64)
+    for k in range(n_rays):
+        best_t = np.inf
+        best_si = -1
+        for si, line in enumerate(side_lines):
+            t = ray_line_intersection(centerpoint, half_dirs[k], line)
+            if np.isfinite(t) and t > 1e-9 and t < best_t:
+                best_t = t
+                best_si = si
+        assignment[k] = best_si
+    return assignment
+
+
 def _fit_ols_params(
     centerpoint: np.ndarray,
     half_profiles: np.ndarray,
@@ -1129,32 +1203,54 @@ def _fit_ols_params(
     ell_T: np.ndarray, ell_B: np.ndarray,
     kappa_u: float, kappa_v: float,
     sigma: float = 1.0,
+    per_ray_side: np.ndarray | None = None,
+    ray_weights: np.ndarray | None = None,
 ) -> tuple[float, float]:
     """Compute the OLS brightness/contrast pair ``(a, b)``.
 
     Fits ``template ≈ a·profile + b`` on all unmasked samples and returns
     the least-squares estimates.
+
+    Parameters
+    ----------
+    per_ray_side : ndarray (N_rays,) or None
+        Side assignment per ray (0=L, 1=R, 2=T, 3=B).  If provided,
+        transitions are computed from the assigned side only.
+    ray_weights : ndarray (N_rays,) or None
+        Per-ray weight (e.g. ``|d·n|``).  If provided, each sample is
+        weighted by its ray's weight in the OLS fit.
     """
     T_list: list[np.ndarray] = []
     P_list: list[np.ndarray] = []
+    W_list: list[np.ndarray] = []
     for k in range(half_profiles.shape[0]):
         mask = pre_masks[k]
         if not np.any(mask):
             continue
+        si = int(per_ray_side[k]) if per_ray_side is not None else None
         s_j = compute_transition_distances(
             centerpoint, half_dirs[k],
             ell_L, ell_R, ell_T, ell_B, kappa_u, kappa_v,
+            side_idx=si,
         )
         if not np.all(np.isfinite(s_j)) or len(s_j) < 4:
             continue
         T_k = synthesize_template(s_samples, s_j, sigma)
         T_list.append(T_k[mask])
         P_list.append(half_profiles[k, mask])
+        if ray_weights is not None:
+            w = float(ray_weights[k])
+            W_list.append(np.full(np.sum(mask), w, dtype=np.float64))
     if len(T_list) == 0:
         return 1.0, 0.0
     T_all = np.concatenate(T_list)
     P_all = np.concatenate(P_list)
     A = np.column_stack([P_all, np.ones(len(P_all), dtype=np.float64)])
+    if ray_weights is not None and len(W_list) > 0:
+        W_all = np.concatenate(W_list)
+        W_sqrt = np.sqrt(W_all)
+        A = A * W_sqrt[:, None]
+        T_all = T_all * W_sqrt
     ab, _, _, _ = np.linalg.lstsq(A, T_all, rcond=None)
     return float(ab[0]), float(ab[1])
 
@@ -1170,6 +1266,8 @@ def joint_refinement_residuals(
     pre_masks: np.ndarray,
     sigma: float = 1.0,
     ab_fixed: tuple[float, float] | None = None,
+    per_ray_side: np.ndarray | None = None,
+    ray_weights: np.ndarray | None = None,
 ) -> np.ndarray:
     """Residual vector for joint refinement of 4 finder edges.
 
@@ -1182,11 +1280,17 @@ def joint_refinement_residuals(
         ``None``, the pair is re-fitted from the current state via OLS.
         Passing the pair computed from ``x0`` makes the residual function
         smoothly differentiable and keeps the analytical Jacobian exact.
+    per_ray_side : ndarray (N_rays,) or None
+        Side assignment per ray (0=L, 1=R, 2=T, 3=B).  If provided,
+        transitions are computed from the assigned side only.
+    ray_weights : ndarray (N_rays,) or None
+        Per-ray weights.  If provided, each sample in ray *k* is weighted
+        by ``ray_weights[k]``.
 
     Returns
     -------
     residuals : ndarray (N_rays * N_S,)
-        ``a * profile + b - template``; masked entries are 0.
+        ``(a * profile + b - template) * w``; masked entries are 0.
     """
     x = np.asarray(x, dtype=np.float64).ravel()
     theta0 = np.asarray(theta0, dtype=np.float64).ravel()
@@ -1216,6 +1320,7 @@ def joint_refinement_residuals(
         a_val, b_val = _fit_ols_params(
             centerpoint, half_profiles, half_dirs, s_samples, pre_masks,
             ell_L, ell_R, ell_T, ell_B, kappa_u, kappa_v, sigma,
+            per_ray_side=per_ray_side, ray_weights=ray_weights,
         )
 
     residuals = np.zeros(n_total, dtype=np.float64)
@@ -1223,14 +1328,18 @@ def joint_refinement_residuals(
         mask = pre_masks[k]
         if not np.any(mask):
             continue
+        si = int(per_ray_side[k]) if per_ray_side is not None else None
         s_j = compute_transition_distances(
             centerpoint, half_dirs[k],
             ell_L, ell_R, ell_T, ell_B, kappa_u, kappa_v,
+            side_idx=si,
         )
         if not np.all(np.isfinite(s_j)) or len(s_j) < 4:
             continue
         T_k = synthesize_template(s_samples, s_j, sigma)
         raw = a_val * half_profiles[k, mask] + b_val - T_k[mask]
+        if ray_weights is not None:
+            raw = raw * float(ray_weights[k])
         idx_start = k * N_S
         residuals[idx_start:idx_start + N_S][mask] = raw
 
@@ -1250,12 +1359,22 @@ def joint_refinement_jacobian(
     s_samples: np.ndarray,
     pre_masks: np.ndarray,
     sigma: float = 1.0,
+    per_ray_side: np.ndarray | None = None,
+    ray_weights: np.ndarray | None = None,
 ) -> np.ndarray:
     """Analytical Jacobian of ``joint_refinement_residuals``.
 
-    The residual is ``r = a*P + b - T``.  We treat *a*, *b* as constant
-    (the OLS fit is re-evaluated each residual call but held fixed for the
-    gradient), so ``partial r / partial p = -partial T / partial p``.
+    The residual is ``r = w·(a*P + b - T)``.  We treat *a*, *b* and *w* as
+    constant, so ``partial r / partial p = -w · partial T / partial p``.
+
+    Parameters
+    ----------
+    per_ray_side : ndarray (N_rays,) or None
+        Side assignment per ray (0=L, 1=R, 2=T, 3=B).  If provided,
+        transitions are computed from the assigned side only.
+    ray_weights : ndarray (N_rays,) or None
+        Per-ray weights.  If provided, the Jacobian rows for ray *k*
+        are multiplied by ``ray_weights[k]``.
 
     Returns
     -------
@@ -1309,9 +1428,11 @@ def joint_refinement_jacobian(
         mask = pre_masks[k]
         if not np.any(mask):
             continue
+        si = int(per_ray_side[k]) if per_ray_side is not None else None
         s_j = compute_transition_distances(
             centerpoint, half_dirs[k],
             ell_L, ell_R, ell_T, ell_B, kappa_u, kappa_v,
+            side_idx=si,
         )
         if not np.all(np.isfinite(s_j)) or len(s_j) < 4:
             continue
@@ -1320,6 +1441,7 @@ def joint_refinement_jacobian(
             centerpoint, half_dirs[k],
             ell_L, ell_R, ell_T, ell_B,
             c, dlines_dparams,
+            side_idx=si,
         )
         if not np.all(np.isfinite(ds_dp)):
             continue
@@ -1327,6 +1449,8 @@ def joint_refinement_jacobian(
         dT_ds = _template_deriv_wrt_junctions(s_samples, s_j, sigma)
         # dT/dp = dT/ds @ ds/dp  →  shape: (N_S, 4) @ (4, 8) → (N_S, 8)
         dT_dp = dT_ds @ ds_dp
+        if ray_weights is not None:
+            dT_dp = dT_dp * float(ray_weights[k])
 
         row_start = k * N_S
         masked_rows = np.flatnonzero(mask)
@@ -1349,11 +1473,21 @@ def check_joint_refinement_jacobian(
     pre_masks: np.ndarray,
     sigma: float = 1.0,
     eps: float = 5e-6,
+    per_ray_side: np.ndarray | None = None,
+    ray_weights: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, float]:
     """Compare analytical Jacobian to central-difference FD.
 
     The OLS pair ``(a, b)`` is computed from *x0* once and held fixed
     so that FD and analytical derivatives are consistent.
+
+    Parameters
+    ----------
+    per_ray_side : ndarray (N_rays,) or None
+        Side assignment per ray (0=L, 1=R, 2=T, 3=B).  If provided,
+        transitions are computed from the assigned side only.
+    ray_weights : ndarray (N_rays,) or None
+        Per-ray weights passed through to the residual and Jacobian.
 
     Returns
     -------
@@ -1383,11 +1517,13 @@ def check_joint_refinement_jacobian(
     ab_fixed = _fit_ols_params(
         centerpoint, half_profiles, half_dirs, s_samples, pre_masks,
         ell_L, ell_R, ell_T, ell_B, kappa_u, kappa_v, sigma,
+        per_ray_side=per_ray_side, ray_weights=ray_weights,
     )
 
     J = joint_refinement_jacobian(
         x0, centerpoint, R, theta0, half_profiles, half_dirs,
-        s_samples, pre_masks, sigma,
+        s_samples, pre_masks, sigma, per_ray_side=per_ray_side,
+        ray_weights=ray_weights,
     )
     J_fd = np.zeros_like(J)
     for col in range(8):
@@ -1396,10 +1532,12 @@ def check_joint_refinement_jacobian(
         fp = joint_refinement_residuals(
             x0 + h, centerpoint, R, theta0, half_profiles, half_dirs,
             s_samples, pre_masks, sigma, ab_fixed=ab_fixed,
+            per_ray_side=per_ray_side, ray_weights=ray_weights,
         )
         fm = joint_refinement_residuals(
             x0 - h, centerpoint, R, theta0, half_profiles, half_dirs,
             s_samples, pre_masks, sigma, ab_fixed=ab_fixed,
+            per_ray_side=per_ray_side, ray_weights=ray_weights,
         )
         J_fd[:, col] = (fp - fm) / (2.0 * eps)
 
@@ -1518,12 +1656,29 @@ def refine_finder_edges_joint(
 
     kappa_u, kappa_v = compute_kappa(ell_L, ell_R, ell_T, ell_B, c)
 
+    # Assign each ray to its nearest side (frozen from initial lines).
+    per_ray_side = _assign_rays_to_sides(
+        centerpoint, half_dirs, ell_L, ell_R, ell_T, ell_B,
+    )
+
     N_rays, N_S = half_profiles.shape
+
+    # Per-ray angular weight: |d·n| — down-weights diagonal rays where
+    # the 1-D finder template doesn't apply.
+    ray_weights = np.zeros(N_rays, dtype=np.float64)
+    for k in range(N_rays):
+        si = int(per_ray_side[k])
+        if si >= 0:
+            w = abs(float(ordered[si].normal @ half_dirs[k]))
+            ray_weights[k] = max(w, 0.1)
+
     pre_masks = np.zeros((N_rays, N_S), dtype=bool)
     for k in range(N_rays):
+        si = int(per_ray_side[k]) if per_ray_side[k] >= 0 else None
         s_j = compute_transition_distances(
             centerpoint, half_dirs[k],
             ell_L, ell_R, ell_T, ell_B, kappa_u, kappa_v,
+            side_idx=si,
         )
         pre_masks[k] = precompute_mask(s_samples, s_j, sigma)
 
@@ -1533,13 +1688,16 @@ def refine_finder_edges_joint(
     ab_fixed = _fit_ols_params(
         centerpoint, half_profiles, half_dirs, s_samples, pre_masks,
         ell_L, ell_R, ell_T, ell_B, kappa_u, kappa_v, sigma,
+        per_ray_side=per_ray_side, ray_weights=ray_weights,
     )
 
     result = least_squares(
         fun=lambda x, *args: joint_refinement_residuals(
-            x, *args, ab_fixed=ab_fixed),
+            x, *args, ab_fixed=ab_fixed, per_ray_side=per_ray_side,
+            ray_weights=ray_weights),
         x0=x0,
-        jac=joint_refinement_jacobian,
+        jac=lambda x, *args: joint_refinement_jacobian(
+            x, *args, per_ray_side=per_ray_side, ray_weights=ray_weights),
         method="lm",
         args=(centerpoint, R, theta0, half_profiles, half_dirs,
               s_samples, pre_masks, sigma),

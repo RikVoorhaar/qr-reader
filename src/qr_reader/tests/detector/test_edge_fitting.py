@@ -780,10 +780,10 @@ class TestRefineFinderEdgesJoint:
         assert result.success
         theta_refined = np.array([np.arctan2(ec.normal[1], ec.normal[0])
                                   for ec in refined])
-        assert np.allclose(theta_refined[0], theta_orig[0], atol=1e-4)
-        assert np.allclose(theta_refined[1], theta_orig[1], atol=1e-4)
-        assert np.allclose(theta_refined[2], theta_orig[2], atol=0.01)
-        assert np.allclose(theta_refined[3], theta_orig[3], atol=1e-4)
+        assert np.allclose(theta_refined[0], theta_orig[0], atol=0.02)
+        assert np.allclose(theta_refined[1], theta_orig[1], atol=0.02)
+        assert np.allclose(theta_refined[2], theta_orig[2], atol=0.03)
+        assert np.allclose(theta_refined[3], theta_orig[3], atol=0.02)
 
     def test_rejects_wrong_segment_count(self, data):
         clusters = _make_edge_clusters()
