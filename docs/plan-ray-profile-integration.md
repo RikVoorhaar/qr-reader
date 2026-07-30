@@ -4,7 +4,7 @@
 
 | Phase | Name | Status |
 |-------|------|--------|
-| 0 | Benchmark current pipeline | ⬜ pending |
+| 0 | Benchmark current pipeline | ✅ done |
 | 1 | Homography-based version estimation | ⬜ pending |
 | 2 | New `detector/ray_fit.py` module | ⬜ pending |
 | 3 | Unit tests for `ray_fit` | ⬜ pending |
@@ -327,4 +327,11 @@ in `src/`.  `AGENTS.md` audit via `doc-maintenance` skill.
 ## Phase Notes
 
 *Populated by implementers as each phase completes.  Notes here inform subsequent phases.*
+
+### Phase 0
+- No `generate_sample` function exists; used `generate_test_image` with preset parameter values instead.
+- GT corner error computed by re-running deterministic RNG chain (rotation + perspective) from same seed.
+- Benchmark JSON at `benchmark_current.json` (74KB, 180 results).
+- Detection rate: ~38-47% depending on preset. When it works, corner error typically ~0.6-1.5px.
+- V=1 often misdetected as V=2 (a known finder_fit issue); many high-version detections have large corner errors (>100px).
 
