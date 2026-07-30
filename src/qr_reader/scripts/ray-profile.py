@@ -13,19 +13,19 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # ── Config ───────────────────────────────────────────────────────────────────
-PRESET = "medium"             # 'easy', 'medium', or 'hard'
-VERSION = 8                 # QR version (1–40)
-SAMPLE_SEED = 44            # Base seed
-NUM_RAYS = 36               # Half-ray count (36 directions in [0, 2π))
-NUM_SAMPLES = 120           # Samples per half-ray
-RAY_LENGTH = 1.0            # Ray length as fraction of half-ROI diagonal
-CLUSTER_INDICES = None      # List of cluster indices to plot, or None for all
+PRESET = "medium"  # 'easy', 'medium', or 'hard'
+VERSION = 1  # QR version (1–40)
+SAMPLE_SEED = 7
+NUM_RAYS = 36  # Half-ray count (36 directions in [0, 2π))
+NUM_SAMPLES = 120  # Samples per half-ray
+RAY_LENGTH = 1.0  # Ray length as fraction of half-ROI diagonal
+CLUSTER_INDICES = None  # List of cluster indices to plot, or None for all
 TIGHT_LAYOUT = True
 
 # ── m-fitting params ──
-MASK_BOUNDARY = 4.5         # Mask |t| > 4.5m during fitting (beyond quiet zone)
-NUM_GRID = 50               # Grid-search points per half-ray
-GRID_WIDTH = 2.0            # Grid bounds: [m_est / GRID_WIDTH, m_est * GRID_WIDTH]
+MASK_BOUNDARY = 4.5  # Mask |t| > 4.5m during fitting (beyond quiet zone)
+NUM_GRID = 50  # Grid-search points per half-ray
+GRID_WIDTH = 2.0  # Grid bounds: [m_est / GRID_WIDTH, m_est * GRID_WIDTH]
 
 # Colours
 C_GOOD = "#2ca02c"
@@ -75,13 +75,16 @@ H_IMG, W_IMG = img_gray.shape
 
 QR_VERSION = metadata["version"]
 QR_CONTENT = metadata["payload"]
-gt_corners = np.array([
-    metadata["corners_qr"]["TL"],
-    metadata["corners_qr"]["TR"],
-    metadata["corners_qr"]["BR"],
-    metadata["corners_qr"]["BL"],
-    metadata["corners_qr"]["TL"],
-], dtype=np.float64)
+gt_corners = np.array(
+    [
+        metadata["corners_qr"]["TL"],
+        metadata["corners_qr"]["TR"],
+        metadata["corners_qr"]["BR"],
+        metadata["corners_qr"]["BL"],
+        metadata["corners_qr"]["TL"],
+    ],
+    dtype=np.float64,
+)
 
 print(f"Generated v{QR_VERSION} QR: '{QR_CONTENT}' ({W_IMG}×{H_IMG})")
 
@@ -90,7 +93,14 @@ fig, ax = plt.subplots(figsize=(8, 8))
 ax.imshow(img_gray, cmap="gray")
 ax.plot(gt_corners[:, 0], gt_corners[:, 1], color=C_GT, linewidth=2, label="GT")
 for i, lbl in enumerate(["TL", "TR", "BR", "BL"]):
-    ax.text(gt_corners[i, 0] + 3, gt_corners[i, 1] + 3, lbl, color=C_GT, fontsize=8, weight="bold")
+    ax.text(
+        gt_corners[i, 0] + 3,
+        gt_corners[i, 1] + 3,
+        lbl,
+        color=C_GT,
+        fontsize=8,
+        weight="bold",
+    )
 ax.set_title(f"Input — v{QR_VERSION} ({PRESET.upper()})  bg: {bg_path.name}")
 ax.legend(fontsize=8)
 ax.axis("off")
@@ -158,9 +168,12 @@ def sample_ray_profiles(
         dy = np.sin(theta)
 
         # Endpoints for drawing the half-ray (centre → outward)
-        ray_endpoints[i] = [center_x, center_y,
-                            center_x + max_dist * dx,
-                            center_y + max_dist * dy]
+        ray_endpoints[i] = [
+            center_x,
+            center_y,
+            center_x + max_dist * dx,
+            center_y + max_dist * dy,
+        ]
 
         # Sample from centre outward
         sample_ts = np.linspace(0, max_dist, num_samples)
@@ -175,8 +188,9 @@ def sample_ray_profiles(
         fx = sx - x0.astype(np.float64)
         fy = sy - y0.astype(np.float64)
 
-        profiles[i] = ((1 - fy) * ((1 - fx) * roi_f[y0, x0] + fx * roi_f[y0, x1])
-                       + fy * ((1 - fx) * roi_f[y1, x0] + fx * roi_f[y1, x1]))
+        profiles[i] = (1 - fy) * (
+            (1 - fx) * roi_f[y0, x0] + fx * roi_f[y0, x1]
+        ) + fy * ((1 - fx) * roi_f[y1, x0] + fx * roi_f[y1, x1])
 
     profiles = np.clip(profiles, 0, 255)
     return profiles, ray_endpoints, angles_deg
@@ -196,8 +210,11 @@ def plot_ray_profiles(
     num_rays = len(angles_deg)
 
     fig, axes = plt.subplots(1, 2, figsize=(16, 7))
-    fig.suptitle(f"Cluster {ci} — {num_rays} half-ray profiles  "
-                 f"(m_est={m_est:.2f}px)", fontsize=13, fontweight="bold")
+    fig.suptitle(
+        f"Cluster {ci} — {num_rays} half-ray profiles  (m_est={m_est:.2f}px)",
+        fontsize=13,
+        fontweight="bold",
+    )
 
     # ── Left: ROI with half-rays ──
     ax = axes[0]
@@ -207,8 +224,7 @@ def plot_ray_profiles(
     for i, theta_deg in enumerate(angles_deg):
         color = cmap_rays(i / num_rays)
         ep = ray_endpoints[i]
-        ax.plot([ep[0], ep[2]], [ep[1], ep[3]],
-                color=color, linewidth=1, alpha=0.6)
+        ax.plot([ep[0], ep[2]], [ep[1], ep[3]], color=color, linewidth=1, alpha=0.6)
 
     ax.plot(center_xy[0], center_xy[1], "r+", markersize=12, markeredgewidth=2)
     ax.set_title(f"ROI + half-rays (0° = rightward, CCW)")
@@ -222,8 +238,9 @@ def plot_ray_profiles(
     # imshow y-extent: row 0 (angle 0) at y=0 (top), last row at y=360 (bottom)
     img_extent = [0, num_samples - 1, angles_deg[-1] + step, angles_deg[0]]
 
-    im = ax.imshow(profiles, aspect="auto", cmap="gray",
-                   extent=img_extent, interpolation="nearest")
+    im = ax.imshow(
+        profiles, aspect="auto", cmap="gray", extent=img_extent, interpolation="nearest"
+    )
     ax.set_xlabel("Distance from centre (px)")
     ax.set_ylabel("Angle (deg)")
     ax.set_title("Half-ray intensity profiles (light = bright pixel)")
@@ -264,11 +281,15 @@ for ci in show_indices:
     m_est = float(cluster.cols[5] - cluster.cols[0]) / 7.0
     width_px = float(cluster.cols[5] - cluster.cols[0])
 
-    print(f"\nCluster {ci}: centre=({c_col:.1f}, {c_row:.1f}), "
-          f"width={width_px:.1f}px, m_est={m_est:.2f}px")
+    print(
+        f"\nCluster {ci}: centre=({c_col:.1f}, {c_row:.1f}), "
+        f"width={width_px:.1f}px, m_est={m_est:.2f}px"
+    )
 
     profiles, ray_endpoints, angles_deg = sample_ray_profiles(
-        roi, c_col, c_row,
+        roi,
+        c_col,
+        c_row,
         num_rays=NUM_RAYS,
         num_samples=NUM_SAMPLES,
         ray_length=RAY_LENGTH,
@@ -292,21 +313,28 @@ for ci in show_indices:
         t_pos = min(ts_pos) if ts_pos else max_dist
         if t_pos > max_dist:
             t_pos = max_dist
-        clipped_endpoints[i] = [c_col, c_row,
-                                c_col + t_pos * dx, c_row + t_pos * dy]
+        clipped_endpoints[i] = [c_col, c_row, c_col + t_pos * dx, c_row + t_pos * dy]
 
     # ── Inline plot (half-rays + half-ray profile heatmap) ──
     fig, axes = plt.subplots(1, 2, figsize=(16, 7))
-    fig.suptitle(f"Cluster {ci} — {NUM_RAYS} half-ray profiles  "
-                 f"(m_est={m_est:.2f}px)", fontsize=13, fontweight="bold")
+    fig.suptitle(
+        f"Cluster {ci} — {NUM_RAYS} half-ray profiles  (m_est={m_est:.2f}px)",
+        fontsize=13,
+        fontweight="bold",
+    )
 
     ax = axes[0]
     ax.imshow(roi, cmap="gray", extent=[0, W_roi, H_roi, 0])
     cmap_rays = plt.cm.hsv
     for i in range(NUM_RAYS):
         ep = clipped_endpoints[i]
-        ax.plot([ep[0], ep[2]], [ep[1], ep[3]],
-                color=cmap_rays(i / NUM_RAYS), linewidth=1, alpha=0.6)
+        ax.plot(
+            [ep[0], ep[2]],
+            [ep[1], ep[3]],
+            color=cmap_rays(i / NUM_RAYS),
+            linewidth=1,
+            alpha=0.6,
+        )
     ax.plot(c_col, c_row, "r+", markersize=12, markeredgewidth=2)
     ax.set_title("ROI + half-rays")
     ax.set_xlabel("x (col)")
@@ -315,8 +343,9 @@ for ci in show_indices:
     ax = axes[1]
     step = (angles_deg[1] - angles_deg[0]) if NUM_RAYS > 1 else 360.0 / NUM_RAYS
     img_extent = [0, max_dist, angles_deg[-1] + step, angles_deg[0]]
-    ax.imshow(profiles, aspect="auto", cmap="gray",
-              extent=img_extent, interpolation="nearest")
+    ax.imshow(
+        profiles, aspect="auto", cmap="gray", extent=img_extent, interpolation="nearest"
+    )
     # Canonical boundary lines at 1.5m, 2.5m, 3.5m
     for k, ls in [(1.5, "--"), (2.5, "--"), (3.5, "-")]:
         ax.axvline(+k * m_est, color=C_GT, linestyle=ls, linewidth=1, alpha=0.5)
@@ -334,9 +363,7 @@ from scipy.optimize import minimize_scalar
 from scipy.special import erfc
 
 
-def finder_soft_template(
-    t: np.ndarray, m: float, sigma: float = 1.0
-) -> np.ndarray:
+def finder_soft_template(t: np.ndarray, m: float, sigma: float = 1.0) -> np.ndarray:
     """Find pattern intensity template along a radial ray.
 
     The ideal finder pattern cross-section from centre outward (in module
@@ -394,8 +421,10 @@ def normalize_roi_intensities(
     """
     H, W = roi.shape
     ys, xs = np.mgrid[0:H, 0:W]
-    dist = np.sqrt((xs.astype(np.float64) - center_xy[0]) ** 2
-                   + (ys.astype(np.float64) - center_xy[1]) ** 2)
+    dist = np.sqrt(
+        (xs.astype(np.float64) - center_xy[0]) ** 2
+        + (ys.astype(np.float64) - center_xy[1]) ** 2
+    )
     sigma = sigma_factor * 3.5 * m_est
     weights = np.exp(-0.5 * (dist / sigma) ** 2)
 
@@ -529,8 +558,9 @@ def fit_all_rays(
     success = np.full(n_rays, False)
 
     for i in range(n_rays):
-        res = fit_m_half_ray(t_pos, profiles[i], m_est,
-                             mask_boundary, num_grid, grid_width, sigma)
+        res = fit_m_half_ray(
+            t_pos, profiles[i], m_est, mask_boundary, num_grid, grid_width, sigma
+        )
         m[i] = res["m_fitted"]
         mse_arr[i] = res["mse"]
         success[i] = res["success"]
@@ -566,7 +596,9 @@ for ci in show_indices:
 
     # ── Sample rays ──
     profiles, ray_endpoints, angles_deg = sample_ray_profiles(
-        roi, c_col, c_row,
+        roi,
+        c_col,
+        c_row,
         num_rays=NUM_RAYS,
         num_samples=NUM_SAMPLES,
         ray_length=RAY_LENGTH,
@@ -585,20 +617,30 @@ for ci in show_indices:
     n_ok = int(np.sum(ok))
     n_total = NUM_RAYS
     m_median = float(np.median(m[ok])) if n_ok > 0 else m_est
-    print(f"\nCluster {ci}: m_est={m_est:.2f}px, m_fitted median={m_median:.2f}px  "
-          f"({n_ok}/{n_total})")
+    print(
+        f"\nCluster {ci}: m_est={m_est:.2f}px, m_fitted median={m_median:.2f}px  "
+        f"({n_ok}/{n_total})"
+    )
 
     # ── Figure: heatmap with fitted m overlays ──
     fig, ax_heatmap = plt.subplots(figsize=(11, 7))
-    fig.suptitle(f"Cluster {ci} — m_est={m_est:.2f} → m_fit median={m_median:.2f}  "
-                 f"(grey dashed = m_est)",
-                 fontsize=12, fontweight="bold")
+    fig.suptitle(
+        f"Cluster {ci} — m_est={m_est:.2f} → m_fit median={m_median:.2f}  "
+        f"(grey dashed = m_est)",
+        fontsize=12,
+        fontweight="bold",
+    )
 
     step = (angles_deg[1] - angles_deg[0]) if NUM_RAYS > 1 else 360.0 / NUM_RAYS
     img_extent = [0, max_dist, angles_deg[-1] + step, angles_deg[0]]
 
-    im = ax_heatmap.imshow(profiles_norm, aspect="auto", cmap="gray",
-                           extent=img_extent, interpolation="nearest")
+    im = ax_heatmap.imshow(
+        profiles_norm,
+        aspect="auto",
+        cmap="gray",
+        extent=img_extent,
+        interpolation="nearest",
+    )
     ax_heatmap.set_xlabel("Distance from centre (px)")
     ax_heatmap.set_ylabel("Angle (deg)")
 
@@ -610,15 +652,36 @@ for ci in show_indices:
     def _wrap(a: np.ndarray) -> np.ndarray:
         return np.append(a, a[0])
 
-    ax_heatmap.plot(1.5 * _wrap(m), angles_plot,
-                    "o-", color=C_E2, markersize=3, linewidth=1.0, alpha=0.6,
-                    label="1.5m")
-    ax_heatmap.plot(2.5 * _wrap(m), angles_plot,
-                    "o-", color=C_E1, markersize=3, linewidth=1.0, alpha=0.6,
-                    label="2.5m")
-    ax_heatmap.plot(3.5 * _wrap(m), angles_plot,
-                    "o-", color=C_GOOD, markersize=3, linewidth=1.5, alpha=0.8,
-                    label="3.5m")
+    ax_heatmap.plot(
+        1.5 * _wrap(m),
+        angles_plot,
+        "o-",
+        color=C_E2,
+        markersize=3,
+        linewidth=1.0,
+        alpha=0.6,
+        label="1.5m",
+    )
+    ax_heatmap.plot(
+        2.5 * _wrap(m),
+        angles_plot,
+        "o-",
+        color=C_E1,
+        markersize=3,
+        linewidth=1.0,
+        alpha=0.6,
+        label="2.5m",
+    )
+    ax_heatmap.plot(
+        3.5 * _wrap(m),
+        angles_plot,
+        "o-",
+        color=C_GOOD,
+        markersize=3,
+        linewidth=1.5,
+        alpha=0.8,
+        label="3.5m",
+    )
     ax_heatmap.set_ylim(img_extent[3], img_extent[2])  # [top, bottom]
     ax_heatmap.legend(fontsize=7)
 
@@ -629,7 +692,7 @@ for ci in show_indices:
 
 # %% [7] Estimate new ROI from 3.5m boundary points
 show_indices = CLUSTER_INDICES or list(range(len(clusters)))
-PITCH_CONSTANT=3.5
+PITCH_CONSTANT = 3.5
 for ci in show_indices:
     if ci >= len(clusters):
         break
@@ -651,7 +714,9 @@ for ci in show_indices:
 
     roi_norm, dark_val, bright_val = normalize_roi_intensities(roi, center_xy, m_est)
     profiles, ray_endpoints, angles_deg = sample_ray_profiles(
-        roi, c_col, c_row,
+        roi,
+        c_col,
+        c_row,
         num_rays=NUM_RAYS,
         num_samples=NUM_SAMPLES,
         ray_length=RAY_LENGTH,
@@ -685,8 +750,10 @@ for ci in show_indices:
     new_width = x_max - x_min
     new_height = y_max - y_min
 
-    print(f"\nCluster {ci}: original ROI {W_roi}×{H_roi}, "
-          f"new bbox {new_width:.0f}×{new_height:.0f}px")
+    print(
+        f"\nCluster {ci}: original ROI {W_roi}×{H_roi}, "
+        f"new bbox {new_width:.0f}×{new_height:.0f}px"
+    )
 
     # ── Plot ──
     fig, ax = plt.subplots(figsize=(9, 9))
@@ -694,16 +761,26 @@ for ci in show_indices:
     ax.plot(center_xy[0], center_xy[1], "r+", markersize=12, markeredgewidth=2)
 
     # Boundary points — one per half-ray
-    ax.scatter(boundary_pts[:, 0], boundary_pts[:, 1],
-               c=angles_deg[:len(boundary_pts)], cmap="hsv", s=20, 
-               edgecolors="white", linewidths=0.3, zorder=3)
+    ax.scatter(
+        boundary_pts[:, 0],
+        boundary_pts[:, 1],
+        c=angles_deg[: len(boundary_pts)],
+        cmap="hsv",
+        s=20,
+        edgecolors="white",
+        linewidths=0.3,
+        zorder=3,
+    )
 
     # New bounding box
-    rect = plt.Rectangle((x_min, y_min), new_width, new_height,
-                          fill=False, edgecolor=C_GOOD, linewidth=2)
+    rect = plt.Rectangle(
+        (x_min, y_min), new_width, new_height, fill=False, edgecolor=C_GOOD, linewidth=2
+    )
     ax.add_patch(rect)
-    ax.set_title(f"Cluster {ci}: 3.5m boundary points + estimated ROI  "
-                 f"({new_width:.0f}×{new_height:.0f}px)")
+    ax.set_title(
+        f"Cluster {ci}: 3.5m boundary points + estimated ROI  "
+        f"({new_width:.0f}×{new_height:.0f}px)"
+    )
     ax.set_xlabel("x (col)")
     ax.set_ylabel("y (row)")
 
@@ -751,7 +828,11 @@ for ci in show_indices:
 
     roi_norm, dark_val, bright_val = normalize_roi_intensities(roi, center_xy, m_est)
     profiles, ray_endpoints, angles_deg = sample_ray_profiles(
-        roi, c_col, c_row, num_rays=NUM_RAYS, num_samples=NUM_SAMPLES,
+        roi,
+        c_col,
+        c_row,
+        num_rays=NUM_RAYS,
+        num_samples=NUM_SAMPLES,
         ray_length=RAY_LENGTH,
     )
     span = bright_val - dark_val
@@ -764,8 +845,7 @@ for ci in show_indices:
     m, _, _ = fit_all_rays(profiles_norm, m_est, max_dist)
     theta_rad = np.linspace(0, 2 * np.pi, NUM_RAYS, endpoint=False)
 
-    bp = compute_boundary_points(center_xy, m, theta_rad,
-                                 PITCH_CONSTANT)
+    bp = compute_boundary_points(center_xy, m, theta_rad, PITCH_CONSTANT)
     valid = np.all(np.isfinite(bp), axis=1)
     valid_indices = np.flatnonzero(valid)
     points = bp[valid]
@@ -774,32 +854,43 @@ for ci in show_indices:
         print(f"Cluster {ci}: only {M} valid boundary points, skipping")
         continue
 
-    D, pairs = build_pair_distance_matrix(points, valid_indices, NUM_RAYS,
-                                          max_gap=MAX_GAP)
+    D, pairs = build_pair_distance_matrix(
+        points, valid_indices, NUM_RAYS, max_gap=MAX_GAP
+    )
 
     edge_data[ci] = {
-        "roi": roi, "center_xy": center_xy,
-        "bp": bp, "points": points, "valid_indices": valid_indices,
-        "D": D, "pairs": pairs,
-        "H_roi": H_roi, "W_roi": W_roi,
+        "roi": roi,
+        "center_xy": center_xy,
+        "bp": bp,
+        "points": points,
+        "valid_indices": valid_indices,
+        "D": D,
+        "pairs": pairs,
+        "H_roi": H_roi,
+        "W_roi": W_roi,
         "profiles_norm": profiles_norm,
         "theta_rad": theta_rad,
         "max_dist": max_dist,
-        "r0": r0, "c0": c0,
+        "r0": r0,
+        "c0": c0,
     }
 
     n_comparable = int((np.sum(D < 1.0) - M) // 2)  # off-diagonal, symmetric
-    print(f"Cluster {ci}: {M}/{NUM_RAYS} valid boundary points, "
-          f"{n_comparable} comparable pair-pairs")
+    print(
+        f"Cluster {ci}: {M}/{NUM_RAYS} valid boundary points, "
+        f"{n_comparable} comparable pair-pairs"
+    )
 
     # ── Plot 0: distance-matrix heatmap + initial pairs on ROI ──
     fig, axes = plt.subplots(1, 2, figsize=(15, 7))
-    fig.suptitle(f"Cluster {ci} — Phase 0: pairwise σ₂/σ₁ distances",
-                 fontsize=13, fontweight="bold")
+    fig.suptitle(
+        f"Cluster {ci} — Phase 0: pairwise σ₂/σ₁ distances",
+        fontsize=13,
+        fontweight="bold",
+    )
 
     ax = axes[0]
-    im = ax.imshow(D, cmap="viridis", vmin=0.0, vmax=1.0,
-                   interpolation="nearest")
+    im = ax.imshow(D, cmap="viridis", vmin=0.0, vmax=1.0, interpolation="nearest")
     ax.set_xlabel("Initial pair index")
     ax.set_ylabel("Initial pair index")
     ax.set_title(f"σ₂/σ₁ distance matrix  (1.0 = gap > {MAX_GAP})")
@@ -808,13 +899,19 @@ for ci in show_indices:
     ax = axes[1]
     ax.imshow(roi, cmap="gray", extent=[0, W_roi, H_roi, 0])
     ax.plot(center_xy[0], center_xy[1], "r+", markersize=12, markeredgewidth=2)
-    ax.scatter(points[:, 0], points[:, 1],
-               c=np.arange(M), cmap="hsv", s=30, edgecolors="white",
-               linewidths=0.4, zorder=3)
+    ax.scatter(
+        points[:, 0],
+        points[:, 1],
+        c=np.arange(M),
+        cmap="hsv",
+        s=30,
+        edgecolors="white",
+        linewidths=0.4,
+        zorder=3,
+    )
     for j in range(M):
         seg = points[pairs[j]]
-        ax.plot(seg[:, 0], seg[:, 1], "-", color="white", linewidth=0.8,
-                alpha=0.6)
+        ax.plot(seg[:, 0], seg[:, 1], "-", color="white", linewidth=0.8, alpha=0.6)
     ax.set_title(f"{M} boundary points + {M} initial pairs")
     ax.set_xlabel("x (col)")
     ax.set_ylabel("y (row)")
@@ -835,8 +932,10 @@ for ci, data in edge_data.items():
     labels = cluster_pairs(D, distance_threshold=DISTANCE_THRESHOLD)
     data["labels"] = labels
     n_clusters_found = len(set(labels.tolist()))
-    print(f"Cluster {ci}: sklearn found {n_clusters_found} clusters "
-          f"(threshold={DISTANCE_THRESHOLD})")
+    print(
+        f"Cluster {ci}: sklearn found {n_clusters_found} clusters "
+        f"(threshold={DISTANCE_THRESHOLD})"
+    )
 
     # ── Plot 1: points coloured by their leading pair's label ──
     fig, ax = plt.subplots(figsize=(9, 9))
@@ -846,8 +945,15 @@ for ci, data in edge_data.items():
     cmap = plt.cm.tab20
     for j in range(M):
         color = cmap(labels[j] % 20)
-        ax.plot(points[j, 0], points[j, 1], "o", color=color, markersize=7,
-                markeredgewidth=0.5, markeredgecolor="white")
+        ax.plot(
+            points[j, 0],
+            points[j, 1],
+            "o",
+            color=color,
+            markersize=7,
+            markeredgewidth=0.5,
+            markeredgecolor="white",
+        )
 
     # Overlay TLS lines for the 4 largest clusters (preview of Phase 2)
     top4_preview = extract_top_clusters(labels, pairs, points, k=4)
@@ -858,11 +964,13 @@ for ci, data in edge_data.items():
         ext = (hi - lo) * 0.2
         t_vals = np.array([lo - ext, hi + ext])
         line_pts = ec.rho * ec.normal + t_vals[:, None] * ec.direction
-        ax.plot(line_pts[:, 0], line_pts[:, 1], "-", color="white",
-                linewidth=1.5, alpha=0.7)
+        ax.plot(
+            line_pts[:, 0], line_pts[:, 1], "-", color="white", linewidth=1.5, alpha=0.7
+        )
 
-    ax.set_title(f"Phase 1 — sklearn labels  (cluster {ci}, "
-                 f"{n_clusters_found} clusters)")
+    ax.set_title(
+        f"Phase 1 — sklearn labels  (cluster {ci}, {n_clusters_found} clusters)"
+    )
     ax.set_xlabel("x (col)")
     ax.set_ylabel("y (row)")
     if TIGHT_LAYOUT:
@@ -890,10 +998,12 @@ for ci, data in edge_data.items():
 
     print(f"\nCluster {ci}: top-4 edge clusters")
     for ei, ec in enumerate(top4):
-        print(f"  Edge {ei}: {len(ec.pair_indices)} pairs, "
-              f"{len(ec.support)} support pts, "
-              f"σ₂/σ₁={ec.sigma_ratio:.4f}, "
-              f"n=({ec.normal[0]:+.3f},{ec.normal[1]:+.3f}), ρ={ec.rho:.1f}")
+        print(
+            f"  Edge {ei}: {len(ec.pair_indices)} pairs, "
+            f"{len(ec.support)} support pts, "
+            f"σ₂/σ₁={ec.sigma_ratio:.4f}, "
+            f"n=({ec.normal[0]:+.3f},{ec.normal[1]:+.3f}), ρ={ec.rho:.1f}"
+        )
 
     # ── Plot 2: tie-broken point-to-edge assignment + fitted lines ──
     fig, ax = plt.subplots(figsize=(9, 9))
@@ -903,8 +1013,15 @@ for ci, data in edge_data.items():
     for j in range(M):
         a = assignment[j]
         color = seg_colors[a] if a >= 0 else "gray"
-        ax.plot(points[j, 0], points[j, 1], "o", color=color, markersize=7,
-                markeredgewidth=0.5, markeredgecolor="white")
+        ax.plot(
+            points[j, 0],
+            points[j, 1],
+            "o",
+            color=color,
+            markersize=7,
+            markeredgewidth=0.5,
+            markeredgecolor="white",
+        )
 
     for ei, ec in enumerate(top4):
         assigned_pts = points[assignment == ei]
@@ -915,8 +1032,15 @@ for ci, data in edge_data.items():
         ext = (hi - lo) * 0.2
         t_vals = np.array([lo - ext, hi + ext])
         line_pts = ec.rho * ec.normal + t_vals[:, None] * ec.direction
-        ax.plot(line_pts[:, 0], line_pts[:, 1], "-", color=seg_colors[ei],
-                linewidth=2.5, alpha=0.9, label=f"Edge {ei}")
+        ax.plot(
+            line_pts[:, 0],
+            line_pts[:, 1],
+            "-",
+            color=seg_colors[ei],
+            linewidth=2.5,
+            alpha=0.9,
+            label=f"Edge {ei}",
+        )
 
     ax.set_title(f"Phase 2 — tie-broken assignment  (cluster {ci})")
     ax.legend(fontsize=8)
@@ -974,29 +1098,47 @@ for ci, data in edge_data.items():
 
     # ── Plot: actual (left) vs theoretical (right) ──
     fig, (ax_l, ax_r) = plt.subplots(1, 2, figsize=(16, 7))
-    fig.suptitle(f"Cluster {ci} — actual vs theoretical profiles",
-                 fontsize=13, fontweight="bold")
+    fig.suptitle(
+        f"Cluster {ci} — actual vs theoretical profiles", fontsize=13, fontweight="bold"
+    )
 
-    step = (np.rad2deg(theta_rad[1] - theta_rad[0]) if n_rays > 1
-            else 360.0 / n_rays)
-    img_extent = [0, max_dist,
-                  np.rad2deg(theta_rad[-1]) + step, np.rad2deg(theta_rad[0])]
+    step = np.rad2deg(theta_rad[1] - theta_rad[0]) if n_rays > 1 else 360.0 / n_rays
+    img_extent = [
+        0,
+        max_dist,
+        np.rad2deg(theta_rad[-1]) + step,
+        np.rad2deg(theta_rad[0]),
+    ]
 
-    ax_l.imshow(profiles_norm, aspect="auto", cmap="gray",
-                extent=img_extent, interpolation="nearest")
+    ax_l.imshow(
+        profiles_norm,
+        aspect="auto",
+        cmap="gray",
+        extent=img_extent,
+        interpolation="nearest",
+    )
     ax_l.set_title("Actual profiles")
     ax_l.set_xlabel("Distance from centre (px)")
     ax_l.set_ylabel("Angle (deg)")
 
-    ax_r.imshow(theoretical, aspect="auto", cmap="gray",
-                vmin=0.0, vmax=1.0, extent=img_extent, interpolation="nearest")
+    ax_r.imshow(
+        theoretical,
+        aspect="auto",
+        cmap="gray",
+        vmin=0.0,
+        vmax=1.0,
+        extent=img_extent,
+        interpolation="nearest",
+    )
     ax_r.set_title("Theoretical templates")
     ax_r.set_xlabel("Distance from centre (px)")
     ax_r.set_ylabel("Angle (deg)")
 
     counts = [int(np.sum(assignment == si)) for si in range(len(top4))]
-    print(f"Cluster {ci}: half-ray assignment — " + ", ".join(
-        f"Edge {si}: {c}" for si, c in enumerate(counts)))
+    print(
+        f"Cluster {ci}: half-ray assignment — "
+        + ", ".join(f"Edge {si}: {c}" for si, c in enumerate(counts))
+    )
 
     if TIGHT_LAYOUT:
         plt.tight_layout()
@@ -1004,6 +1146,7 @@ for ci, data in edge_data.items():
 
 
 # %% [12] Step 2 — Jacobian verification
+
 
 def _compute_m_mask(
     x0: np.ndarray,
@@ -1052,17 +1195,23 @@ for ci, data in edge_data.items():
             print(f"  Segment {k}: no assigned half-rays, skipping")
             continue
         ec = top4[k]
-        x0 = np.array([np.arctan2(ec.normal[1], ec.normal[0]),
-                       float(ec.rho)])
-        m_mask = _compute_m_mask(x0, center_xy, half_dirs, mask,
-                                 PITCH_CONSTANT)
+        x0 = np.array([np.arctan2(ec.normal[1], ec.normal[0]), float(ec.rho)])
+        m_mask = _compute_m_mask(x0, center_xy, half_dirs, mask, PITCH_CONSTANT)
         _, _, max_err = check_segment_jacobian(
-            x0, center_xy, profiles_norm, half_dirs, t_samples,
-            mask, m_mask, PITCH_CONSTANT,
+            x0,
+            center_xy,
+            profiles_norm,
+            half_dirs,
+            t_samples,
+            mask,
+            m_mask,
+            PITCH_CONSTANT,
         )
         status = "✓" if max_err <= 1e-3 else "✗"
-        print(f"  Segment {k}: {status} max rel Jacobian error = {max_err:.2e}"
-              f"  ({n_assigned} rays)")
+        print(
+            f"  Segment {k}: {status} max rel Jacobian error = {max_err:.2e}"
+            f"  ({n_assigned} rays)"
+        )
 
 
 # %% [13] Step 3 — LM refinement + combined diagnostic plot
@@ -1102,30 +1251,50 @@ for ci, data in edge_data.items():
             print(f"  Segment {k}: no assigned half-rays, skipping")
             continue
         ec = top4[k]
-        x0 = np.array([np.arctan2(ec.normal[1], ec.normal[0]),
-                       float(ec.rho)])
-        m_mask = _compute_m_mask(x0, center_xy, half_dirs, mask,
-                                 PITCH_CONSTANT)
-        cost0 = np.sum(segment_refinement_residuals(
-            x0, center_xy, profiles_norm, half_dirs, t_samples,
-            mask, m_mask, PITCH_CONSTANT, MASK_BOUNDARY, 1.0,
-        ) ** 2)
+        x0 = np.array([np.arctan2(ec.normal[1], ec.normal[0]), float(ec.rho)])
+        m_mask = _compute_m_mask(x0, center_xy, half_dirs, mask, PITCH_CONSTANT)
+        cost0 = np.sum(
+            segment_refinement_residuals(
+                x0,
+                center_xy,
+                profiles_norm,
+                half_dirs,
+                t_samples,
+                mask,
+                m_mask,
+                PITCH_CONSTANT,
+                MASK_BOUNDARY,
+                1.0,
+            )
+            ** 2
+        )
 
         result = least_squares(
             fun=segment_refinement_residuals,
             x0=x0,
             jac=segment_refinement_jacobian,
             method="lm",
-            args=(center_xy, profiles_norm, half_dirs, t_samples,
-                  mask, m_mask, PITCH_CONSTANT, MASK_BOUNDARY, 1.0),
+            args=(
+                center_xy,
+                profiles_norm,
+                half_dirs,
+                t_samples,
+                mask,
+                m_mask,
+                PITCH_CONSTANT,
+                MASK_BOUNDARY,
+                1.0,
+            ),
         )
         theta_opt, rho_opt = result.x
         n_opt = np.array([np.cos(theta_opt), np.sin(theta_opt)])
         refined_normals.append(n_opt)
         refined_rhos.append(rho_opt)
-        print(f"  Segment {k}: (θ={x0[0]:.4f}→{theta_opt:.4f},"
-              f" ρ={x0[1]:.2f}→{rho_opt:.2f})"
-              f"  cost={cost0:.4f}→{result.cost:.4f}")
+        print(
+            f"  Segment {k}: (θ={x0[0]:.4f}→{theta_opt:.4f},"
+            f" ρ={x0[1]:.2f}→{rho_opt:.2f})"
+            f"  cost={cost0:.4f}→{result.cost:.4f}"
+        )
 
     # ── Diagnostic plot ──
     fig, ax = plt.subplots(figsize=(9, 9))
@@ -1137,8 +1306,15 @@ for ci, data in edge_data.items():
         for j in range(len(points)):
             a = assignment[j]
             c = EDGE_COLORS[a] if 0 <= a < len(EDGE_COLORS) else "gray"
-            ax.plot(points[j, 0], points[j, 1], "o", color=c, markersize=7,
-                    markeredgewidth=0.5, markeredgecolor="white")
+            ax.plot(
+                points[j, 0],
+                points[j, 1],
+                "o",
+                color=c,
+                markersize=7,
+                markeredgewidth=0.5,
+                markeredgecolor="white",
+            )
 
     # Initial lines (dashed)
     for k, ec in enumerate(top4):
@@ -1150,8 +1326,14 @@ for ci, data in edge_data.items():
         ext = (hi - lo) * 0.2
         t_vals = np.array([lo - ext, hi + ext])
         line_pts = ec.rho * ec.normal + t_vals[:, None] * ec.direction
-        ax.plot(line_pts[:, 0], line_pts[:, 1], "--", color=EDGE_COLORS[k],
-                linewidth=1.5, alpha=0.5)
+        ax.plot(
+            line_pts[:, 0],
+            line_pts[:, 1],
+            "--",
+            color=EDGE_COLORS[k],
+            linewidth=1.5,
+            alpha=0.5,
+        )
 
     # Refined lines (solid)
     for k in range(len(top4)):
@@ -1168,8 +1350,15 @@ for ci, data in edge_data.items():
         ext = (hi - lo) * 0.2
         t_vals = np.array([lo - ext, hi + ext])
         line_pts = r_opt * n_opt + t_vals[:, None] * d_opt
-        ax.plot(line_pts[:, 0], line_pts[:, 1], "-", color=EDGE_COLORS[k],
-                linewidth=2.5, alpha=0.9, label=f"Edge {k}")
+        ax.plot(
+            line_pts[:, 0],
+            line_pts[:, 1],
+            "-",
+            color=EDGE_COLORS[k],
+            linewidth=2.5,
+            alpha=0.9,
+            label=f"Edge {k}",
+        )
 
     # Legend entries
     ax.plot([], [], "--", color="gray", label="Initial")
@@ -1189,10 +1378,14 @@ for ci, data in edge_data.items():
 
 # %% [14] Step 4 — Joint projective refinement + diagnostic plot
 from qr_reader.detector.edge_fitting import (
-    refine_finder_edges_joint, _reorder_to_standard,
-    _assign_rays_to_sides, compute_transition_distances,
-    thetarho_to_homogeneous_line, compute_corners,
-    compute_projective_center, compute_kappa,
+    refine_finder_edges_joint,
+    _reorder_to_standard,
+    _assign_rays_to_sides,
+    compute_transition_distances,
+    thetarho_to_homogeneous_line,
+    compute_corners,
+    compute_projective_center,
+    compute_kappa,
     synthesize_template,
 )
 from qr_reader.qr_gen import find_finder_for_center
@@ -1242,10 +1435,15 @@ for ci, data in edge_data.items():
     center_img = center_xy + np.array([c0, r0], dtype=np.float64)
     match = find_finder_for_center(
         center_img,
-        np.array([
-            metadata["corners_qr"]["TL"], metadata["corners_qr"]["TR"],
-            metadata["corners_qr"]["BR"], metadata["corners_qr"]["BL"],
-        ], dtype=np.float64),
+        np.array(
+            [
+                metadata["corners_qr"]["TL"],
+                metadata["corners_qr"]["TR"],
+                metadata["corners_qr"]["BR"],
+                metadata["corners_qr"]["BL"],
+            ],
+            dtype=np.float64,
+        ),
         VERSION,
     )
     if match is not None:
@@ -1268,8 +1466,10 @@ for ci, data in edge_data.items():
     ordered_init = [top4[l_idx], top4[r_idx], top4[t_idx], top4[b_idx]]
     reorder_map = {l_idx: 0, r_idx: 1, t_idx: 2, b_idx: 3}
 
-    theta_i = np.array([float(np.arctan2(s.normal[1], s.normal[0]))
-                        for s in ordered_init], dtype=np.float64)
+    theta_i = np.array(
+        [float(np.arctan2(s.normal[1], s.normal[0])) for s in ordered_init],
+        dtype=np.float64,
+    )
     rho_i = np.array([float(s.rho) for s in ordered_init], dtype=np.float64)
     ell_L_i = thetarho_to_homogeneous_line(float(theta_i[0]), float(rho_i[0]))
     ell_R_i = thetarho_to_homogeneous_line(float(theta_i[1]), float(rho_i[1]))
@@ -1277,25 +1477,30 @@ for ci, data in edge_data.items():
     ell_B_i = thetarho_to_homogeneous_line(float(theta_i[3]), float(rho_i[3]))
     corners_i = compute_corners(ell_L_i, ell_R_i, ell_T_i, ell_B_i)
     c_i = compute_projective_center(*corners_i)
-    kappa_u_i, kappa_v_i = \
-        compute_kappa(ell_L_i, ell_R_i, ell_T_i, ell_B_i, c_i)
+    kappa_u_i, kappa_v_i = compute_kappa(ell_L_i, ell_R_i, ell_T_i, ell_B_i, c_i)
     per_ray_side = _assign_rays_to_sides(
-        center_xy, half_dirs, ell_L_i, ell_R_i, ell_T_i, ell_B_i)
+        center_xy, half_dirs, ell_L_i, ell_R_i, ell_T_i, ell_B_i
+    )
 
     refined, result = refine_finder_edges_joint(
-        top4, center_xy, profiles_norm, half_dirs, s_samples)
+        top4, center_xy, profiles_norm, half_dirs, s_samples
+    )
 
-    print(f"\nCluster {ci}: LM converged={result.success}, "
-          f"cost={result.cost:.4f}, nfev={result.nfev}")
+    print(
+        f"\nCluster {ci}: LM converged={result.success}, "
+        f"cost={result.cost:.4f}, nfev={result.nfev}"
+    )
     side_names = ["L", "R", "T", "B"]
     for k in range(4):
         orig = ordered_init[k]
         new = refined[k]
         th_o = float(np.arctan2(orig.normal[1], orig.normal[0]))
         th_n = float(np.arctan2(new.normal[1], new.normal[0]))
-        print(f"  {side_names[k]}: "
-              f"(\u03b8={th_o:.4f}, \u03c1={orig.rho:.2f}) "
-              f"\u2192 (\u03b8={th_n:.4f}, \u03c1={new.rho:.2f})")
+        print(
+            f"  {side_names[k]}: "
+            f"(\u03b8={th_o:.4f}, \u03c1={orig.rho:.2f}) "
+            f"\u2192 (\u03b8={th_n:.4f}, \u03c1={new.rho:.2f})"
+        )
 
     n_rays = len(half_dirs)
     fig, ax = plt.subplots(figsize=(9, 9))
@@ -1307,8 +1512,16 @@ for ci, data in edge_data.items():
             a = int(assignment[j])
             side = reorder_map.get(a, -1)
             c = EDGE_COLORS[side] if side >= 0 else "gray"
-            ax.plot(points[j, 0], points[j, 1], "o", color=c, markersize=5,
-                    markeredgewidth=0.3, markeredgecolor="white", zorder=4)
+            ax.plot(
+                points[j, 0],
+                points[j, 1],
+                "o",
+                color=c,
+                markersize=5,
+                markeredgewidth=0.3,
+                markeredgecolor="white",
+                zorder=4,
+            )
 
     ray_scale = 1.4
     MARKERS = ["s", "D", "o", "s"]
@@ -1317,40 +1530,78 @@ for ci, data in edge_data.items():
         if si < 0:
             continue
         s_j = compute_transition_distances(
-            center_xy, half_dirs[k],
-            ell_L_i, ell_R_i, ell_T_i, ell_B_i,
-            kappa_u_i, kappa_v_i, side_idx=si)
+            center_xy,
+            half_dirs[k],
+            ell_L_i,
+            ell_R_i,
+            ell_T_i,
+            ell_B_i,
+            kappa_u_i,
+            kappa_v_i,
+            side_idx=si,
+        )
         if not np.all(np.isfinite(s_j)) or len(s_j) < 4:
             continue
         end_dist = float(s_j[-1]) * ray_scale
         ep = center_xy + end_dist * half_dirs[k]
-        ax.plot([center_xy[0], ep[0]], [center_xy[1], ep[1]],
-                color="cyan", linewidth=0.4, alpha=0.5, zorder=2)
+        ax.plot(
+            [center_xy[0], ep[0]],
+            [center_xy[1], ep[1]],
+            color="cyan",
+            linewidth=0.4,
+            alpha=0.5,
+            zorder=2,
+        )
         for jj, sj in enumerate(s_j):
             pt = center_xy + float(sj) * half_dirs[k]
-            ax.plot(pt[0], pt[1], MARKERS[jj], markersize=3.5,
-                    color=EDGE_COLORS[si], markeredgewidth=0.2,
-                    markeredgecolor="white", zorder=5)
+            ax.plot(
+                pt[0],
+                pt[1],
+                MARKERS[jj],
+                markersize=3.5,
+                color=EDGE_COLORS[si],
+                markeredgewidth=0.2,
+                markeredgecolor="white",
+                zorder=5,
+            )
 
     for k, ec in enumerate(ordered_init):
-        clipped = _clip_line_to_roi(ec.normal, ec.rho, ec.direction,
-                                    W_roi, H_roi)
+        clipped = _clip_line_to_roi(ec.normal, ec.rho, ec.direction, W_roi, H_roi)
         if clipped is not None:
-            ax.plot(clipped[:, 0], clipped[:, 1], "--", color=EDGE_COLORS[k],
-                    linewidth=1.5, alpha=0.5)
+            ax.plot(
+                clipped[:, 0],
+                clipped[:, 1],
+                "--",
+                color=EDGE_COLORS[k],
+                linewidth=1.5,
+                alpha=0.5,
+            )
 
     for k, ec in enumerate(refined):
-        clipped = _clip_line_to_roi(ec.normal, ec.rho, ec.direction,
-                                    W_roi, H_roi)
+        clipped = _clip_line_to_roi(ec.normal, ec.rho, ec.direction, W_roi, H_roi)
         if clipped is not None:
-            ax.plot(clipped[:, 0], clipped[:, 1], "-", color=EDGE_COLORS[k],
-                    linewidth=2.5, alpha=0.9, label=side_names[k])
+            ax.plot(
+                clipped[:, 0],
+                clipped[:, 1],
+                "-",
+                color=EDGE_COLORS[k],
+                linewidth=2.5,
+                alpha=0.9,
+                label=side_names[k],
+            )
 
     # Ground-truth quadrilateral
     if gt_quad is not None:
         gt_poly = np.vstack([gt_quad, gt_quad[:1]])
-        ax.plot(gt_poly[:, 0], gt_poly[:, 1], "-", color="#ffdd00",
-                linewidth=2.0, label="GT", zorder=3)
+        ax.plot(
+            gt_poly[:, 0],
+            gt_poly[:, 1],
+            "-",
+            color="#ffdd00",
+            linewidth=2.0,
+            label="GT",
+            zorder=3,
+        )
 
     ax.plot([], [], "--", color="gray", label="Initial")
     ax.plot([], [], "-", color="black", linewidth=2.5, label="Refined (joint)")
@@ -1387,8 +1638,9 @@ for ci, data in edge_data.items():
     n_samples = pn.shape[1]
     ss = np.linspace(0, md, n_samples)
 
-    theta0 = np.array([float(np.arctan2(s.normal[1], s.normal[0]))
-                       for s in ordered], dtype=np.float64)
+    theta0 = np.array(
+        [float(np.arctan2(s.normal[1], s.normal[0])) for s in ordered], dtype=np.float64
+    )
     rho0 = np.array([float(s.rho) for s in ordered], dtype=np.float64)
     ell_L = thetarho_to_homogeneous_line(float(theta0[0]), float(rho0[0]))
     ell_R = thetarho_to_homogeneous_line(float(theta0[1]), float(rho0[1]))
@@ -1422,8 +1674,11 @@ for ci, data in edge_data.items():
     n_rows = (n_picks + n_cols - 1) // n_cols
 
     fig = plt.figure(figsize=(14, 2.5 * n_rows))
-    fig.suptitle(f"Cluster {ci} — ray profiles vs joint-refinement template",
-                 fontsize=12, fontweight="bold")
+    fig.suptitle(
+        f"Cluster {ci} — ray profiles vs joint-refinement template",
+        fontsize=12,
+        fontweight="bold",
+    )
     gs = GridSpec(n_rows, n_cols, figure=fig)
 
     for idx, (k_ray, label) in enumerate(ray_picks):
@@ -1432,23 +1687,21 @@ for ci, data in edge_data.items():
         sname = side_names[si] if si >= 0 else "?"
 
         s_j = compute_transition_distances(
-            cxy, hd[k_ray], ell_L, ell_R, ell_T, ell_B, ku, kv,
-            side_idx=si)
+            cxy, hd[k_ray], ell_L, ell_R, ell_T, ell_B, ku, kv, side_idx=si
+        )
         if not np.all(np.isfinite(s_j)) or len(s_j) < 4:
             ax.set_title(f"Ray {k_ray} ({label}) — no transitions")
             continue
 
         T_joint = synthesize_template(ss, s_j, 1.0)
         ax.plot(ss, pn[k_ray], "k-", linewidth=0.8, alpha=0.7, label="profile")
-        ax.plot(ss, T_joint, "r-", linewidth=1.5, alpha=0.8,
-                label="joint template")
+        ax.plot(ss, T_joint, "r-", linewidth=1.5, alpha=0.8, label="joint template")
         for sj in s_j:
             ax.axvline(sj, color="red", linestyle=":", linewidth=0.8, alpha=0.6)
 
         angle = np.rad2deg(thr[k_ray])
         w = abs(float(hd[k_ray] @ side_normals[si])) if si >= 0 else 0
-        ax.set_title(f"Ray {k_ray} ({angle:.0f}\u00b0, {sname}, {label}, "
-                     f"w={w:.2f})")
+        ax.set_title(f"Ray {k_ray} ({angle:.0f}\u00b0, {sname}, {label}, w={w:.2f})")
         ax.set_xlabel("s (px)")
         ax.set_ylabel("intensity")
         ax.legend(fontsize=7, loc="upper right")
@@ -1481,8 +1734,9 @@ for ci, data in edge_data.items():
     ss = np.linspace(0, md, n_samples)
     n_rays = len(hd)
 
-    theta0 = np.array([float(np.arctan2(s.normal[1], s.normal[0]))
-                       for s in ordered], dtype=np.float64)
+    theta0 = np.array(
+        [float(np.arctan2(s.normal[1], s.normal[0])) for s in ordered], dtype=np.float64
+    )
     rho0 = np.array([float(s.rho) for s in ordered], dtype=np.float64)
     ell_L = thetarho_to_homogeneous_line(float(theta0[0]), float(rho0[0]))
     ell_R = thetarho_to_homogeneous_line(float(theta0[1]), float(rho0[1]))
@@ -1501,8 +1755,8 @@ for ci, data in edge_data.items():
         if si < 0:
             continue
         s_j = compute_transition_distances(
-            cxy, hd[k], ell_L, ell_R, ell_T, ell_B, ku, kv,
-            side_idx=si)
+            cxy, hd[k], ell_L, ell_R, ell_T, ell_B, ku, kv, side_idx=si
+        )
         if not np.all(np.isfinite(s_j)) or len(s_j) < 4:
             continue
         s_junctions[k] = s_j
@@ -1510,16 +1764,18 @@ for ci, data in edge_data.items():
 
     fig, (ax_l, ax_r) = plt.subplots(1, 2, figsize=(16, 7))
     side_names = ["L", "R", "T", "B"]
-    fig.suptitle(f"Cluster {ci} — profiles vs joint-refinement template",
-                 fontsize=12, fontweight="bold")
+    fig.suptitle(
+        f"Cluster {ci} — profiles vs joint-refinement template",
+        fontsize=12,
+        fontweight="bold",
+    )
 
-    step = (np.rad2deg(thr[1] - thr[0]) if n_rays > 1
-            else 360.0 / n_rays)
-    img_extent = [0, md,
-                  np.rad2deg(thr[-1]) + step, np.rad2deg(thr[0])]
+    step = np.rad2deg(thr[1] - thr[0]) if n_rays > 1 else 360.0 / n_rays
+    img_extent = [0, md, np.rad2deg(thr[-1]) + step, np.rad2deg(thr[0])]
 
-    ax_l.imshow(pn, aspect="auto", cmap="gray",
-                extent=img_extent, interpolation="nearest")
+    ax_l.imshow(
+        pn, aspect="auto", cmap="gray", extent=img_extent, interpolation="nearest"
+    )
     ax_l.set_title("Actual profiles")
     ax_l.set_xlabel("Distance from centre (px)")
     ax_l.set_ylabel("Angle (deg)")
@@ -1531,11 +1787,26 @@ for ci, data in edge_data.items():
             continue
         ang = np.rad2deg(thr[mask])
         mid = (ang.min() + ang.max()) / 2
-        ax_l.plot(2, mid, "s", color=EDGE_COLORS[si], markersize=6,
-                  markeredgecolor="white", markeredgewidth=0.5, clip_on=False)
+        ax_l.plot(
+            2,
+            mid,
+            "s",
+            color=EDGE_COLORS[si],
+            markersize=6,
+            markeredgecolor="white",
+            markeredgewidth=0.5,
+            clip_on=False,
+        )
 
-    ax_r.imshow(templates, aspect="auto", cmap="gray",
-                vmin=0.0, vmax=1.0, extent=img_extent, interpolation="nearest")
+    ax_r.imshow(
+        templates,
+        aspect="auto",
+        cmap="gray",
+        vmin=0.0,
+        vmax=1.0,
+        extent=img_extent,
+        interpolation="nearest",
+    )
     for k in range(n_rays):
         si = int(per_ray[k])
         if si < 0 or not np.all(np.isfinite(s_junctions[k])):
@@ -1544,12 +1815,21 @@ for ci, data in edge_data.items():
         for jj in range(4):
             sj = s_junctions[k, jj]
             if np.isfinite(sj):
-                ax_r.plot(sj, angle, MARKERS[jj], color=EDGE_COLORS[si],
-                          markersize=3, markeredgecolor="white",
-                          markeredgewidth=0.2)
+                ax_r.plot(
+                    sj,
+                    angle,
+                    MARKERS[jj],
+                    color=EDGE_COLORS[si],
+                    markersize=3,
+                    markeredgecolor="white",
+                    markeredgewidth=0.2,
+                )
 
     ax_r.set_title("Joint-refinement templates")
     ax_r.set_xlabel("s (px)")
+    ax_r.set_ylabel("Angle (deg)")
+    for si, sname in enumerate(side_names):
+        ax_r.plot([], [], "s", color=EDGE_COLORS[si], markersize=6, label=sname)
     ax_r.set_ylabel("Angle (deg)")
     for si, sname in enumerate(side_names):
         ax_r.plot([], [], "s", color=EDGE_COLORS[si], markersize=6,
