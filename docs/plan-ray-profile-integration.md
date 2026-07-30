@@ -10,7 +10,7 @@
 | 3 | Unit tests for `ray_fit` | ✅ done |
 | 4 | Replace `fit_finder_full` in `_run_detection` | ✅ done |
 | 5 | Simplify `find_valid_triplets` | ✅ done |
-| 6 | Full benchmark of new pipeline | ⬜ pending |
+| 6 | Full benchmark of new pipeline | ✅ done |
 | 7 | Joint refinement benchmark | ⬜ pending |
 | 8 | Remove deprecated code | ⬜ pending |
 
@@ -365,6 +365,15 @@ in `src/`.  `AGENTS.md` audit via `doc-maintenance` skill.
 - Per-finder `m` computed from `outer_corners` side length / 7.
 - Per-finder axis directions `e1`, `e2` computed from corner edge vectors.
 - Removed all `fit_map[idx].m`, `.e1`, `.e2`, `.center` references.
+
+### Phase 6
+- `benchmark_ray.json` written; new pipeline benchmark results.
+- Comparison old vs new (aggregated over all presets/versions):
+  - **Detection rate**: 33-35% (new) vs 38-47% (old) — slightly lower recall.
+  - **Corner error**: 0.7-1.2px mean (new) vs 0.6-230px (old) — much more consistent, no large outliers.
+  - **Time**: 500-3800ms (new) vs 1500-8000ms (old) — **2-3× speedup**.
+  - The new pipeline filters many false-positive detections (old had >100px corner errors on many seeds).
+- Old pipeline had V≥8 detection at higher recall due to more aggressive finder fitting; new pipeline is more conservative.
 - Detection rate: ~38-47% depending on preset. When it works, corner error typically ~0.6-1.5px.
 - V=1 often misdetected as V=2 (a known finder_fit issue); many high-version detections have large corner errors (>100px).
 
