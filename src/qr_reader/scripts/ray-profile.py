@@ -1187,9 +1187,39 @@ for ci, data in edge_data.items():
 
 
 # %% [14] Step 4 — Joint projective refinement + diagnostic plot
-from qr_reader.detector.edge_fitting import refine_finder_edges_joint
+from qr_reader.detector.edge_fitting import (
+    refine_finder_edges_joint, _reorder_to_standard,
+    _assign_rays_to_sides, compute_transition_distances,
+    thetarho_to_homogeneous_line, compute_corners,
+    compute_projective_center, compute_kappa,
+    synthesize_template,
+)
 
 EDGE_COLORS = ["#e41a1c", "#377eb8", "#4daf4a", "#984ea3"]
+
+
+def _clip_line_to_roi(normal, rho, direction, W, H):
+    """Find the two endpoints where a line intersects the ROI rectangle."""
+    line_pts = []
+    nx, ny = normal[0], normal[1]
+    dx, dy = direction[0], direction[1]
+    rnx, rny = rho * nx, rho * ny
+    if abs(dx) > 1e-12:
+        for x in [0, W - 1]:
+            t = (x - rnx) / dx
+            y = rny + t * dy
+            if -0.5 <= y <= H + 0.5:
+                line_pts.append([float(x), float(y)])
+    if abs(dy) > 1e-12:
+        for y in [0, H - 1]:
+            t = (y - rny) / dy
+            x = rnx + t * dx
+            if -0.5 <= x <= W + 0.5:
+                line_pts.append([float(x), float(y)])
+    if len(line_pts) < 2:
+        return None
+    return np.array(line_pts, dtype=np.float64)
+
 
 for ci, data in edge_data.items():
     if "top4" not in data:
@@ -1208,49 +1238,91 @@ for ci, data in edge_data.items():
     n_samples = profiles_norm.shape[1]
     s_samples = np.linspace(0, max_dist, n_samples)
 
+    try:
+        l_idx, r_idx, t_idx, b_idx = _reorder_to_standard(top4)
+    except ValueError as e:
+        print(f"\nCluster {ci}: _reorder_to_standard failed — {e}")
+        continue
+    ordered_init = [top4[l_idx], top4[r_idx], top4[t_idx], top4[b_idx]]
+    reorder_map = {l_idx: 0, r_idx: 1, t_idx: 2, b_idx: 3}
+
+    theta_i = np.array([float(np.arctan2(s.normal[1], s.normal[0]))
+                        for s in ordered_init], dtype=np.float64)
+    rho_i = np.array([float(s.rho) for s in ordered_init], dtype=np.float64)
+    ell_L_i = thetarho_to_homogeneous_line(float(theta_i[0]), float(rho_i[0]))
+    ell_R_i = thetarho_to_homogeneous_line(float(theta_i[1]), float(rho_i[1]))
+    ell_T_i = thetarho_to_homogeneous_line(float(theta_i[2]), float(rho_i[2]))
+    ell_B_i = thetarho_to_homogeneous_line(float(theta_i[3]), float(rho_i[3]))
+    corners_i = compute_corners(ell_L_i, ell_R_i, ell_T_i, ell_B_i)
+    c_i = compute_projective_center(*corners_i)
+    kappa_u_i, kappa_v_i = \
+        compute_kappa(ell_L_i, ell_R_i, ell_T_i, ell_B_i, c_i)
+    per_ray_side = _assign_rays_to_sides(
+        center_xy, half_dirs, ell_L_i, ell_R_i, ell_T_i, ell_B_i)
+
     refined, result = refine_finder_edges_joint(
-        top4, center_xy, profiles_norm, half_dirs, s_samples,
-    )
+        top4, center_xy, profiles_norm, half_dirs, s_samples)
 
     print(f"\nCluster {ci}: LM converged={result.success}, "
           f"cost={result.cost:.4f}, nfev={result.nfev}")
     side_names = ["L", "R", "T", "B"]
     for k in range(4):
-        orig = top4[k]
+        orig = ordered_init[k]
         new = refined[k]
-        theta_orig = float(np.arctan2(orig.normal[1], orig.normal[0]))
-        theta_new = float(np.arctan2(new.normal[1], new.normal[0]))
+        th_o = float(np.arctan2(orig.normal[1], orig.normal[0]))
+        th_n = float(np.arctan2(new.normal[1], new.normal[0]))
         print(f"  {side_names[k]}: "
-              f"(\u03b8={theta_orig:.4f}, \u03c1={orig.rho:.2f}) "
-              f"\u2192 (\u03b8={theta_new:.4f}, \u03c1={new.rho:.2f})")
+              f"(\u03b8={th_o:.4f}, \u03c1={orig.rho:.2f}) "
+              f"\u2192 (\u03b8={th_n:.4f}, \u03c1={new.rho:.2f})")
 
+    n_rays = len(half_dirs)
     fig, ax = plt.subplots(figsize=(9, 9))
     ax.imshow(roi, cmap="gray", extent=[0, W_roi, H_roi, 0])
     ax.plot(center_xy[0], center_xy[1], "r+", markersize=12, markeredgewidth=2)
 
-    for k, ec in enumerate(top4):
-        assigned_pts = points[assignment == k] if assignment is not None else None
-        if assigned_pts is None or len(assigned_pts) == 0:
+    if points is not None and assignment is not None:
+        for j in range(len(points)):
+            a = int(assignment[j])
+            side = reorder_map.get(a, -1)
+            c = EDGE_COLORS[side] if side >= 0 else "gray"
+            ax.plot(points[j, 0], points[j, 1], "o", color=c, markersize=5,
+                    markeredgewidth=0.3, markeredgecolor="white", zorder=4)
+
+    ray_scale = 1.4
+    MARKERS = ["s", "D", "o", "s"]
+    for k in range(n_rays):
+        si = int(per_ray_side[k])
+        if si < 0:
             continue
-        proj = assigned_pts @ ec.direction
-        lo, hi = float(proj.min()), float(proj.max())
-        ext = (hi - lo) * 0.2
-        t_vals = np.array([lo - ext, hi + ext])
-        line_pts = ec.rho * ec.normal + t_vals[:, None] * ec.direction
-        ax.plot(line_pts[:, 0], line_pts[:, 1], "--", color=EDGE_COLORS[k],
-                linewidth=1.5, alpha=0.5)
+        s_j = compute_transition_distances(
+            center_xy, half_dirs[k],
+            ell_L_i, ell_R_i, ell_T_i, ell_B_i,
+            kappa_u_i, kappa_v_i, side_idx=si)
+        if not np.all(np.isfinite(s_j)) or len(s_j) < 4:
+            continue
+        end_dist = float(s_j[-1]) * ray_scale
+        ep = center_xy + end_dist * half_dirs[k]
+        ax.plot([center_xy[0], ep[0]], [center_xy[1], ep[1]],
+                color="cyan", linewidth=0.4, alpha=0.5, zorder=2)
+        for jj, sj in enumerate(s_j):
+            pt = center_xy + float(sj) * half_dirs[k]
+            ax.plot(pt[0], pt[1], MARKERS[jj], markersize=3.5,
+                    color=EDGE_COLORS[si], markeredgewidth=0.2,
+                    markeredgecolor="white", zorder=5)
+
+    for k, ec in enumerate(ordered_init):
+        clipped = _clip_line_to_roi(ec.normal, ec.rho, ec.direction,
+                                    W_roi, H_roi)
+        if clipped is not None:
+            ax.plot(clipped[:, 0], clipped[:, 1], "--", color=EDGE_COLORS[k],
+                    linewidth=1.5, alpha=0.5)
 
     for k, ec in enumerate(refined):
-        assigned_pts = points[assignment == k] if assignment is not None else None
-        if assigned_pts is None or len(assigned_pts) == 0:
-            continue
-        proj = assigned_pts @ ec.direction
-        lo, hi = float(proj.min()), float(proj.max())
-        ext = (hi - lo) * 0.2
-        t_vals = np.array([lo - ext, hi + ext])
-        line_pts = ec.rho * ec.normal + t_vals[:, None] * ec.direction
-        ax.plot(line_pts[:, 0], line_pts[:, 1], "-", color=EDGE_COLORS[k],
-                linewidth=2.5, alpha=0.9, label=side_names[k])
+        clipped = _clip_line_to_roi(ec.normal, ec.rho, ec.direction,
+                                    W_roi, H_roi)
+        if clipped is not None:
+            ax.plot(clipped[:, 0], clipped[:, 1], "-", color=EDGE_COLORS[k],
+                    linewidth=2.5, alpha=0.9, label=side_names[k])
 
     ax.plot([], [], "--", color="gray", label="Initial")
     ax.plot([], [], "-", color="black", linewidth=2.5, label="Refined (joint)")
@@ -1258,6 +1330,204 @@ for ci, data in edge_data.items():
     ax.legend(fontsize=8, loc="upper right")
     ax.set_xlabel("x (col)")
     ax.set_ylabel("y (row)")
+    if TIGHT_LAYOUT:
+        plt.tight_layout()
+    plt.show()
+
+
+# %% [15] Ray-profile vs template diagnostic
+"""For each cluster, plot actual ray profiles against the joint-refinement
+template for a few representative rays per side (axis-aligned + one diagonal).
+Transition positions are marked with vertical dashed lines."""
+
+from matplotlib.gridspec import GridSpec
+
+for ci, data in edge_data.items():
+    if "top4" not in data:
+        continue
+    top4 = data["top4"]
+    cxy = data["center_xy"]
+    pn = data["profiles_norm"]
+    thr = data["theta_rad"]
+    md = data["max_dist"]
+    try:
+        li, ri, ti, bi = _reorder_to_standard(top4)
+    except ValueError:
+        continue
+    ordered = [top4[li], top4[ri], top4[ti], top4[bi]]
+    hd = np.column_stack([np.cos(thr), np.sin(thr)])
+    n_samples = pn.shape[1]
+    ss = np.linspace(0, md, n_samples)
+
+    theta0 = np.array([float(np.arctan2(s.normal[1], s.normal[0]))
+                       for s in ordered], dtype=np.float64)
+    rho0 = np.array([float(s.rho) for s in ordered], dtype=np.float64)
+    ell_L = thetarho_to_homogeneous_line(float(theta0[0]), float(rho0[0]))
+    ell_R = thetarho_to_homogeneous_line(float(theta0[1]), float(rho0[1]))
+    ell_T = thetarho_to_homogeneous_line(float(theta0[2]), float(rho0[2]))
+    ell_B = thetarho_to_homogeneous_line(float(theta0[3]), float(rho0[3]))
+    corners = compute_corners(ell_L, ell_R, ell_T, ell_B)
+    c = compute_projective_center(*corners)
+    ku, kv = compute_kappa(ell_L, ell_R, ell_T, ell_B, c)
+    per_ray = _assign_rays_to_sides(cxy, hd, ell_L, ell_R, ell_T, ell_B)
+
+    side_names = ["L", "R", "T", "B"]
+    side_normals = [ordered[k].normal for k in range(4)]
+
+    ray_picks = []
+    for si in range(4):
+        n = side_normals[si]
+        side_rays = np.flatnonzero(per_ray == si)
+        if len(side_rays) == 0:
+            continue
+        dots = np.abs(hd[side_rays] @ n)
+        best = side_rays[np.argmax(dots)]
+        ray_picks.append((int(best), f"{side_names[si]} axis"))
+        if len(side_rays) > 1:
+            target = 0.7
+            diag = side_rays[np.argmin(np.abs(dots - target))]
+            if int(diag) != int(best):
+                ray_picks.append((int(diag), f"{side_names[si]} diag"))
+
+    n_picks = len(ray_picks)
+    n_cols = 2
+    n_rows = (n_picks + n_cols - 1) // n_cols
+
+    fig = plt.figure(figsize=(14, 2.5 * n_rows))
+    fig.suptitle(f"Cluster {ci} — ray profiles vs joint-refinement template",
+                 fontsize=12, fontweight="bold")
+    gs = GridSpec(n_rows, n_cols, figure=fig)
+
+    for idx, (k_ray, label) in enumerate(ray_picks):
+        ax = fig.add_subplot(gs[idx // n_cols, idx % n_cols])
+        si = int(per_ray[k_ray])
+        sname = side_names[si] if si >= 0 else "?"
+
+        s_j = compute_transition_distances(
+            cxy, hd[k_ray], ell_L, ell_R, ell_T, ell_B, ku, kv,
+            side_idx=si)
+        if not np.all(np.isfinite(s_j)) or len(s_j) < 4:
+            ax.set_title(f"Ray {k_ray} ({label}) — no transitions")
+            continue
+
+        T_joint = synthesize_template(ss, s_j, 1.0)
+        ax.plot(ss, pn[k_ray], "k-", linewidth=0.8, alpha=0.7, label="profile")
+        ax.plot(ss, T_joint, "r-", linewidth=1.5, alpha=0.8,
+                label="joint template")
+        for sj in s_j:
+            ax.axvline(sj, color="red", linestyle=":", linewidth=0.8, alpha=0.6)
+
+        angle = np.rad2deg(thr[k_ray])
+        w = abs(float(hd[k_ray] @ side_normals[si])) if si >= 0 else 0
+        ax.set_title(f"Ray {k_ray} ({angle:.0f}\u00b0, {sname}, {label}, "
+                     f"w={w:.2f})")
+        ax.set_xlabel("s (px)")
+        ax.set_ylabel("intensity")
+        ax.legend(fontsize=7, loc="upper right")
+        ax.set_xlim(0, md)
+
+    if TIGHT_LAYOUT:
+        plt.tight_layout()
+    plt.show()
+
+
+# %% [16] Combined heatmap — profiles vs joint template
+"""For each cluster, show actual profiles (left) and joint-refinement
+templates (right) side by side, with transition positions overlaid as dots."""
+
+for ci, data in edge_data.items():
+    if "top4" not in data:
+        continue
+    top4 = data["top4"]
+    cxy = data["center_xy"]
+    pn = data["profiles_norm"]
+    thr = data["theta_rad"]
+    md = data["max_dist"]
+    try:
+        li, ri, ti, bi = _reorder_to_standard(top4)
+    except ValueError:
+        continue
+    ordered = [top4[li], top4[ri], top4[ti], top4[bi]]
+    hd = np.column_stack([np.cos(thr), np.sin(thr)])
+    n_samples = pn.shape[1]
+    ss = np.linspace(0, md, n_samples)
+    n_rays = len(hd)
+
+    theta0 = np.array([float(np.arctan2(s.normal[1], s.normal[0]))
+                       for s in ordered], dtype=np.float64)
+    rho0 = np.array([float(s.rho) for s in ordered], dtype=np.float64)
+    ell_L = thetarho_to_homogeneous_line(float(theta0[0]), float(rho0[0]))
+    ell_R = thetarho_to_homogeneous_line(float(theta0[1]), float(rho0[1]))
+    ell_T = thetarho_to_homogeneous_line(float(theta0[2]), float(rho0[2]))
+    ell_B = thetarho_to_homogeneous_line(float(theta0[3]), float(rho0[3]))
+    corners = compute_corners(ell_L, ell_R, ell_T, ell_B)
+    c = compute_projective_center(*corners)
+    ku, kv = compute_kappa(ell_L, ell_R, ell_T, ell_B, c)
+    per_ray = _assign_rays_to_sides(cxy, hd, ell_L, ell_R, ell_T, ell_B)
+
+    # Build joint template for every ray
+    templates = np.full_like(pn, np.nan)
+    s_junctions = np.full((n_rays, 4), np.nan, dtype=np.float64)
+    for k in range(n_rays):
+        si = int(per_ray[k])
+        if si < 0:
+            continue
+        s_j = compute_transition_distances(
+            cxy, hd[k], ell_L, ell_R, ell_T, ell_B, ku, kv,
+            side_idx=si)
+        if not np.all(np.isfinite(s_j)) or len(s_j) < 4:
+            continue
+        s_junctions[k] = s_j
+        templates[k] = synthesize_template(ss, s_j, 1.0)
+
+    fig, (ax_l, ax_r) = plt.subplots(1, 2, figsize=(16, 7))
+    side_names = ["L", "R", "T", "B"]
+    fig.suptitle(f"Cluster {ci} — profiles vs joint-refinement template",
+                 fontsize=12, fontweight="bold")
+
+    step = (np.rad2deg(thr[1] - thr[0]) if n_rays > 1
+            else 360.0 / n_rays)
+    img_extent = [0, md,
+                  np.rad2deg(thr[-1]) + step, np.rad2deg(thr[0])]
+
+    ax_l.imshow(pn, aspect="auto", cmap="gray",
+                extent=img_extent, interpolation="nearest")
+    ax_l.set_title("Actual profiles")
+    ax_l.set_xlabel("Distance from centre (px)")
+    ax_l.set_ylabel("Angle (deg)")
+
+    # Side assignment markers on left margin
+    for si in range(4):
+        mask = per_ray == si
+        if not np.any(mask):
+            continue
+        ang = np.rad2deg(thr[mask])
+        mid = (ang.min() + ang.max()) / 2
+        ax_l.plot(2, mid, "s", color=EDGE_COLORS[si], markersize=6,
+                  markeredgecolor="white", markeredgewidth=0.5, clip_on=False)
+
+    ax_r.imshow(templates, aspect="auto", cmap="gray",
+                vmin=0.0, vmax=1.0, extent=img_extent, interpolation="nearest")
+    for k in range(n_rays):
+        si = int(per_ray[k])
+        if si < 0 or not np.all(np.isfinite(s_junctions[k])):
+            continue
+        angle = np.rad2deg(thr[k])
+        for jj in range(4):
+            sj = s_junctions[k, jj]
+            if np.isfinite(sj):
+                ax_r.plot(sj, angle, MARKERS[jj], color=EDGE_COLORS[si],
+                          markersize=3, markeredgecolor="white",
+                          markeredgewidth=0.2)
+
+    ax_r.set_title("Joint-refinement templates")
+    ax_r.set_xlabel("s (px)")
+    ax_r.set_ylabel("Angle (deg)")
+    for si, sname in enumerate(side_names):
+        ax_r.plot([], [], "s", color=EDGE_COLORS[si], markersize=6,
+                  label=sname)
+    ax_r.legend(fontsize=8, loc="upper right")
+
     if TIGHT_LAYOUT:
         plt.tight_layout()
     plt.show()

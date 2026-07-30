@@ -831,6 +831,8 @@ def synthesize_template(
         Sample distances along the half-ray.
     s_junctions
         The four transition distances ``s₁ < s₂ < s₃ < s₄``.
+        Only the first three are used for the template (the 4th is the
+        mask boundary, not a physical intensity transition).
     sigma
         Edge softness in pixels.
 
@@ -838,16 +840,16 @@ def synthesize_template(
     -------
     template : ndarray
         Values in ``[0, 1]`` with the transition sign pattern
-        ``(+1, -1, +1, -1)``.
+        ``(+1, -1, +1)`` — staying bright beyond ``s₃`` (quiet zone).
     """
     s_samples = np.asarray(s_samples, dtype=np.float64)
     s_junctions = np.asarray(s_junctions, dtype=np.float64).ravel()
-    if len(s_junctions) < 4:
+    if len(s_junctions) < 3:
         return np.full_like(s_samples, np.nan, dtype=np.float64)
 
     template = np.zeros_like(s_samples, dtype=np.float64)
-    signs = np.array([1.0, -1.0, 1.0, -1.0], dtype=np.float64)
-    for j in range(4):
+    signs = np.array([1.0, -1.0, 1.0], dtype=np.float64)
+    for j in range(3):
         template += signs[j] * 0.5 * erfc(-(s_samples - s_junctions[j]) / sigma)
     return template
 
@@ -857,15 +859,24 @@ def precompute_mask(
     s_junctions: np.ndarray,
     sigma: float = 1.0,
 ) -> np.ndarray:
-    """Return a boolean mask that is True inside the quiet zone / pattern.
+    """Return a smooth float mask ∼1 inside the pattern, decaying to 0.
 
-    Samples beyond ``s₄ + 2·σ`` are masked out (returned False).
+    The mask is ``≈ 1`` up to the midpoint of the quiet zone (``α = 8/7``)
+    and decays smoothly to ``≈ 0`` by the quiet-zone boundary
+    (``α = 9/7``, stored as ``s_junctions[3]``).  Uses an erfc transition.
     """
     s_samples = np.asarray(s_samples, dtype=np.float64)
     s_junctions = np.asarray(s_junctions, dtype=np.float64).ravel()
     if len(s_junctions) < 4:
-        return np.ones_like(s_samples, dtype=bool)
-    return s_samples <= s_junctions[-1] + 2.0 * sigma
+        return np.ones_like(s_samples, dtype=np.float64)
+
+    s_7 = s_junctions[2]
+    s_9 = s_junctions[3]
+    s_8 = 0.5 * (s_7 + s_9)
+    s_mid = 0.5 * (s_8 + s_9)
+    width = s_9 - s_8
+    sigma_mask = max(width / 4.0, 1e-6)
+    return 0.5 * erfc((s_samples - s_mid) / sigma_mask)
 
 
 # ── Phase 3 — Joint refinement residual and Jacobian ──────────────────────
@@ -909,7 +920,9 @@ def _template_deriv_wrt_junctions(
     r"""Return ``(4,)`` or ``(N, 4)`` array of :math:`\partial T/\partial s_j`.
 
     Template definition: ``T(s) = Σ Δ_j·½·erfc(-(s - s_j)/σ)`` with
-    ``Δ = [+1, -1, +1, -1]``.  The derivative w.r.t. a single junction is
+    ``Δ = [+1, -1, +1, 0]`` — the 4th junction is the mask boundary and
+    does not contribute to the template.  The derivative w.r.t. a single
+    junction is
 
     .. math::
         \frac{\partial T}{\partial s_j}
@@ -918,7 +931,7 @@ def _template_deriv_wrt_junctions(
     """
     s_sample = np.asarray(s_sample, dtype=np.float64)
     s_junctions = np.asarray(s_junctions, dtype=np.float64).ravel()
-    signs = np.array([1.0, -1.0, 1.0, -1.0], dtype=np.float64)
+    signs = np.array([1.0, -1.0, 1.0, 0.0], dtype=np.float64)
     z = -(s_sample[..., None] - s_junctions[None, :]) / sigma
     derfc_z = -(2.0 / np.sqrt(np.pi)) * np.exp(-z * z)
     result = signs[None, :] * 0.5 * derfc_z / sigma
@@ -1224,8 +1237,8 @@ def _fit_ols_params(
     P_list: list[np.ndarray] = []
     W_list: list[np.ndarray] = []
     for k in range(half_profiles.shape[0]):
-        mask = pre_masks[k]
-        if not np.any(mask):
+        mask_w = pre_masks[k]
+        if not np.any(mask_w > 1e-9):
             continue
         si = int(per_ray_side[k]) if per_ray_side is not None else None
         s_j = compute_transition_distances(
@@ -1236,21 +1249,21 @@ def _fit_ols_params(
         if not np.all(np.isfinite(s_j)) or len(s_j) < 4:
             continue
         T_k = synthesize_template(s_samples, s_j, sigma)
-        T_list.append(T_k[mask])
-        P_list.append(half_profiles[k, mask])
+        T_list.append(T_k)
+        P_list.append(half_profiles[k])
+        w = mask_w.copy()
         if ray_weights is not None:
-            w = float(ray_weights[k])
-            W_list.append(np.full(np.sum(mask), w, dtype=np.float64))
+            w = w * float(ray_weights[k])
+        W_list.append(w)
     if len(T_list) == 0:
         return 1.0, 0.0
     T_all = np.concatenate(T_list)
     P_all = np.concatenate(P_list)
+    W_all = np.concatenate(W_list)
     A = np.column_stack([P_all, np.ones(len(P_all), dtype=np.float64)])
-    if ray_weights is not None and len(W_list) > 0:
-        W_all = np.concatenate(W_list)
-        W_sqrt = np.sqrt(W_all)
-        A = A * W_sqrt[:, None]
-        T_all = T_all * W_sqrt
+    W_sqrt = np.sqrt(W_all)
+    A = A * W_sqrt[:, None]
+    T_all = T_all * W_sqrt
     ab, _, _, _ = np.linalg.lstsq(A, T_all, rcond=None)
     return float(ab[0]), float(ab[1])
 
@@ -1297,7 +1310,7 @@ def joint_refinement_residuals(
     half_profiles = np.asarray(half_profiles, dtype=np.float64)
     half_dirs = np.asarray(half_dirs, dtype=np.float64)
     s_samples = np.asarray(s_samples, dtype=np.float64)
-    pre_masks = np.asarray(pre_masks, dtype=bool)
+    pre_masks = np.asarray(pre_masks, dtype=np.float64)
 
     theta = theta0 + x[:4] * R
     rho = x[4:8]
@@ -1325,8 +1338,8 @@ def joint_refinement_residuals(
 
     residuals = np.zeros(n_total, dtype=np.float64)
     for k in range(N_rays):
-        mask = pre_masks[k]
-        if not np.any(mask):
+        mask_w = pre_masks[k]
+        if not np.any(mask_w > 1e-9):
             continue
         si = int(per_ray_side[k]) if per_ray_side is not None else None
         s_j = compute_transition_distances(
@@ -1337,11 +1350,12 @@ def joint_refinement_residuals(
         if not np.all(np.isfinite(s_j)) or len(s_j) < 4:
             continue
         T_k = synthesize_template(s_samples, s_j, sigma)
-        raw = a_val * half_profiles[k, mask] + b_val - T_k[mask]
+        raw = a_val * half_profiles[k] + b_val - T_k
         if ray_weights is not None:
             raw = raw * float(ray_weights[k])
+        raw = raw * mask_w
         idx_start = k * N_S
-        residuals[idx_start:idx_start + N_S][mask] = raw
+        residuals[idx_start:idx_start + N_S] = raw
 
     return residuals
 
@@ -1385,7 +1399,7 @@ def joint_refinement_jacobian(
     half_profiles = np.asarray(half_profiles, dtype=np.float64)
     half_dirs = np.asarray(half_dirs, dtype=np.float64)
     s_samples = np.asarray(s_samples, dtype=np.float64)
-    pre_masks = np.asarray(pre_masks, dtype=bool)
+    pre_masks = np.asarray(pre_masks, dtype=np.float64)
 
     theta = theta0 + x[:4] * R
     rho = x[4:8]
@@ -1425,8 +1439,8 @@ def joint_refinement_jacobian(
         dlines_dparams.append((dL, dR, dT, dB))
 
     for k in range(N_rays):
-        mask = pre_masks[k]
-        if not np.any(mask):
+        mask_w = pre_masks[k]
+        if not np.any(mask_w > 1e-9):
             continue
         si = int(per_ray_side[k]) if per_ray_side is not None else None
         s_j = compute_transition_distances(
@@ -1447,14 +1461,12 @@ def joint_refinement_jacobian(
             continue
 
         dT_ds = _template_deriv_wrt_junctions(s_samples, s_j, sigma)
-        # dT/dp = dT/ds @ ds/dp  →  shape: (N_S, 4) @ (4, 8) → (N_S, 8)
         dT_dp = dT_ds @ ds_dp
         if ray_weights is not None:
             dT_dp = dT_dp * float(ray_weights[k])
 
         row_start = k * N_S
-        masked_rows = np.flatnonzero(mask)
-        Jac[row_start + masked_rows, :] = -dT_dp[masked_rows, :]
+        Jac[row_start:row_start + N_S, :] = -dT_dp * mask_w[:, None]
 
     return Jac
 
@@ -1500,7 +1512,7 @@ def check_joint_refinement_jacobian(
     half_profiles = np.asarray(half_profiles, dtype=np.float64)
     half_dirs = np.asarray(half_dirs, dtype=np.float64)
     s_samples = np.asarray(s_samples, dtype=np.float64)
-    pre_masks = np.asarray(pre_masks, dtype=bool)
+    pre_masks = np.asarray(pre_masks, dtype=np.float64)
 
     theta = np.asarray(theta0, dtype=np.float64).ravel()
     rho_val = x0[4:8]
@@ -1672,7 +1684,7 @@ def refine_finder_edges_joint(
             w = abs(float(ordered[si].normal @ half_dirs[k]))
             ray_weights[k] = max(w, 0.1)
 
-    pre_masks = np.zeros((N_rays, N_S), dtype=bool)
+    pre_masks = np.zeros((N_rays, N_S), dtype=np.float64)
     for k in range(N_rays):
         si = int(per_ray_side[k]) if per_ray_side[k] >= 0 else None
         s_j = compute_transition_distances(
