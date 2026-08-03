@@ -179,3 +179,24 @@ Small random perturbation applied to each corner of the source quad before
 computing the perspective homography. The primary mechanism for introducing
 perspective distortion.
 _Avoid_: Corner noise, corner perturbation, projective jitter
+
+### Evaluation
+
+**Captured QR Benchmark**:
+ The dataset of 100 real-world photos (1920×1440) at `data/bench/captured`,
+ covering 15 QR symbols across 5 versions and 3 scales, all encoding the same
+ payload `rikvoorhaar.com`. Serves as an end-to-end accuracy test against real
+ camera conditions. Released as the GitHub release asset
+ `captured-qr-benchmark-v1.tar.gz`.
+_Avoid_: Real-world dataset, photo set
+
+**Payload**:
+The exact string a QR code encodes; the ground truth for decode correctness
+in benchmarks. The captured benchmark's payload is `rikvoorhaar.com`.
+_Avoid_: Content, message, expected text
+
+**Funnel**:
+The sequence of per-stage pass rates from raw detection to decode: candidate
+clusters → refined finder patterns → triplets → version estimation →
+decodable → correct payload. Used to localize where the pipeline loses images.
+_Avoid_: Conversion rate, stage analysis, drop-off

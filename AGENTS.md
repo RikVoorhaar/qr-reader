@@ -10,6 +10,11 @@
 > repository root. This includes plans, reports, research notes, and agent
 > session artifacts.
 
+## Blog
+
+A personal blog lives in `blog/` (git submodule). Posts are in `blog/src/posts/` as MDX files.
+Run `npm install && npm run build` inside `blog/` after adding or editing a post.
+
 ## Module Map
 
 Every source file under `src/qr_reader/` and its role.
@@ -25,7 +30,7 @@ Every source file under `src/qr_reader/` and its role.
 
 | File | Purpose | Depends on |
 |------|---------|------------|
-| `detector.py` | High-level API: `detect_corners`, `detect_homography`, `detect_sample`. Orchestrates `_run_detection`. | All detector modules, `qr_gen.binarize_image` |
+| `detector.py` | High-level API: `detect_corners`, `detect_homography`, `detect_sample`. Orchestrates `_run_detection`, which returns a `DetectionResult` (always, even on failure). | All detector modules, `qr_gen.binarize_image` |
 | `alignment.py` | Find candidate alignment patterns via 1:1:3:1:1 ratio scanning (horizontal + vertical cross-validation) | — |
 | `clustering.py` | Merge overlapping alignment pattern candidates into `CandidateCluster` groups | — |
 | `corner.py` | Angular non-maximum suppression to pick the 4 corner points of a region | — |
@@ -60,6 +65,7 @@ Every source file under `src/qr_reader/` and its role.
 |------|---------|
 | `full-pipeline-current.py` | End-to-end pipeline with per-seed backgrounds (composited QR); ray-profile finder fitting |
 | `qr_benchmark.py` | Benchmark detection/decoding across presets, versions, and seeds |
+| `benchmark_captured.py` | Benchmark on the captured dataset (100 photos encoding `rikvoorhaar.com`): 6-stage detection funnel, decode accuracy, wall time |
 | `debug_find_all_associations.py` | Targeted debug script for the `find_all_associations` high-version failure |
 | `ray-profile.py` | Diagnostic script for ray-profile fitting; reference implementation (plotting) |
 
@@ -97,7 +103,7 @@ ray_fit.fit_finder_ray()                   → RayFitResult (corners, score, val
   ▼
 detector._run_detection() : deduplicate → find triplets →
   estimate version → fit global homography (similarity init, optional DLT,
-  LM-refined)                                  → (H, V)
+  LM-refined)                                  → DetectionResult (H, V)
   │
   ▼
 homography.compute_qr_corners() / sample.sample_qr_bits() → decoded text string
@@ -129,6 +135,8 @@ bit matrix (N×N bool)
 - **`CandidateCluster`** (`clustering.py`): `row`, `cols` (6 boundaries), `height`, `num_candidates`.
 - **`Quadruple`** (`landmarks.py`): `points` (4×2), `type` ("outer"/"inner"), `label` — four colinear points for cross-ratio measurement.
 - **`RayFitResult`** (`ray_fit.py`): `corners` (4×2), `score` (float), `valid` (bool). Returned by ``fit_finder_ray``. Corners are in (x, y).
+- **`DetectionResult`** (`detector.py`): `success`, `H` (3×3), `version`, `error` (Exception | None), `n_candidates`, `n_finder_patterns`, `n_triplets`, `timings`. Always returned by ``_run_detection`` — even on failure, so callers can inspect partial stage counts and why the pipeline stopped.
+- **`DetectionTimings`** (`detector.py`): per-stage wall times in seconds (binarize, alignment, clustering, refinement, dedup, triplet, homography, total).
 - **`DataBlock`** (`data_block.py`): `data: bytes`, `ec: bytes` — one error-correction block after de-interleaving.
 
 ## Coordinate Conventions

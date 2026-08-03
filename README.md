@@ -112,6 +112,36 @@ data/
 └── LICENSE.txt
 ```
 
+### Captured QR Benchmark
+
+A benchmark of 100 real-world photos of a QR code encoding
+`rikvoorhaar.com`, all 1920×1440 JPEGs. The dataset has no per-image ground
+truth, so `benchmark_captured.py` reports a six-stage detection funnel plus
+decode accuracy and wall time.
+
+```bash
+# Download and extract (skips if already present)
+mkdir -p data/bench
+curl -L -o /tmp/captured-qr-benchmark-v1.tar.gz \
+  https://github.com/RikVoorhaar/qr-reader/releases/download/benchmark-v1/captured-qr-benchmark-v1.tar.gz
+tar -xzf /tmp/captured-qr-benchmark-v1.tar.gz -C data/bench/
+```
+
+The images land in `data/bench/captured/` (gitignored):
+
+```
+data/bench/captured/
+├── qr_code_ - 1.jpeg
+├── qr_code_ - 2.jpeg
+└── ... (100 total)
+```
+
+Run the benchmark:
+
+```bash
+python src/qr_reader/scripts/benchmark_captured.py
+```
+
 ## Project Status
 
 - ✅ Detection: finder patterns, alignment patterns, version estimation, homography
