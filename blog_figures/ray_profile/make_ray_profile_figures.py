@@ -258,12 +258,27 @@ def make_signal_figure(crop: FinderCrop, fit: RayFit, output_path: Path) -> None
 
     # ── Panel 2: intensity profile + fitted template ──
     ax_prof = fig.add_subplot(gs[0, 1])
-    x_max = min(4.4 * m, fit.max_dist)
-    t_dense = np.linspace(0.0, x_max, 1000)
+
+    # Show the samples all the way to the edge of the crop, so the profile
+    # runs into the background instead of stopping at the template mask.
+    h, w = crop.roi.shape
+    cx, cy = crop.center_xy
+    dx, dy = direction
+    t_exit = min(
+        (w - 1 - cx) / dx if dx > 0 else (0 - cx) / dx,
+        (h - 1 - cy) / dy if dy > 0 else (0 - cy) / dy,
+    )
+    x_max = min(fit.max_dist, t_exit)
+    valid = t_samples <= x_max
+    t_plot = t_samples[valid]
+    profile_plot = profile[valid]
+
+    # The template is only meaningful inside the fitted mask.
+    t_dense = np.linspace(0.0, min(4.5 * m, x_max), 1000)
 
     ax_prof.plot(
-        t_samples,
-        profile,
+        t_plot,
+        profile_plot,
         "-",
         color=PROFILE_COLOR,
         linewidth=1.0,
@@ -271,8 +286,8 @@ def make_signal_figure(crop: FinderCrop, fit: RayFit, output_path: Path) -> None
         zorder=2,
     )
     ax_prof.plot(
-        t_samples[::3],
-        profile[::3],
+        t_plot[::3],
+        profile_plot[::3],
         "o",
         color=PROFILE_COLOR,
         markersize=3.2,
