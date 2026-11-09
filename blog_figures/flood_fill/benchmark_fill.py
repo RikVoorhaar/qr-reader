@@ -5,8 +5,9 @@ They are exactly the success and failure crops produced by
 ``blog_figures/flood_fill/make_figures.py``: a 432x432 crop of
 ``qr_code_ - 6.jpeg`` cluster 0 and a 333x333 crop of cluster 2.
 
-The timings compare the current NumPy wave-front fill with an
-``scipy.ndimage.label`` equivalent, then measure boundary extraction,
+The timings compare the current NumPy wave-front fill with two SciPy
+equivalents -- mask-based ``binary_propagation`` from a seed and whole-crop
+``label`` plus the seed component -- then measure boundary extraction,
 boundary connected components, angular-NMS corner selection, and Otsu
 binarization for context.
 
@@ -53,6 +54,21 @@ def scipy_fill(binary: np.ndarray, seed: tuple[int, int]) -> np.ndarray:
     target = bool(binary[seed])
     labels, _ = ndimage.label(binary == target, structure=structure)
     return labels == labels[seed]
+
+
+def propagation_fill(binary: np.ndarray, seed: tuple[int, int]) -> np.ndarray:
+    """8-connected fill via ``scipy.ndimage.binary_propagation``.
+
+    This is the mask-based propagation the project actually used before
+    falling back to the hand-written wave front: start from a one-pixel seed
+    mask, restrict growth to pixels with the same binary value, and let
+    ``binary_propagation`` iterate to convergence.
+    """
+    structure = ndimage.generate_binary_structure(2, 2)
+    seed_mask = np.zeros_like(binary, dtype=bool)
+    seed_mask[seed] = True
+    target_mask = binary == binary[seed]
+    return ndimage.binary_propagation(seed_mask, structure=structure, mask=target_mask)
 
 
 def timed_trials(fn, *, trials: int, target_trial_s: float = 0.03) -> dict:
@@ -120,11 +136,19 @@ def measure_example(ex: fig.Example, binary: np.ndarray) -> dict:
         trials=61,
     )
 
+    # 3. SciPy mask-based propagation from a one-pixel seed.
+    results["propagation_fill"] = timed_trials(
+        lambda: propagation_fill(crop, seed),
+        trials=61,
+    )
+
     wave_mask = region_fill_wave_front(crop, seed[0], seed[1])
     scipy_mask = scipy_fill(crop, seed)
+    propagation_mask = propagation_fill(crop, seed)
     results["equivalence"] = {
         "wave_matches_prepared": bool(np.array_equal(wave_mask, truth)),
         "scipy_matches_wave": bool(np.array_equal(scipy_mask, wave_mask)),
+        "propagation_matches_wave": bool(np.array_equal(propagation_mask, wave_mask)),
         "mask_pixels": int(wave_mask.sum()),
     }
 
@@ -233,6 +257,7 @@ def main() -> None:
         print(
             f"Equivalence: wave==prepared {eq['wave_matches_prepared']}, "
             f"scipy==wave {eq['scipy_matches_wave']}, "
+            f"propagation==wave {eq['propagation_matches_wave']}, "
             f"mask pixels {eq['mask_pixels']}; "
             f"boundary components {meta['n_components']}."
         )
@@ -241,6 +266,7 @@ def main() -> None:
         print("|---|---:|---:|---:|---:|")
         for key, label in [
             ("wave_fill", "region_fill_wave_front"),
+            ("propagation_fill", "ndimage.binary_propagation fill"),
             ("scipy_fill", "ndimage.label fill"),
             ("boundary_8", "region_boundary_8"),
             ("boundary_components", "boundary_connected_components_ndimage"),
@@ -253,8 +279,16 @@ def main() -> None:
                 f"| {label} | {r['median_ms']:.4f} | {r['iqr_ms']:.4f} "
                 f"| {r['trials']} | {r['inner']} |"
             )
-        ratio = res["scipy_fill"]["median_ms"] / res["wave_fill"]["median_ms"]
-        print(f"\nSciPy fill / wave fill median ratio: {ratio:.3f}x")
+        ratio = res["propagation_fill"]["median_ms"] / res["wave_fill"]["median_ms"]
+        label_ratio = res["scipy_fill"]["median_ms"] / res["wave_fill"]["median_ms"]
+        print(
+            f"\nbinary_propagation / wave fill median ratio: {ratio:.3f}x "
+            f"(~{1 / ratio:.0f}x faster)"
+        )
+        print(
+            f"label / wave fill median ratio: {label_ratio:.3f}x "
+            f"(~{1 / label_ratio:.0f}x faster)"
+        )
 
 
 if __name__ == "__main__":
