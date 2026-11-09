@@ -1,44 +1,54 @@
 #!/usr/bin/env python3
 """Build the "choosing a triplet" figures for the QR-reader blog post.
 
-Both figures use the same real captured photo,
-``data/bench/captured-fullsize/qr_code_ - 37.jpeg`` (a version-20 code already
-stored upside down — its ``v20`` label reads upside down).  No rotation is
-applied: the point of the figures is that the detector does not assume an
-upright code.
+The two figures use different captured photos.  No single version-10-or-lower
+photo in the benchmark had both a clean set of extra candidates *and* the
+four-pair colinearity failure, so the ambiguity figure uses one photo and the
+colinearity figure another (both encode ``rikvoorhaar.com``).
 
-The photo is run through the *current* detection front end: binarize →
-1:1:3:1:1 alignment scan → clustering → ray-fit finder corners → deduplicate.
-That yields five ``FinderPattern`` candidates, three true finders and two clear
-false positives.  The current centre-geometry triplet finder succeeds and the
-sampled matrix decodes to ``rikvoorhaar.com`` at version 20.
+Figure A — ``qr_code_ - 7.jpeg`` (version 5)
+    A code that is already stored upside down, with four candidates: the three
+    true finders and one plausible extra square near the right edge.  No
+    rotation is applied.  Candidate outlines and corners only: no labels, no
+    chosen triplet, no QR boundary.
 
-The old pairwise edge-colinearity rule from ``f3f1a1d`` is reconstructed below.
-On this photo it produces **no association at all**, because each of the two
-true adjacent pairs has *four* segment pairs under the 0.15 offset tolerance
-instead of the exactly two the old rule demanded.  The two extra pairs connect
-the near edge of one finder to the far edge of the other (the 7-module-wide
-finder edges).  ``max_offset`` divides the absolute perpendicular error by the
-distance between segment midpoints, and at version 20 the finders are so far
-apart that those cross-pairs normalise to ~0.09–0.10, below 0.15.
+Figure B — ``qr_code_ - 20.jpeg`` (version 10)
+    A code that is upright in the photo; the image and finder corners are
+    rotated rigidly by 180° for the figure.  The pipeline finds five
+    candidates, but the figure shows only the two adjacent true finders
+    involved in the failure (TL↔TR).  The current centre-geometry triplet
+    finder succeeds and the sampled matrix decodes to ``rikvoorhaar.com``.
 
-Figure A (``triplet-ambiguity.png``) shows the five candidate outlines and
-corners with no labels, no chosen triplet and no QR boundary: the human eye
-immediately sees the three real finders, but the algorithm has to decide.
+Old pairwise rule (Figure B)
+----------------------------
+The rule from ``f3f1a1d`` is reconstructed below.  For the TL↔TR pair it sees
+four segment pairs under the tolerances:
 
-Figure B (``triplet-colinearity.png``) extends all four outer edges of every
-candidate as thin infinite lines, then highlights the true collinear pairs
-(solid green) and one false cross-pair (dashed red).  The inset zooms on the
-pair FP 1 ↔ FP 0 and annotates the perpendicular error and the normalisation
-distance that let the false pair pass.
+    top–top        offset 0.005   (true)
+    bottom–bottom  offset 0.007   (true)
+    top–bottom     offset 0.145   (false cross-pair)
+    bottom–top     offset 0.147   (false cross-pair)
+
+Both true adjacent pairs (TL↔TR and TL↔BL) have the same structure.  The old
+rule required *exactly two* passing pairs, so it rejects every true pair and
+returns no association at all.  The false cross-pairs pass because
+``max_offset`` divides the absolute perpendicular error (~99 px, about 7.5
+modules) by the distance between segment midpoints (~675 px), which is the
+distance between the two finder patterns.
+
+The true pairs are identified geometrically from the QR grid directions
+(TL→TR and TL→BL), not by sorting offsets: top–top and bottom–bottom for the
+TL↔TR pair, left–left and right–right for the TL↔BL pair.  The highlighted
+false pair is the opposite-edge cross-pair (bottom edge of one finder against
+the top edge of the other) that makes the count four.
 
 Usage (from the repository root):
 
     .venv/bin/python blog_figures/triplet/make_figures.py
 
-The script is deterministic: the only randomness in the pipeline is fixed
-before this stage, and rendering uses Agg.  Running it twice produces
-byte-identical PNGs.
+The script is deterministic: the pipeline stages used here have no random
+component and rendering uses Agg.  Running it twice produces byte-identical
+PNGs.
 
 It writes
 
@@ -90,20 +100,20 @@ from qr_reader.qr_gen import binarize_image  # noqa: E402
 DATA_DIR = REPO_ROOT / "data" / "bench" / "captured-fullsize"
 DEFAULT_OUT_DIR = REPO_ROOT / "blog" / "src" / "assets" / "blog" / "qr-reader"
 
-IMAGE_NAME = "qr_code_ - 37.jpeg"
+FIGURE_A_IMAGE = "qr_code_ - 7.jpeg"
+FIGURE_B_IMAGE = "qr_code_ - 20.jpeg"
 EXPECTED_PAYLOAD = "rikvoorhaar.com"
 
 # Old rule from f3f1a1d/src/qr_reader/finder_pattern.py.
 OLD_ANGLE_TOL = 0.1
 OLD_OFFSET_TOL = 0.15
 
-# Crop padding around the union of all candidate corners, in pixels.
-CROP_PAD = 90
+CROP_PAD = 110
 
-# Colours.  Assigned in sorted ``cluster_idx`` order so the figure is stable.
+# Colours, assigned in sorted ``cluster_idx`` order.
 FINDER_COLORS = ["#ffd23f", "#4cc9f0", "#c77dff", "#ff6b6b", "#7bed9f"]
-TRUE_PAIR_COLOR = "#7bed9f"
-FALSE_PAIR_COLOR = "#ff4d4d"
+TRUE_PAIR_COLOR = "#39ff88"
+FALSE_PAIR_COLOR = "#ff3b3b"
 
 
 # ---------------------------------------------------------------------------
@@ -178,18 +188,14 @@ def detect_candidates(gray: np.ndarray):
 def decode_triplet(gray: np.ndarray, fps, corners_xy, triplet) -> tuple[str, int]:
     """Fit the global homography for ``triplet`` and decode the payload.
 
-    This mirrors the version-selection loop in ``detector._run_detection``.
+    Mirrors the version-selection loop in ``detector._run_detection``.
     """
     fp_map = {fp.cluster_idx: fp for fp in fps}
     idxs = [triplet.top_left_idx, triplet.top_right_idx, triplet.bottom_left_idx]
-    centers_rc = {
-        idx: fp_map[idx].outer_corners.mean(axis=0).astype(np.float64) for idx in idxs
-    }
+    centers = {idx: fp_map[idx].outer_corners.mean(axis=0) for idx in idxs}
 
     tl, tr, bl = idxs
-    ctl = centers_rc[tl][::-1]
-    ctr = centers_rc[tr][::-1]
-    cbl = centers_rc[bl][::-1]
+    ctl, ctr, cbl = (centers[i][::-1] for i in idxs)
     global_u = (ctr - ctl) / (np.linalg.norm(ctr - ctl) + 1e-12)
     global_v = (cbl - ctl) / (np.linalg.norm(cbl - ctl) + 1e-12)
 
@@ -210,9 +216,7 @@ def decode_triplet(gray: np.ndarray, fps, corners_xy, triplet) -> tuple[str, int
         ]
 
     grid_offsets = np.array([[0, 0], [7, 0], [7, 7], [0, 7]], dtype=np.float64)
-    tl_c = canonicalize(corners_xy[tl])
-    tr_c = canonicalize(corners_xy[tr])
-    bl_c = canonicalize(corners_xy[bl])
+    corners_c = [canonicalize(corners_xy[i]) for i in idxs]
 
     best_err = np.inf
     best_H = None
@@ -221,9 +225,9 @@ def decode_triplet(gray: np.ndarray, fps, corners_xy, triplet) -> tuple[str, int
         src: list[list[float]] = []
         dst: list[list[float]] = []
         for corners, origin in [
-            (tl_c, (0, 0)),
-            (tr_c, (N_cand - 7, 0)),
-            (bl_c, (0, N_cand - 7)),
+            (corners_c[0], (0, 0)),
+            (corners_c[1], (N_cand - 7, 0)),
+            (corners_c[2], (0, N_cand - 7)),
         ]:
             for i in range(4):
                 src.append(
@@ -251,6 +255,29 @@ def decode_triplet(gray: np.ndarray, fps, corners_xy, triplet) -> tuple[str, int
 
     bits = sample_qr_bits(gray, best_H, best_N)
     return decode_qr(bits), (best_N - 17) // 4
+
+
+# ---------------------------------------------------------------------------
+# Rigid 180-degree rotation of the candidate set
+# ---------------------------------------------------------------------------
+
+
+def rotate_corners_180(corners_rc: np.ndarray, shape) -> np.ndarray:
+    h, w = shape
+    out = np.empty_like(corners_rc, dtype=np.float64)
+    out[:, 0] = (h - 1) - corners_rc[:, 0]
+    out[:, 1] = (w - 1) - corners_rc[:, 1]
+    return out
+
+
+def rotate_fps_180(fps, shape):
+    return [
+        FinderPattern(
+            cluster_idx=fp.cluster_idx,
+            outer_corners=rotate_corners_180(fp.outer_corners, shape),
+        )
+        for fp in fps
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -282,47 +309,83 @@ def old_check_association(fp1, fp2, angle_tol=OLD_ANGLE_TOL, offset_tol=OLD_OFFS
 
 
 def old_associations(fps):
-    """All pair associations found by the old rule."""
     out = []
     for i in range(len(fps)):
         for j in range(i + 1, len(fps)):
             passing = old_check_association(fps[i], fps[j])
             if passing is not None:
-                out.append(
-                    (
-                        fps[i].cluster_idx,
-                        fps[j].cluster_idx,
-                        passing[0][0],
-                        passing[0][1],
-                        passing[1][0],
-                        passing[1][1],
-                    )
-                )
+                out.append((fps[i].cluster_idx, fps[j].cluster_idx, passing))
     return out
 
 
-def all_segment_matches(fp1, fp2, angle_tol=OLD_ANGLE_TOL, offset_tol=OLD_OFFSET_TOL):
-    """Every parallel-and-close segment pair, regardless of the exactly-two count."""
-    matches = []
-    for i, s1 in enumerate(fp1.segments()):
-        for j, s2 in enumerate(fp2.segments()):
-            ang = float(angular_distance(s1[0], s1[1], s2[0], s2[1]))
-            if ang >= angle_tol:
-                continue
-            off = float(max_offset(s1[0], s1[1], s2[0], s2[1]))
-            if off >= offset_tol:
-                continue
-            matches.append(
-                {
-                    "i": i,
-                    "j": j,
-                    "angle": ang,
-                    "offset": off,
-                    "p1": s1,
-                    "p2": s2,
-                }
-            )
-    return matches
+# ---------------------------------------------------------------------------
+# Geometric identification of the true edge pairs
+# ---------------------------------------------------------------------------
+
+
+def edge_data(fp: FinderPattern):
+    """Per-edge direction, outward normal and midpoint in (row, col)."""
+    c = fp.outer_corners
+    centre = c.mean(axis=0)
+    out = {}
+    for k in range(4):
+        p, q = c[k], c[(k + 1) % 4]
+        d = q - p
+        d = d / (np.linalg.norm(d) + 1e-12)
+        mid = (p + q) / 2.0
+        n = np.array([-d[1], d[0]])
+        if float(np.dot(n, mid - centre)) < 0:
+            n = -n
+        out[k] = {"direction": d, "normal": n, "midpoint": mid}
+    return out
+
+
+def classify_edges(fp: FinderPattern, u: np.ndarray, v: np.ndarray):
+    """Return segment indices for the top/bottom/left/right edges.
+
+    ``u`` is TL→TR and ``v`` is TL→BL in (row, col) coordinates.  For the
+    TL↔TR pair the true collinear edges are top–top and bottom–bottom; for the
+    TL↔BL pair they are left–left and right–right.
+    """
+    edges = edge_data(fp)
+    dots_u = {k: abs(float(np.dot(e["direction"], u))) for k, e in edges.items()}
+    order_u = sorted(edges, key=lambda k: dots_u[k], reverse=True)
+    along_u, along_v = order_u[:2], order_u[2:]
+
+    top = [k for k in along_u if float(np.dot(edges[k]["normal"], v)) < 0]
+    bottom = [k for k in along_u if float(np.dot(edges[k]["normal"], v)) > 0]
+    left = [k for k in along_v if float(np.dot(edges[k]["normal"], u)) < 0]
+    right = [k for k in along_v if float(np.dot(edges[k]["normal"], u)) > 0]
+
+    if not (top and bottom and left and right):
+        raise RuntimeError(f"could not classify edges of FP {fp.cluster_idx}")
+    return {
+        "top": top[0],
+        "bottom": bottom[0],
+        "left": left[0],
+        "right": right[0],
+    }
+
+
+def pair_metrics(fp_a, seg_a: int, fp_b, seg_b: int):
+    s1 = fp_a.segments()[seg_a]
+    s2 = fp_b.segments()[seg_b]
+    angle = float(angular_distance(s1[0], s1[1], s2[0], s2[1]))
+    offset = float(max_offset(s1[0], s1[1], s2[0], s2[1]))
+    deviation = float(max_abs_line_distance(s1[0], s1[1], s2[0], s2[1]))
+    midpoint_distance = float(
+        np.linalg.norm(np.asarray(s1).mean(axis=0) - np.asarray(s2).mean(axis=0))
+    )
+    return {
+        "angle": angle,
+        "offset": offset,
+        "deviation": deviation,
+        "midpoint_distance": midpoint_distance,
+        "seg_a": seg_a,
+        "seg_b": seg_b,
+        "fp_a": fp_a.cluster_idx,
+        "fp_b": fp_b.cluster_idx,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -340,7 +403,6 @@ def crop_bounds(fps, shape, pad=CROP_PAD):
 
 
 def quad_xy(fp):
-    """Closed outline in (x, y) = (col, row)."""
     c = fp.outer_corners[:, ::-1]
     return np.vstack([c, c[0]])
 
@@ -351,7 +413,7 @@ def draw_quad(ax, fp, color, lw=3.0, alpha=1.0, zorder=4):
         q[:, 0],
         q[:, 1],
         color="#101010",
-        lw=lw + 1.8,
+        lw=lw + 2.0,
         alpha=0.55 * alpha,
         solid_joinstyle="round",
         zorder=zorder - 1,
@@ -369,7 +431,7 @@ def draw_quad(ax, fp, color, lw=3.0, alpha=1.0, zorder=4):
     ax.scatter(
         c[:, 0],
         c[:, 1],
-        s=42,
+        s=38,
         facecolors="none",
         edgecolors=color,
         linewidths=2.0,
@@ -380,41 +442,70 @@ def draw_quad(ax, fp, color, lw=3.0, alpha=1.0, zorder=4):
 
 def axline_segment(ax, p1, p2, **kwargs):
     """Infinite line through two (x, y) points, clipped to the axes."""
-    x1, y1 = float(p1[0]), float(p1[1])
-    x2, y2 = float(p2[0]), float(p2[1])
-    ax.axline((x1, y1), (x2, y2), **kwargs)
+    ax.axline(
+        (float(p1[0]), float(p1[1])),
+        (float(p2[0]), float(p2[1])),
+        **kwargs,
+    )
 
 
 def rc_pair_to_xy(pair):
-    """Convert a ((row, col), (row, col)) segment to ((x, y), (x, y))."""
     return pair[0][::-1], pair[1][::-1]
 
 
-def offset_arrow(ax, line_a, line_b, color, label, fontsize=12):
-    """Draw a perpendicular double arrow between two near-parallel segments."""
-    p1, p2 = np.asarray(line_a, dtype=float), np.asarray(line_b, dtype=float)
-    mid_a = p1.mean(axis=0)
-    direction = p2[1] - p2[0]
-    direction = direction / (np.linalg.norm(direction) + 1e-12)
-    # Closest point on line b to mid_a.
-    proj = p2[0] + direction * float(np.dot(mid_a - p2[0], direction))
+def connect_midpoints(ax, fp_a, seg_a, fp_b, seg_b, color, lw=3.2, ls="-", zorder=6):
+    s1 = np.asarray(fp_a.segments()[seg_a], dtype=float).mean(axis=0)[::-1]
+    s2 = np.asarray(fp_b.segments()[seg_b], dtype=float).mean(axis=0)[::-1]
+    ax.plot(
+        [s1[0], s2[0]],
+        [s1[1], s2[1]],
+        color=color,
+        lw=lw,
+        ls=ls,
+        alpha=0.96,
+        zorder=zorder,
+        solid_capstyle="round",
+    )
+    ax.scatter(
+        [s1[0], s2[0]],
+        [s1[1], s2[1]],
+        s=34,
+        color=color,
+        edgecolors="none",
+        zorder=zorder + 1,
+    )
+
+
+def gap_arrow(ax, line_a, line_b, x, color, label, fontsize=15):
+    """Vertical double arrow between two near-horizontal (x, y) lines."""
+    p1 = np.asarray(line_a, dtype=float)
+    p2 = np.asarray(line_b, dtype=float)
+
+    def y_at(line, xv):
+        a, b = line
+        if abs(b[0] - a[0]) < 1e-9:
+            raise ValueError("vertical line")
+        return a[1] + (b[1] - a[1]) * (xv - a[0]) / (b[0] - a[0])
+
+    ya = y_at(p1, x)
+    yb = y_at(p2, x)
     ax.annotate(
         "",
-        xy=(float(proj[0]), float(proj[1])),
-        xytext=(float(mid_a[0]), float(mid_a[1])),
-        arrowprops=dict(arrowstyle="<->", color=color, lw=2.0, shrinkA=0, shrinkB=0),
+        xy=(float(x), float(ya)),
+        xytext=(float(x), float(yb)),
+        arrowprops=dict(arrowstyle="<->", color=color, lw=2.6, shrinkA=0, shrinkB=0),
         zorder=8,
     )
-    mid = (mid_a + proj) / 2.0
     ax.text(
-        float(mid[0]),
-        float(mid[1]),
+        float(x + 26),
+        float((ya + yb) / 2.0),
         label,
         color=color,
         fontsize=fontsize,
-        ha="center",
+        fontweight="bold",
+        ha="left",
         va="center",
-        bbox=dict(boxstyle="round,pad=0.22", fc="#101010", ec="none", alpha=0.72),
+        bbox=dict(boxstyle="round,pad=0.25", fc="#101010", ec="none", alpha=0.85),
         zorder=9,
     )
 
@@ -424,14 +515,16 @@ def offset_arrow(ax, line_a, line_b, color, label, fontsize=12):
 # ---------------------------------------------------------------------------
 
 
-def render_ambiguity(gray, fps, bounds, out_path: Path):
+def render_ambiguity(gray_rot, fps, bounds, out_path: Path):
     r0, r1, c0, c1 = bounds
-    colors = {fp.cluster_idx: FINDER_COLORS[k % len(FINDER_COLORS)] for k, fp in enumerate(fps)}
+    # One accent colour for every candidate: the figure asks *which three*,
+    # so colour must not hint at an answer.
+    accent = "#ff4fa3"
 
-    fig, ax = plt.subplots(figsize=(7.4, 7.4), dpi=200)
-    ax.imshow(gray[r0:r1, c0:c1], cmap="gray", extent=[c0, c1, r1, r0])
+    fig, ax = plt.subplots(figsize=(7.6, 7.6), dpi=200)
+    ax.imshow(gray_rot[r0:r1, c0:c1], cmap="gray", extent=[c0, c1, r1, r0])
     for fp in fps:
-        draw_quad(ax, fp, colors[fp.cluster_idx], lw=3.4)
+        draw_quad(ax, fp, accent, lw=3.6)
     ax.set_xlim(c0, c1)
     ax.set_ylim(r1, r0)
     ax.axis("off")
@@ -440,172 +533,205 @@ def render_ambiguity(gray, fps, bounds, out_path: Path):
     plt.close(fig)
 
 
-def render_colinearity(gray, fps, colors, triplet, bounds, out_path: Path):
-    r0, r1, c0, c1 = bounds
+def render_colinearity(
+    gray_rot,
+    fps,
+    colors,
+    triplet,
+    true_matches,
+    false_match,
+    out_path: Path,
+):
     fp_map = {fp.cluster_idx: fp for fp in fps}
-
     tl, tr, bl = triplet.top_left_idx, triplet.top_right_idx, triplet.bottom_left_idx
-    true_pairs = [(tl, tr), (tl, bl)]
+    a_idx, b_idx = tl, tr
 
-    # --- Left: all candidates, all four edges extended ---------------------
-    fig = plt.figure(figsize=(9.2, 11.6), dpi=170)
-    gs = fig.add_gridspec(2, 1, height_ratios=[1.55, 1.0], hspace=0.04)
+    pair_corners = np.vstack(
+        [fp_map[a_idx].outer_corners, fp_map[b_idx].outer_corners]
+    )
+    main_pad_r, main_pad_c = 360, 120
+    mr0 = max(0, int(pair_corners[:, 0].min()) - main_pad_r)
+    mr1 = min(gray_rot.shape[0], int(pair_corners[:, 0].max()) + main_pad_r)
+    mc0 = max(0, int(pair_corners[:, 1].min()) - main_pad_c)
+    mc1 = min(gray_rot.shape[1], int(pair_corners[:, 1].max()) + main_pad_c)
+
+    fig = plt.figure(figsize=(10.2, 12.4), dpi=170)
+    gs = fig.add_gridspec(2, 1, height_ratios=[1.5, 1.0], hspace=0.06)
     ax = fig.add_subplot(gs[0])
 
-    ax.imshow(gray[r0:r1, c0:c1], cmap="gray", extent=[c0, c1, r1, r0])
-    for fp in fps:
+    # --- main panel: only the two adjacent true finders --------------------
+    ax.imshow(gray_rot[mr0:mr1, mc0:mc1], cmap="gray", extent=[mc0, mc1, mr1, mr0])
+    for idx in (a_idx, b_idx):
+        fp = fp_map[idx]
         c = fp.outer_corners[:, ::-1]
         for k in range(4):
             axline_segment(
                 ax,
                 c[k],
                 c[(k + 1) % 4],
-                color=colors[fp.cluster_idx],
-                lw=1.0,
-                alpha=0.42,
+                color=colors[idx],
+                lw=1.25,
+                alpha=0.55,
                 zorder=2,
             )
-    for fp in fps:
-        draw_quad(ax, fp, colors[fp.cluster_idx], lw=2.0, alpha=0.95, zorder=4)
+        draw_quad(ax, fp, colors[idx], lw=2.6, alpha=1.0, zorder=4)
 
-    # Highlight the true collinear edge pairs, and one false cross-pair.
-    for a_idx, b_idx in true_pairs:
-        matches = all_segment_matches(fp_map[a_idx], fp_map[b_idx])
-        matches.sort(key=lambda m: m["offset"])
-        for m in matches[:2]:
-            for p in (m["p1"], m["p2"]):
-                q1, q2 = rc_pair_to_xy(p)
-                axline_segment(
-                    ax,
-                    q1,
-                    q2,
-                    color=TRUE_PAIR_COLOR,
-                    lw=2.8,
-                    alpha=0.92,
-                    zorder=6,
-                )
-
-    first_pair = true_pairs[0]
-    cross_matches = all_segment_matches(fp_map[first_pair[0]], fp_map[first_pair[1]])
-    cross_matches.sort(key=lambda m: m["offset"])
-    false_match = cross_matches[2]  # first cross-pair after the two true pairs
-    for p in (false_match["p1"], false_match["p2"]):
-        q1, q2 = rc_pair_to_xy(p)
-        axline_segment(
+    # True associations for this pair only: top–top and bottom–bottom.
+    for m in true_matches:
+        if {m["fp_a"], m["fp_b"]} != {a_idx, b_idx}:
+            continue
+        connect_midpoints(
             ax,
-            q1,
-            q2,
-            color=FALSE_PAIR_COLOR,
-            lw=2.6,
-            alpha=0.95,
-            ls="--",
-            zorder=7,
+            fp_map[m["fp_a"]],
+            m["seg_a"],
+            fp_map[m["fp_b"]],
+            m["seg_b"],
+            TRUE_PAIR_COLOR,
+            lw=4.0,
+            zorder=6,
         )
 
-    ax.set_xlim(c0, c1)
-    ax.set_ylim(r1, r0)
-    ax.axis("off")
-    ax.set_title("candidate edges", loc="left", fontsize=17, pad=6)
-
-    # --- Right: zoom on the first true pair --------------------------------
-    a_idx, b_idx = first_pair
-    pair_corners = np.vstack(
-        [fp_map[a_idx].outer_corners, fp_map[b_idx].outer_corners]
+    # The false opposite-edge cross-pair that makes it four instead of two.
+    connect_midpoints(
+        ax,
+        fp_map[false_match["fp_a"]],
+        false_match["seg_a"],
+        fp_map[false_match["fp_b"]],
+        false_match["seg_b"],
+        FALSE_PAIR_COLOR,
+        lw=3.8,
+        ls="--",
+        zorder=7,
     )
-    pad_r = 170
-    pad_c = 70
+
+    ax.set_xlim(mc0, mc1)
+    ax.set_ylim(mr1, mr0)
+    ax.axis("off")
+    ax.set_title("TL ↔ TR", loc="left", fontsize=19, pad=8)
+
+    handles = [
+        plt.Line2D([0], [0], color=TRUE_PAIR_COLOR, lw=3.4, label="true collinear pair"),
+        plt.Line2D(
+            [0], [0], color=FALSE_PAIR_COLOR, lw=3.2, ls="--", label="false cross-pair"
+        ),
+    ]
+    ax.legend(
+        handles=handles,
+        loc="lower right",
+        fontsize=13,
+        framealpha=0.88,
+        facecolor="#101010",
+        edgecolor="none",
+        labelcolor="white",
+    )
+
+    # --- inset: the TL↔TR pair and the false cross-pair --------------------
+    pad_r, pad_c = 150, 70
     zr0 = max(0, int(pair_corners[:, 0].min()) - pad_r)
-    zr1 = min(gray.shape[0], int(pair_corners[:, 0].max()) + pad_r)
+    zr1 = min(gray_rot.shape[0], int(pair_corners[:, 0].max()) + pad_r)
     zc0 = max(0, int(pair_corners[:, 1].min()) - pad_c)
-    zc1 = min(gray.shape[1], int(pair_corners[:, 1].max()) + pad_c)
+    zc1 = min(gray_rot.shape[1], int(pair_corners[:, 1].max()) + pad_c)
 
     az = fig.add_subplot(gs[1])
-    az.imshow(gray[zr0:zr1, zc0:zc1], cmap="gray", extent=[zc0, zc1, zr1, zr0])
+    az.imshow(gray_rot[zr0:zr1, zc0:zc1], cmap="gray", extent=[zc0, zc1, zr1, zr0])
     for idx in (a_idx, b_idx):
-        draw_quad(az, fp_map[idx], colors[idx], lw=3.4, zorder=5)
+        draw_quad(az, fp_map[idx], colors[idx], lw=3.6, zorder=5)
 
-    matches = all_segment_matches(fp_map[a_idx], fp_map[b_idx])
-    matches.sort(key=lambda m: m["offset"])
-    true_matches = matches[:2]
-    false_matches = matches[2:]
+    # Draw the two parallel edge lines involved in the false cross-pair.
+    for fp, seg, col in (
+        (fp_map[false_match["fp_a"]], false_match["seg_a"], colors[false_match["fp_a"]]),
+        (fp_map[false_match["fp_b"]], false_match["seg_b"], colors[false_match["fp_b"]]),
+    ):
+        p = fp.segments()[seg]
+        q1, q2 = rc_pair_to_xy(p)
+        axline_segment(az, q1, q2, color=col, lw=1.5, alpha=0.85, zorder=3)
 
     for m in true_matches:
-        for p in (m["p1"], m["p2"]):
-            q1, q2 = rc_pair_to_xy(p)
-            axline_segment(
-                az,
-                q1,
-                q2,
-                color=TRUE_PAIR_COLOR,
-                lw=3.0,
-                alpha=0.95,
-                zorder=6,
-            )
-    for m in false_matches[:1]:
-        for p in (m["p1"], m["p2"]):
-            q1, q2 = rc_pair_to_xy(p)
-            axline_segment(
-                az,
-                q1,
-                q2,
-                color=FALSE_PAIR_COLOR,
-                lw=2.6,
-                alpha=0.95,
-                ls="--",
-                zorder=7,
-            )
-
-    # Perpendicular gap of the highlighted false cross-pair, in pixels/modules.
-    fm = false_matches[0]
-    line_a_rc = np.asarray(fm["p1"], dtype=float)
-    line_b_rc = np.asarray(fm["p2"], dtype=float)
-    off_px = float(
-        max_abs_line_distance(
-            line_a_rc[0], line_a_rc[1], line_b_rc[0], line_b_rc[1]
+        if {m["fp_a"], m["fp_b"]} != {a_idx, b_idx}:
+            continue
+        connect_midpoints(
+            az,
+            fp_map[m["fp_a"]],
+            m["seg_a"],
+            fp_map[m["fp_b"]],
+            m["seg_b"],
+            TRUE_PAIR_COLOR,
+            lw=4.2,
+            zorder=6,
         )
+    connect_midpoints(
+        az,
+        fp_map[false_match["fp_a"]],
+        false_match["seg_a"],
+        fp_map[false_match["fp_b"]],
+        false_match["seg_b"],
+        FALSE_PAIR_COLOR,
+        lw=3.8,
+        ls="--",
+        zorder=7,
+    )
+
+    # The gap between the two parallel edge lines in the false cross-pair.
+    line_a_rc = np.asarray(
+        fp_map[false_match["fp_a"]].segments()[false_match["seg_a"]], dtype=float
+    )
+    line_b_rc = np.asarray(
+        fp_map[false_match["fp_b"]].segments()[false_match["seg_b"]], dtype=float
     )
     line_a = line_a_rc[:, ::-1]
     line_b = line_b_rc[:, ::-1]
-    mid_a = line_a.mean(axis=0)
-    mid_b = line_b.mean(axis=0)
-    norm = float(np.linalg.norm(mid_a - mid_b))
+    x_mid = float(
+        (
+            fp_map[a_idx].outer_corners[:, 1].mean()
+            + fp_map[b_idx].outer_corners[:, 1].mean()
+        )
+        / 2.0
+    )
     module_px = float(
         np.mean(
             [
-                np.linalg.norm(fp_map[idx].outer_corners[k] - fp_map[idx].outer_corners[(k + 1) % 4])
+                np.linalg.norm(
+                    fp_map[idx].outer_corners[k] - fp_map[idx].outer_corners[(k + 1) % 4]
+                )
                 for idx in (a_idx, b_idx)
                 for k in range(4)
             ]
         )
         / 7.0
     )
-    offset_arrow(
+    gap_arrow(
         az,
         line_a,
         line_b,
+        x_mid,
         FALSE_PAIR_COLOR,
-        f"{off_px:.0f} px ≈ {off_px / module_px:.1f} modules",
-        fontsize=12,
+        (
+            f"{false_match['deviation']:.0f} px ≈ "
+            f"{false_match['deviation'] / module_px:.1f} modules"
+        ),
+        fontsize=15,
     )
 
     az.text(
         0.015,
-        0.965,
+        0.97,
         (
-            f"4 edge pairs pass (offset < {OLD_OFFSET_TOL:.2f})\n"
-            f"old rule needs exactly 2 → pair rejected\n"
-            f"L = {norm:.0f} px → {fm['offset']:.3f}"
+            "4 edge pairs pass\n"
+            "rule needs exactly 2\n"
+            f"{false_match['deviation']:.0f} / "
+            f"{false_match['midpoint_distance']:.0f} px = "
+            f"{false_match['offset']:.3f}"
         ),
         transform=az.transAxes,
         ha="left",
         va="top",
-        fontsize=11.5,
-        color="#f5f5f5",
-        bbox=dict(boxstyle="round,pad=0.35", fc="#101010", ec="none", alpha=0.78),
+        fontsize=13,
+        color="#ffffff",
+        linespacing=1.25,
+        bbox=dict(boxstyle="round,pad=0.38", fc="#101010", ec="none", alpha=0.85),
         zorder=10,
     )
 
-    # Mark the pair identity in the zoom only.
     for idx in (a_idx, b_idx):
         c = fp_map[idx].outer_corners.mean(axis=0)
         az.text(
@@ -613,7 +739,7 @@ def render_colinearity(gray, fps, colors, triplet, bounds, out_path: Path):
             c[0],
             str(idx),
             color=colors[idx],
-            fontsize=15,
+            fontsize=17,
             fontweight="bold",
             ha="center",
             va="center",
@@ -624,27 +750,10 @@ def render_colinearity(gray, fps, colors, triplet, bounds, out_path: Path):
     az.set_ylim(zr1, zr0)
     az.axis("off")
     az.set_title(
-        f"zoom: FP {a_idx} ↔ FP {b_idx}", loc="left", fontsize=17, pad=6
+        f"zoom: FP {a_idx} ↔ FP {b_idx}", loc="left", fontsize=19, pad=8
     )
 
-    # Compact legend, no caption.
-    handles = [
-        plt.Line2D([0], [0], color=TRUE_PAIR_COLOR, lw=3.2, label="true collinear pair"),
-        plt.Line2D(
-            [0], [0], color=FALSE_PAIR_COLOR, lw=2.6, ls="--", label="false cross-pair"
-        ),
-    ]
-    ax.legend(
-        handles=handles,
-        loc="lower right",
-        fontsize=11.5,
-        framealpha=0.80,
-        facecolor="#101010",
-        edgecolor="none",
-        labelcolor="white",
-    )
-
-    fig.subplots_adjust(left=0.01, right=0.99, top=0.97, bottom=0.01)
+    fig.subplots_adjust(left=0.01, right=0.99, top=0.975, bottom=0.01)
     fig.savefig(out_path, dpi=170)
     plt.close(fig)
 
@@ -654,23 +763,72 @@ def render_colinearity(gray, fps, colors, triplet, bounds, out_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--data-dir", type=Path, default=DATA_DIR)
-    ap.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
-    args = ap.parse_args()
-    args.out_dir.mkdir(parents=True, exist_ok=True)
-
-    image_path = args.data_dir / IMAGE_NAME
+def analyse_image(data_dir: Path, image_name: str, rotate_display: bool):
+    """Run the current front end and the old rule on one captured photo."""
+    image_path = data_dir / image_name
     img = cv2.imread(str(image_path))
     if img is None:
         raise SystemExit(f"could not read {image_path}")
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-    fps, score_map, corners_xy = detect_candidates(gray)
+    fps_orig, score_map, corners_xy = detect_candidates(gray)
+    fps_orig.sort(key=lambda fp: fp.cluster_idx)
+
+    # Verify the current detector on the original orientation.
+    triplets_orig = find_valid_triplets(fps_orig, score_map)
+    if not triplets_orig:
+        raise SystemExit(f"{image_name}: current triplet finder failed")
+    text, version = decode_triplet(gray, fps_orig, corners_xy, triplets_orig[0])
+    if text != EXPECTED_PAYLOAD:
+        raise SystemExit(
+            f"{image_name}: unexpected payload {text!r}, "
+            f"expected {EXPECTED_PAYLOAD!r}"
+        )
+
+    if rotate_display:
+        gray_used = np.ascontiguousarray(np.rot90(gray, 2))
+        fps = rotate_fps_180(fps_orig, gray.shape)
+    else:
+        gray_used = gray
+        fps = fps_orig
     fps.sort(key=lambda fp: fp.cluster_idx)
-    print(f"image: {image_path}")
+
+    triplets = find_valid_triplets(fps, score_map)
+    if not triplets:
+        raise SystemExit(f"{image_name}: current triplet finder failed after transform")
+    triplet = triplets[0]
+    tl, tr, bl = triplet.top_left_idx, triplet.top_right_idx, triplet.bottom_left_idx
+
+    fp_map = {fp.cluster_idx: fp for fp in fps}
+    centers = {i: fp_map[i].outer_corners.mean(axis=0) for i in (tl, tr, bl)}
+    u = centers[tr] - centers[tl]
+    u = u / np.linalg.norm(u)
+    v = centers[bl] - centers[tl]
+    v = v / np.linalg.norm(v)
+    edge_class = {i: classify_edges(fp_map[i], u, v) for i in (tl, tr, bl)}
+
+    true_specs = [
+        (tl, edge_class[tl]["top"], tr, edge_class[tr]["top"]),
+        (tl, edge_class[tl]["bottom"], tr, edge_class[tr]["bottom"]),
+        (tl, edge_class[tl]["left"], bl, edge_class[bl]["left"]),
+        (tl, edge_class[tl]["right"], bl, edge_class[bl]["right"]),
+    ]
+    true_matches = [
+        pair_metrics(fp_map[a], ka, fp_map[b], kb) for a, ka, b, kb in true_specs
+    ]
+    cross_candidates = [
+        pair_metrics(
+            fp_map[tl], edge_class[tl]["top"], fp_map[tr], edge_class[tr]["bottom"]
+        ),
+        pair_metrics(
+            fp_map[tl], edge_class[tl]["bottom"], fp_map[tr], edge_class[tr]["top"]
+        ),
+    ]
+    false_match = max(cross_candidates, key=lambda m: m["offset"])
+
+    print(f"\n=== {image_name}")
     print(f"image shape: {gray.shape}")
+    print(f"decoded: {text!r}  version={version}")
     print(f"finder candidates: {len(fps)}")
     for fp in fps:
         c = fp.outer_corners
@@ -679,49 +837,67 @@ def main() -> None:
             f"  FP {fp.cluster_idx}: centre=({c[:, 1].mean():.1f}, {c[:, 0].mean():.1f})px "
             f"sides={np.round(sides, 1).tolist()}"
         )
-
-    triplets = find_valid_triplets(fps, score_map)
-    if not triplets:
-        raise SystemExit("current triplet finder failed unexpectedly")
-    triplet = triplets[0]
-    text, version = decode_triplet(gray, fps, corners_xy, triplet)
-    print(
-        f"current triplet: TL={triplet.top_left_idx} TR={triplet.top_right_idx} "
-        f"BL={triplet.bottom_left_idx}"
-    )
-    print(f"decoded: {text!r}  version={version}")
-    if text != EXPECTED_PAYLOAD:
-        raise SystemExit(f"unexpected payload {text!r}, expected {EXPECTED_PAYLOAD!r}")
-
+    print(f"current triplet: TL={tl} TR={tr} BL={bl}")
+    print("true collinear pairs:")
+    for m in true_matches:
+        print(
+            f"  FP {m['fp_a']} seg {m['seg_a']} ↔ FP {m['fp_b']} seg {m['seg_b']}: "
+            f"angle={m['angle']:.4f} offset={m['offset']:.4f} "
+            f"dev={m['deviation']:.1f}px L={m['midpoint_distance']:.1f}px"
+        )
+    print("opposite-edge cross-pairs for TL↔TR:")
+    for m in cross_candidates:
+        print(
+            f"  FP {m['fp_a']} seg {m['seg_a']} ↔ FP {m['fp_b']} seg {m['seg_b']}: "
+            f"angle={m['angle']:.4f} offset={m['offset']:.4f} "
+            f"dev={m['deviation']:.1f}px L={m['midpoint_distance']:.1f}px"
+        )
     assoc = old_associations(fps)
     print(f"old associations: {assoc if assoc else 'none'}")
 
-    fp_map = {fp.cluster_idx: fp for fp in fps}
-    tl, tr, bl = triplet.top_left_idx, triplet.top_right_idx, triplet.bottom_left_idx
-    print("old rule detail for the two true adjacent pairs:")
-    for a_idx, b_idx in ((tl, tr), (tl, bl)):
-        matches = all_segment_matches(fp_map[a_idx], fp_map[b_idx])
-        matches.sort(key=lambda m: m["offset"])
-        print(f"  FP {a_idx} ↔ FP {b_idx}: {len(matches)} passing pairs")
-        for m in matches:
-            print(
-                f"    seg ({m['i']},{m['j']}): angle={m['angle']:.4f} rad, "
-                f"offset={m['offset']:.4f}"
-            )
-
-    bounds = crop_bounds(fps, gray.shape)
+    bounds = crop_bounds(fps, gray_used.shape)
     print(f"crop bounds (r0,r1,c0,c1): {bounds}")
-
     colors = {
         fp.cluster_idx: FINDER_COLORS[k % len(FINDER_COLORS)]
         for k, fp in enumerate(fps)
     }
+    return {
+        "gray": gray_used,
+        "fps": fps,
+        "colors": colors,
+        "triplet": triplet,
+        "true_matches": true_matches,
+        "false_match": false_match,
+        "bounds": bounds,
+    }
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--data-dir", type=Path, default=DATA_DIR)
+    ap.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
+    args = ap.parse_args()
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+
+    fig_a = analyse_image(args.data_dir, FIGURE_A_IMAGE, rotate_display=False)
+    fig_b = analyse_image(args.data_dir, FIGURE_B_IMAGE, rotate_display=True)
 
     ambiguity_path = args.out_dir / "triplet-ambiguity.png"
     colinearity_path = args.out_dir / "triplet-colinearity.png"
-    render_ambiguity(gray, fps, bounds, ambiguity_path)
-    render_colinearity(gray, fps, colors, triplet, bounds, colinearity_path)
-    print(f"wrote {ambiguity_path}")
+
+    render_ambiguity(
+        fig_a["gray"], fig_a["fps"], fig_a["bounds"], ambiguity_path
+    )
+    render_colinearity(
+        fig_b["gray"],
+        fig_b["fps"],
+        fig_b["colors"],
+        fig_b["triplet"],
+        fig_b["true_matches"],
+        fig_b["false_match"],
+        colinearity_path,
+    )
+    print(f"\nwrote {ambiguity_path}")
     print(f"wrote {colinearity_path}")
 
 
