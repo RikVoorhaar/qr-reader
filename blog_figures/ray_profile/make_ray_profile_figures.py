@@ -220,8 +220,8 @@ def make_signal_figure(crop: FinderCrop, fit: RayFit, output_path: Path) -> None
     direction = np.array([np.cos(theta), np.sin(theta)], dtype=np.float64)
     t_samples = np.linspace(0.0, fit.max_dist, NUM_SAMPLES)
 
-    fig = plt.figure(figsize=(11.0, 5.0))
-    gs = fig.add_gridspec(1, 2, width_ratios=[1.0, 1.25], wspace=0.16)
+    fig = plt.figure(figsize=(11.0, 4.6))
+    gs = fig.add_gridspec(1, 2, width_ratios=[1.0, 1.25], wspace=0.24)
 
     # ── Panel 1: crop + the chosen ray ──
     ax_img = fig.add_subplot(gs[0, 0])
@@ -329,7 +329,7 @@ def make_signal_figure(crop: FinderCrop, fit: RayFit, output_path: Path) -> None
     ax_prof.set_xlim(0.0, x_max)
     ax_prof.set_ylim(-0.04, 1.10)
     ax_prof.set_xlabel("distance from centre (px)")
-    ax_prof.set_ylabel("intensity (normalised)")
+    ax_prof.set_ylabel("intensity (0 = black, 1 = white)")
     ax_prof.grid(alpha=0.16, linewidth=0.7)
     ax_prof.legend(loc="lower right", frameon=True, framealpha=0.95)
     ax_prof.spines[["top", "right"]].set_visible(False)
