@@ -1,20 +1,15 @@
 #!/usr/bin/env python3
 """Build the RLE-normalization figure for the QR-reader blog post.
 
-The figure illustrates the paragraph that turns a measured 1:1:3:1:1 run-length
-tuple into a normalized tuple and checks it against the ideal within 30%.
+The figure shows a thresholded 2:1 crop of a real QR photo, a scanline through
+the two upper finder patterns, the run lengths along that row, and the
+normalized ratios for the left finder's five runs.  The right finder is
+annotated but not normalized: at this row it is off-centre, so its cut is
+distorted.
 
 It uses the same captured photo as ``rle-scan.gif``:
 
     data/bench/captured-fullsize/qr_code_ - 99.jpeg
-
-and measures a real full-resolution image row.  The crop is the wide 2:1 crop
-around the two upper finder patterns; the scanline is row 2591, which passes
-through the centre of the left finder.  The right finder sits about 126 px
-higher in the photo (perspective), so at row 2591 its five-run cut is
-off-centre and fails the 30% test.  The figure therefore works the left
-finder's tuple and adds the right finder's own centre-row tuple (row 2467) as
-a compact second row.
 
 Output:
 
@@ -42,7 +37,7 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.offsetbox import AnnotationBbox, HPacker, TextArea
+from matplotlib.colors import ListedColormap
 from matplotlib.patches import Rectangle
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -86,12 +81,10 @@ MAX_ERROR = float(np.log(1.3))  # detector tolerance: each run within 30%
 
 INK = "#1c2136"  # dark text / binary black
 MUTED = "#6b7280"  # secondary text
-RULE = "#e5e7eb"  # thin separators
 BINARY_DARK = "#1c2136"
 BINARY_LIGHT = "#f6f1da"
-ORANGE = "#ff7800"  # finder tuples / candidate accent
+ORANGE = "#ff7800"  # finder tuple / worked example
 CYAN = "#00dcff"  # scanline
-GREEN = "#00a86b"  # pass mark
 WHITE = "#ffffff"
 
 plt.rcParams.update(
@@ -232,6 +225,7 @@ def _finder_quads(gray: np.ndarray) -> list[np.ndarray]:
 @dataclass(frozen=True)
 class Measurements:
     rgb: np.ndarray
+    binary: np.ndarray
     left_quad: np.ndarray
     right_quad: np.ndarray
     runs: list[Run]
@@ -267,6 +261,7 @@ def measure() -> Measurements:
 
     return Measurements(
         rgb=rgb,
+        binary=binary,
         left_quad=left_quad,
         right_quad=right_quad,
         runs=runs,
@@ -281,9 +276,12 @@ def measure() -> Measurements:
 
 def _draw_photo(ax, data: Measurements) -> None:
     ax.imshow(
-        data.rgb[CROP_Y0:CROP_Y1, CROP_X0:CROP_X1],
+        data.binary[CROP_Y0:CROP_Y1, CROP_X0:CROP_X1],
+        cmap=ListedColormap([BINARY_DARK, BINARY_LIGHT]),
+        vmin=0,
+        vmax=1,
         extent=[CROP_X0, CROP_X1, CROP_Y1, CROP_Y0],
-        interpolation="lanczos",
+        interpolation="nearest",
     )
 
     for quad in (data.left_quad, data.right_quad):
@@ -323,31 +321,22 @@ def _draw_photo(ax, data: Measurements) -> None:
         zorder=6,
     )
 
-    ax.text(
-        CROP_X0 + 14,
-        ROW - 26,
-        f"row {ROW}",
-        color=CYAN,
-        fontsize=10,
-        fontweight="bold",
-        ha="left",
-        va="bottom",
-        zorder=7,
-        bbox=dict(boxstyle="round,pad=0.28", fc="#101010", ec="none", alpha=0.88),
-    )
-
     ax.set_xlim(CROP_X0, CROP_X1)
     ax.set_ylim(CROP_Y1, CROP_Y0)
     ax.axis("off")
 
 
 def _draw_strip(ax, data: Measurements) -> None:
-    for run in data.runs:
+    left = data.left
+    right = data.right_at_row
+    left_indices = set(range(left.start_index, left.start_index + 5))
+
+    for i, run in enumerate(data.runs):
         ax.add_patch(
             Rectangle(
-                (run.x0, 0.30),
+                (run.x0, 0.55),
                 run.x1 - run.x0,
-                0.50,
+                0.30,
                 facecolor=BINARY_LIGHT if run.is_white else BINARY_DARK,
                 edgecolor="#d8d2b8" if run.is_white else BINARY_DARK,
                 linewidth=0.5,
@@ -355,38 +344,55 @@ def _draw_strip(ax, data: Measurements) -> None:
             )
         )
 
-    for group, label in (
-        (data.left, "left finder"),
-        (data.right_at_row, "right finder"),
+        is_left = i in left_indices
+        # Very narrow runs get a lower row so their labels do not collide with
+        # the neighbouring run labels.
+        number_y = 0.34 if run.length < 20 and not is_left else 0.44
+        ax.text(
+            (run.x0 + run.x1) / 2.0,
+            number_y,
+            str(run.length),
+            color=ORANGE if is_left else INK,
+            fontsize=9.5 if is_left else 7.5,
+            fontweight="bold" if is_left else "normal",
+            ha="center",
+            va="center",
+            fontfamily="DejaVu Sans Mono",
+            zorder=5,
+        )
+
+    for group, label, color in (
+        (left, "left finder", ORANGE),
+        (right, "right finder", MUTED),
     ):
-        # Thin rule above the group and a bracket below it.
-        ax.plot(
-            [group.x0, group.x1],
-            [0.84, 0.84],
-            color=ORANGE,
-            lw=1.4,
-            zorder=4,
-        )
+        ax.plot([group.x0, group.x1], [0.90, 0.90], color=color, lw=1.4, zorder=4)
         for x in (group.x0, group.x1):
-            ax.plot([x, x], [0.84, 0.88], color=ORANGE, lw=1.4, zorder=4)
-        ax.plot(
-            [group.x0, group.x1],
-            [0.20, 0.20],
-            color=ORANGE,
-            lw=1.4,
-            zorder=4,
-        )
-        for x in (group.x0, group.x1):
-            ax.plot([x, x], [0.20, 0.27], color=ORANGE, lw=1.4, zorder=4)
+            ax.plot([x, x], [0.85, 0.90], color=color, lw=1.4, zorder=4)
         ax.text(
             (group.x0 + group.x1) / 2.0,
-            0.02,
+            0.97,
             label,
-            color=ORANGE,
+            color=color,
             fontsize=9.0,
             fontweight="bold",
             ha="center",
             va="bottom",
+            zorder=5,
+        )
+
+    for run, value in zip(
+        data.runs[left.start_index : left.start_index + 5], left.normalized
+    ):
+        ax.text(
+            (run.x0 + run.x1) / 2.0,
+            0.18,
+            f"{value:.2f}",
+            color=ORANGE,
+            fontsize=6.5,
+            fontweight="bold",
+            ha="center",
+            va="center",
+            fontfamily="DejaVu Sans Mono",
             zorder=5,
         )
 
@@ -395,265 +401,17 @@ def _draw_strip(ax, data: Measurements) -> None:
     ax.axis("off")
 
 
-def _packed_line(segments: list[tuple[str, str, bool]], fontsize: float):
-    """Pack coloured text segments into one horizontal line."""
-    children = [
-        TextArea(
-            text,
-            textprops=dict(
-                fontfamily="DejaVu Sans Mono",
-                fontsize=fontsize,
-                color=color,
-                fontweight="bold" if bold else "normal",
-            ),
-        )
-        for text, color, bold in segments
-    ]
-    return HPacker(children=children, align="center", pad=0, sep=0)
-
-
-def _draw_rle_list(ax, data: Measurements) -> None:
-    runs = data.runs
-    left = data.left
-    right = data.right_at_row
-
-    def number_list(start: int, stop: int) -> str:
-        return ", ".join(str(run.length) for run in runs[start:stop])
-
-    line1 = [
-        (number_list(0, left.start_index) + ", ", INK, False),
-        (
-            "["
-            + ", ".join(str(v) for v in left.lengths)
-            + "]",
-            ORANGE,
-            True,
-        ),
-        (", " + number_list(left.start_index + 5, right.start_index) + ", ", INK, False),
-    ]
-    line2 = [
-        (
-            "["
-            + ", ".join(str(v) for v in right.lengths)
-            + "]",
-            ORANGE,
-            True,
-        ),
-        (", " + number_list(right.start_index + 5, len(runs)), INK, False),
-    ]
-
-    for y, segments in ((0.68, line1), (0.24, line2)):
-        box = AnnotationBbox(
-            _packed_line(segments, fontsize=10.5),
-            (0.5, y),
-            xycoords="axes fraction",
-            frameon=False,
-            box_alignment=(0.5, 0.5),
-        )
-        ax.add_artist(box)
-
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    ax.axis("off")
-
-
-def _draw_normalization(ax, data: Measurements) -> None:
-    left = data.left
-    right = data.right_own
-
-    label_x = 0.0
-    col_x = [0.20, 0.35, 0.50, 0.65, 0.80]
-    right_x = 0.995
-
-    ax.text(
-        label_x,
-        0.955,
-        "normalize",
-        fontsize=15,
-        fontweight="bold",
-        color=INK,
-        ha="left",
-        va="top",
-    )
-    ax.text(
-        label_x,
-        0.885,
-        f"left finder · row {ROW}",
-        fontsize=10.5,
-        color=MUTED,
-        ha="left",
-        va="top",
-    )
-
-    # Raw lengths.
-    ax.text(label_x, 0.785, "raw px", fontsize=10.5, color=MUTED, ha="left", va="center")
-    for x, value in zip(col_x, left.lengths):
-        ax.text(
-            x,
-            0.785,
-            str(int(value)),
-            fontsize=14,
-            color=INK,
-            ha="center",
-            va="center",
-            fontfamily="DejaVu Sans Mono",
-        )
-    ax.text(
-        right_x,
-        0.785,
-        f"S = {left.total}",
-        fontsize=12,
-        fontweight="bold",
-        color=INK,
-        ha="right",
-        va="center",
-    )
-
-    # Explicit sum.
-    ax.text(
-        label_x,
-        0.705,
-        "S = "
-        + " + ".join(str(int(v)) for v in left.lengths)
-        + f" = {left.total}",
-        fontsize=10.5,
-        color=INK,
-        ha="left",
-        va="center",
-        fontfamily="DejaVu Sans Mono",
-    )
-
-    # x / S * 7, then the result.
-    ax.text(
-        label_x, 0.585, "x / S × 7", fontsize=10.5, color=MUTED, ha="left", va="center"
-    )
-    for x, value in zip(col_x, left.lengths):
-        ax.text(
-            x,
-            0.585,
-            f"{int(value)}/{left.total}×7",
-            fontsize=10.5,
-            color=INK,
-            ha="center",
-            va="center",
-            fontfamily="DejaVu Sans Mono",
-        )
-    for x, value in zip(col_x, left.normalized):
-        ax.text(
-            x,
-            0.505,
-            f"= {value:.2f}",
-            fontsize=11,
-            fontweight="bold",
-            color=INK,
-            ha="center",
-            va="center",
-            fontfamily="DejaVu Sans Mono",
-        )
-
-    # Ideal and error.
-    ax.text(label_x, 0.385, "ideal", fontsize=10.5, color=MUTED, ha="left", va="center")
-    for x, value in zip(col_x, (1, 1, 3, 1, 1)):
-        ax.text(
-            x,
-            0.385,
-            str(value),
-            fontsize=13,
-            color=INK,
-            ha="center",
-            va="center",
-            fontfamily="DejaVu Sans Mono",
-        )
-
-    ax.text(label_x, 0.285, "error", fontsize=10.5, color=MUTED, ha="left", va="center")
-    for x, value in zip(col_x, left.errors):
-        ax.text(
-            x,
-            0.285,
-            f"{value * 100:+.0f}%",
-            fontsize=10.5,
-            color=INK,
-            ha="center",
-            va="center",
-            fontfamily="DejaVu Sans Mono",
-        )
-    ax.text(
-        right_x,
-        0.285,
-        "all within 30%  ✓",
-        fontsize=11,
-        fontweight="bold",
-        color=GREEN,
-        ha="right",
-        va="center",
-    )
-
-    # Separator and the second finder's own-centre-row tuple.
-    ax.plot([0.0, 1.0], [0.205, 0.205], color=RULE, lw=1.0)
-    ax.text(
-        label_x,
-        0.135,
-        (
-            f"right finder at its own centre row {RIGHT_OWN_ROW}:  "
-            + ", ".join(str(int(v)) for v in right.lengths)
-            + f"  (S = {right.total})  →  "
-            + ", ".join(f"{v:.2f}" for v in right.normalized)
-            + "  ✓"
-        ),
-        fontsize=10.0,
-        color=MUTED,
-        ha="left",
-        va="center",
-    )
-    ax.text(
-        label_x,
-        0.065,
-        f"at row {ROW} the scanline is off-centre for the right finder, so its 5-tuple is distorted",
-        fontsize=9.5,
-        color=MUTED,
-        ha="left",
-        va="center",
-    )
-
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    ax.axis("off")
-
-
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 
 def build_figure(data: Measurements) -> plt.Figure:
-    fig = plt.figure(figsize=(9.0, 10.0), dpi=200)
+    fig = plt.figure(figsize=(9.0, 6.0), dpi=200)
 
-    photo_ax = fig.add_axes([0.02, 0.555, 0.96, 0.432])
-    strip_ax = fig.add_axes([0.02, 0.455, 0.96, 0.070])
-    list_ax = fig.add_axes([0.02, 0.385, 0.96, 0.055])
-    norm_ax = fig.add_axes([0.02, 0.020, 0.96, 0.330])
+    photo_ax = fig.add_axes([0.02, 0.26, 0.96, 0.72])
+    strip_ax = fig.add_axes([0.02, 0.02, 0.96, 0.22])
 
     _draw_photo(photo_ax, data)
     _draw_strip(strip_ax, data)
-    _draw_rle_list(list_ax, data)
-    _draw_normalization(norm_ax, data)
-
-    fig.text(
-        0.02,
-        0.535,
-        f"run-length encoding of row {ROW}",
-        fontsize=12,
-        color=INK,
-        ha="left",
-        va="bottom",
-    )
-    fig.text(
-        0.5,
-        0.365,
-        "brackets = finder 5-tuples  ·  lengths in full-resolution pixels",
-        fontsize=9.5,
-        color=MUTED,
-        ha="center",
-        va="center",
-    )
 
     return fig
 
