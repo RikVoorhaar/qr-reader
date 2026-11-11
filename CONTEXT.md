@@ -37,9 +37,25 @@ the same QR code region.
 _Avoid_: Region group, pattern cluster
 
 **Cross-ratio**:
-A projective invariant computed from four colinear points, used to estimate the
-QR code version by comparing measured ratios against expected values.
+A projective invariant computed from four colinear points, used to rank QR
+code versions by comparing measured ratios against expected values.
 _Avoid_: Ratio, projective measure
+
+**Version Candidate**:
+A QR version shortlisted for one Triplet by its cross-ratio score. The pipeline
+tries the best one or two candidates instead of searching all forty versions.
+_Avoid_: Guess, size hypothesis
+
+**Decode Attempt**:
+One (Triplet, Version Candidate) trial: fit a homography, sample the module
+grid, and decode. Records the cross-ratio score, stage timings, decoded text,
+and the failure reason when the attempt is rejected.
+_Avoid_: Iteration, pass, run
+
+**Payload Check**:
+Exact comparison of a decoded string against an expected payload. A mismatch
+keeps the search going; it is not a decoding failure.
+_Avoid_: Validation, match test
 
 **Homography**:
 A 3×3 matrix mapping grid coordinates to image coordinates, estimated via DLT,

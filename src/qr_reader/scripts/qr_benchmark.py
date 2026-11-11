@@ -16,9 +16,11 @@ from typing import Any
 
 import cv2
 import numpy as np
+import qrcode
+from qrcode.constants import ERROR_CORRECT_L
 
-from qr_reader.detector.detector import detect_corners, detect_homography, detect_sample
-from qr_reader.decoder.decoder import decode as decode_qr
+from qr_reader.detector.homography import compute_qr_corners
+from qr_reader.pipeline import decode_image
 from qr_reader.qr_gen import generate_test_image, make_qr_image
 
 # ---------------------------------------------------------------------------
@@ -65,8 +67,10 @@ class ImageResult:
     decode_time_s: float = 0.0
     decode_success: bool = False
     decode_text: str = ""
+    attempts: int = 0
     total_time_s: float = 0.0
     detected_version: int = -1
+    version_actual: int = -1
 
 
 @dataclass
@@ -162,6 +166,23 @@ def _corner_error(detected: np.ndarray, gt: np.ndarray) -> float:
 # ---------------------------------------------------------------------------
 
 
+def _actual_version(requested_version: int, content: str) -> int:
+    """Return the version the generator actually produced.
+
+    ``make_qr_image`` calls ``QRCode.make(fit=True)``, so a requested version
+    is a lower bound: short-version capacity can promote the symbol.
+    """
+    qr = qrcode.QRCode(
+        version=requested_version,
+        error_correction=ERROR_CORRECT_L,
+        box_size=BOX_SIZE,
+        border=BORDER,
+    )
+    qr.add_data(content)
+    qr.make(fit=True)
+    return int(qr.version)
+
+
 def run_benchmark(output_json: str) -> None:
     """Run the full sweep and write results to *output_json*."""
     results: list[ImageResult] = []
@@ -176,6 +197,7 @@ def run_benchmark(output_json: str) -> None:
             for seed in range(NUM_SEEDS):
                 n += 1
                 result = ImageResult(preset=preset_name, version=version, seed=seed)
+                result.version_actual = _actual_version(version, CONTENT)
 
                 try:
                     # Generate test image
@@ -203,29 +225,55 @@ def run_benchmark(output_json: str) -> None:
                         perspective_max_shift=preset.perspective_max_shift,
                     )
 
-                    # Detection
+                    # Detection + decoding (multi-triplet / multi-version)
                     t0 = perf_counter()
-                    detected_corners, detected_version = detect_corners(img)
-                    t1 = perf_counter()
-                    result.detection_time_s = t1 - t0
-                    result.detection_success = True
-                    result.detected_version = detected_version
-                    result.corner_error_px = _corner_error(detected_corners, gt_corners)
-
-                    # Decoding
-                    try:
-                        bits = detect_sample(img)
-                        t2 = perf_counter()
-                        result.decode_time_s = t2 - t1
-                        decoded = decode_qr(bits)
-                        result.decode_success = (decoded == CONTENT)
-                        result.decode_text = decoded
-                    except Exception as dec_err:
-                        result.decode_time_s = perf_counter() - t1
-                        result.decode_success = False
-                        result.decode_text = str(dec_err)
-
+                    dec = decode_image(img, expected_payload=CONTENT)
                     result.total_time_s = perf_counter() - t0
+                    result.attempts = len(dec.attempts)
+                    result.detection_time_s = dec.prep_time_s + sum(
+                        a.fit_time_s for a in dec.attempts
+                    )
+                    result.decode_time_s = sum(
+                        a.sample_time_s + a.decode_time_s for a in dec.attempts
+                    )
+                    result.detection_success = dec.detection_ok
+                    if dec.version is not None:
+                        result.detected_version = dec.version
+                    elif dec.detected_version is not None:
+                        result.detected_version = dec.detected_version
+                    else:
+                        result.detected_version = -1
+
+                    if dec.H is not None and dec.detected_version is not None:
+                        N = 4 * dec.detected_version + 17
+                        detected_corners = compute_qr_corners(dec.H, N)
+                        result.corner_error_px = _corner_error(
+                            detected_corners, gt_corners
+                        )
+
+                    result.decode_success = dec.success
+                    if dec.text is not None:
+                        result.decode_text = dec.text
+                    else:
+                        decoded = [
+                            a.decoded_text
+                            for a in dec.attempts
+                            if a.decoded_text is not None
+                        ]
+                        if decoded:
+                            result.decode_text = decoded[-1]
+                        elif dec.error is not None:
+                            result.decode_text = str(dec.error)
+                        else:
+                            result.decode_text = next(
+                                (a.failure_reason for a in dec.attempts), ""
+                            )
+                    if not result.detection_success:
+                        result.detection_error = (
+                            str(dec.error)
+                            if dec.error is not None
+                            else "no homography candidate produced"
+                        )
 
                 except Exception as det_err:
                     result.detection_success = False
@@ -274,8 +322,8 @@ def print_summary(results: list[ImageResult]) -> None:
         groups[(r.preset, r.version)].append(r)
 
     print("\n## Benchmark Summary\n")
-    print("| Preset | Version | Detect % | Corner Err (px) | Decode % | Time (ms) |")
-    print("|--------|---------|----------|-----------------|----------|-----------|")
+    print("| Preset | Req. V | Detect % | Corner Err (px) | Ver % | Decode % | Att. | Time (ms) |")
+    print("|--------|--------|----------|-----------------|-------|----------|------|-----------|")
 
     summary_by_preset: dict[str, list[float]] = defaultdict(list)
 
@@ -285,29 +333,35 @@ def print_summary(results: list[ImageResult]) -> None:
             n = len(grp)
             det_ok = sum(1 for r in grp if r.detection_success)
             dec_ok = sum(1 for r in grp if r.decode_success)
+            ver_ok = sum(1 for r in grp if r.detected_version == r.version_actual)
             corner_errs = [r.corner_error_px for r in grp if r.detection_success]
             times = [r.total_time_s for r in grp if r.detection_success]
+            attempts = [r.attempts for r in grp if r.attempts > 0]
 
             mean_err = np.mean(corner_errs) if corner_errs else float("nan")
             mean_time = np.mean(times) * 1000 if times else float("nan")
+            mean_attempts = np.mean(attempts) if attempts else float("nan")
 
             det_pct = det_ok / n * 100
             dec_pct = dec_ok / n * 100
+            ver_pct = ver_ok / n * 100
 
             print(
                 f"| {preset_name:>6s} | {version:7d} | "
                 f"{det_pct:5.1f}% ({det_ok}/{n}) | "
                 f"{mean_err:15.1f} | "
+                f"{ver_pct:5.1f}% | "
                 f"{dec_pct:5.1f}% ({dec_ok}/{n}) | "
+                f"{mean_attempts:4.1f} | "
                 f"{mean_time:9.1f} |"
             )
             summary_by_preset[preset_name].append(det_pct)
 
     # Aggregate by preset
-    print("|--------|---------|----------|-----------------|----------|-----------|")
+    print("|--------|---------|----------|-----------------|-------|----------|------|-----------|")
     for preset_name in ["easy", "medium", "hard"]:
         avg_det = np.mean(summary_by_preset[preset_name])
-        print(f"| **{preset_name:>6s}** | **avg** | **{avg_det:5.1f}%** | | | |")
+        print(f"| **{preset_name:>6s}** | **avg** | **{avg_det:5.1f}%** | | | | | |")
 
     print()
 
