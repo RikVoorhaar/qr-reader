@@ -12,6 +12,52 @@ from scipy.ndimage import map_coordinates
 
 from qr_reader.detector.homography import project_points
 
+# Sub-cell sample offsets within a module, and the 3×3 weight kernel.
+_OFFSETS = np.array([0.25, 0.5, 0.75], dtype=np.float64)
+_DY, _DX = np.meshgrid(_OFFSETS, _OFFSETS, indexing="ij")
+_WEIGHTS = np.ones((3, 3), dtype=np.float64)
+_WEIGHTS[1, 1] = 2.0  # centre weight 2
+
+
+def _sample_points(
+    image_f64: np.ndarray, H: np.ndarray, grid_xy: np.ndarray
+) -> np.ndarray:
+    """Bilinearly sample *image_f64* at many QR-grid ``(x, y)`` points.
+
+    Args:
+        image_f64: Grayscale image already cast to ``float64``.
+        H: 3×3 homography QR-grid ``(x, y)`` → image ``(x, y)``.
+        grid_xy: ``(n, 2)`` array of QR-grid ``(x, y)`` coordinates.
+
+    Returns:
+        ``(n,)`` float64 array of sampled values.
+    """
+    img_xy = project_points(H, grid_xy)  # (n, 2) in (x, y) order
+    # map_coordinates expects (row, col) order
+    coords = np.stack([img_xy[:, 1], img_xy[:, 0]])  # (2, n): (y, x)
+    return map_coordinates(image_f64, coords, order=1, mode="nearest")
+
+
+def _supersample_cells(
+    image_f64: np.ndarray, H: np.ndarray, rows: np.ndarray, cols: np.ndarray
+) -> np.ndarray:
+    """Vectorised :func:`supersample_cell` over many cells.
+
+    Args:
+        image_f64: Grayscale image already cast to ``float64``.
+        H: 3×3 homography QR-grid ``(x, y)`` → image ``(x, y)``.
+        rows, cols: 1-D integer arrays of cell rows / cols, equal length.
+
+    Returns:
+        ``(len(rows), 3, 3)`` float64 array; entry ``[k, i, j]`` is the value
+        at ``(row + dy[i], col + dx[j])``.
+    """
+    n = rows.shape[0]
+    x = cols[:, None, None] + _DX[None, :, :]  # (n, 3, 3)
+    y = rows[:, None, None] + _DY[None, :, :]  # (n, 3, 3)
+    grid_xy = np.stack([x, y], axis=-1).reshape(-1, 2)  # (n*9, 2)
+    return _sample_points(image_f64, H, grid_xy).reshape(n, 3, 3)
+
 
 def supersample_cell(
     image: np.ndarray, H: np.ndarray, row: int, col: int
@@ -33,23 +79,12 @@ def supersample_cell(
         values.  Index ``[1, 1]`` corresponds to the exact cell centre
         ``(col+0.5, row+0.5)``.
     """
-    offsets = np.array([0.25, 0.5, 0.75], dtype=np.float64)
-    dy, dx = np.meshgrid(offsets, offsets, indexing="ij")
-    x = col + dx.ravel()  # (9,) x-coords in QR grid
-    y = row + dy.ravel()  # (9,) y-coords in QR grid
-
-    grid_xy = np.column_stack([x, y])  # (9, 2)
-    img_xy = project_points(H, grid_xy)  # (9, 2) in (x, y) order
-
-    # map_coordinates expects (row, col) order
-    coords = np.stack([img_xy[:, 1], img_xy[:, 0]])  # (2, 9): (y, x)
-    vals = map_coordinates(
+    return _supersample_cells(
         image.astype(np.float64),
-        coords,
-        order=1,  # bilinear
-        mode="nearest",
-    )
-    return vals.reshape(3, 3)
+        H,
+        np.array([row], dtype=np.float64),
+        np.array([col], dtype=np.float64),
+    )[0]
 
 
 def finder_pattern_known_cells(N: int) -> tuple[list, list]:
@@ -128,13 +163,16 @@ def compute_adaptive_threshold(image: np.ndarray, H: np.ndarray, N: int) -> floa
         A ``float`` threshold value.
     """
     black_cells, white_cells = finder_pattern_known_cells(N)
+    image_f64 = image.astype(np.float64)
 
-    black_vals = np.array(
-        [supersample_cell(image, H, r, c)[1, 1] for r, c in black_cells]
-    )
-    white_vals = np.array(
-        [supersample_cell(image, H, r, c)[1, 1] for r, c in white_cells]
-    )
+    def _centre_values(cells: list[tuple[int, int]]) -> np.ndarray:
+        rows = np.array([r for r, _ in cells], dtype=np.float64)
+        cols = np.array([c for _, c in cells], dtype=np.float64)
+        grid_xy = np.column_stack([cols + 0.5, rows + 0.5])
+        return _sample_points(image_f64, H, grid_xy)
+
+    black_vals = _centre_values(black_cells)
+    white_vals = _centre_values(white_cells)
 
     threshold = (np.median(black_vals) + np.median(white_vals)) / 2.0
     return float(threshold)
@@ -168,16 +206,17 @@ def sample_qr_bits(
     if threshold is None:
         threshold = compute_adaptive_threshold(image, H, N)
 
-    light_modules = np.empty((N, N), dtype=bool)
+    # Cells flattened in C order over (row, col), sampled in one batch.
+    rows, cols = np.meshgrid(
+        np.arange(N, dtype=np.float64),
+        np.arange(N, dtype=np.float64),
+        indexing="ij",
+    )
+    vals = _supersample_cells(
+        image.astype(np.float64), H, rows.ravel(), cols.ravel()
+    ).reshape(N, N, 3, 3)
 
-    # Pre-allocate the 3×3 weight kernel
-    weights = np.ones((3, 3), dtype=np.float64)
-    weights[1, 1] = 2.0  # centre weight 2
-
-    for r in range(N):
-        for c in range(N):
-            vals = supersample_cell(image, H, r, c)
-            white_votes = np.sum((vals > threshold) * weights)
-            light_modules[r, c] = white_votes >= 5.0
+    white_votes = np.sum((vals > threshold) * _WEIGHTS, axis=(-2, -1))
+    light_modules = white_votes >= 5.0
 
     return (~light_modules).T
