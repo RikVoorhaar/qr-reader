@@ -84,6 +84,9 @@ MUTED = "#6b7280"  # secondary text
 BINARY_DARK = "#1c2136"
 BINARY_LIGHT = "#f6f1da"
 ORANGE = "#ff7800"  # finder tuple / worked example
+ORANGE_LIGHT = "#ffb86b"  # finder labels on dark runs
+ORANGE_DARK = "#c2410c"  # finder labels on light runs
+ORANGE_TEXT = "#d95f00"  # normalized ratios on white
 CYAN = "#00dcff"  # scanline
 WHITE = "#ffffff"
 
@@ -326,10 +329,27 @@ def _draw_photo(ax, data: Measurements) -> None:
     ax.axis("off")
 
 
+def _fit_text_to_run(ax, text_artist, run: Run, padding: float = 4.0) -> None:
+    """Scale one label down until it fits inside its run rectangle."""
+    renderer = ax.figure.canvas.get_renderer()
+    bbox = text_artist.get_window_extent(renderer=renderer)
+    x0 = ax.transData.transform((run.x0, 0.0))[0]
+    x1 = ax.transData.transform((run.x1, 0.0))[0]
+    max_width = abs(x1 - x0) - padding
+    if max_width > 0 and bbox.width > max_width:
+        text_artist.set_fontsize(text_artist.get_fontsize() * max_width / bbox.width)
+
+
 def _draw_strip(ax, data: Measurements) -> None:
     left = data.left
     right = data.right_at_row
     left_indices = set(range(left.start_index, left.start_index + 5))
+
+    ax.set_xlim(CROP_X0, CROP_X1)
+    ax.set_ylim(0.0, 1.0)
+    ax.axis("off")
+
+    labels = []
 
     for i, run in enumerate(data.runs):
         ax.add_patch(
@@ -345,21 +365,28 @@ def _draw_strip(ax, data: Measurements) -> None:
         )
 
         is_left = i in left_indices
-        # Very narrow runs get a lower row so their labels do not collide with
-        # the neighbouring run labels.
-        number_y = 0.34 if run.length < 20 and not is_left else 0.44
-        ax.text(
+        if is_left:
+            color = ORANGE_LIGHT if not run.is_white else ORANGE_DARK
+            fontsize = 10.0
+            fontweight = "bold"
+        else:
+            color = WHITE if not run.is_white else INK
+            fontsize = 9.0
+            fontweight = "normal"
+
+        text = ax.text(
             (run.x0 + run.x1) / 2.0,
-            number_y,
+            0.70,
             str(run.length),
-            color=ORANGE if is_left else INK,
-            fontsize=9.5 if is_left else 7.5,
-            fontweight="bold" if is_left else "normal",
+            color=color,
+            fontsize=fontsize,
+            fontweight=fontweight,
             ha="center",
             va="center",
             fontfamily="DejaVu Sans Mono",
             zorder=5,
         )
+        labels.append((text, run))
 
     for group, label, color in (
         (left, "left finder", ORANGE),
@@ -383,12 +410,13 @@ def _draw_strip(ax, data: Measurements) -> None:
     for run, value in zip(
         data.runs[left.start_index : left.start_index + 5], left.normalized
     ):
+        ratio_y = 0.14 if run.is_white else 0.32
         ax.text(
             (run.x0 + run.x1) / 2.0,
-            0.18,
+            ratio_y,
             f"{value:.2f}",
-            color=ORANGE,
-            fontsize=6.5,
+            color=ORANGE_TEXT,
+            fontsize=9.0,
             fontweight="bold",
             ha="center",
             va="center",
@@ -396,9 +424,10 @@ def _draw_strip(ax, data: Measurements) -> None:
             zorder=5,
         )
 
-    ax.set_xlim(CROP_X0, CROP_X1)
-    ax.set_ylim(0.0, 1.0)
-    ax.axis("off")
+    # Measure after the axes limits and rectangle positions are final.
+    ax.figure.canvas.draw()
+    for text, run in labels:
+        _fit_text_to_run(ax, text, run)
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
