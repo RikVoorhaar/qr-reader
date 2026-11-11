@@ -189,27 +189,24 @@ def sample_ray_profiles(
 
     angles = np.linspace(0, 2 * np.pi, num_rays, endpoint=False)
 
-    profiles = np.full((num_rays, num_samples), np.nan, dtype=np.float64)
+    sample_ts = np.linspace(0, max_dist, num_samples)
+    dx = np.cos(angles)[:, None]
+    dy = np.sin(angles)[:, None]
 
-    for i, theta in enumerate(angles):
-        dx = np.cos(theta)
-        dy = np.sin(theta)
+    sx = center_x + sample_ts[None, :] * dx  # (R, S)
+    sy = center_y + sample_ts[None, :] * dy  # (R, S)
 
-        sample_ts = np.linspace(0, max_dist, num_samples)
-        sx = center_x + sample_ts * dx
-        sy = center_y + sample_ts * dy
+    x0 = np.clip(np.floor(sx).astype(int), 0, W_roi - 1)
+    y0 = np.clip(np.floor(sy).astype(int), 0, H_roi - 1)
+    x1 = np.clip(x0 + 1, 0, W_roi - 1)
+    y1 = np.clip(y0 + 1, 0, H_roi - 1)
+    fx = sx - x0.astype(np.float64)
+    fy = sy - y0.astype(np.float64)
 
-        x0 = np.clip(np.floor(sx).astype(int), 0, W_roi - 1)
-        y0 = np.clip(np.floor(sy).astype(int), 0, H_roi - 1)
-        x1 = np.clip(x0 + 1, 0, W_roi - 1)
-        y1 = np.clip(y0 + 1, 0, H_roi - 1)
-        fx = sx - x0.astype(np.float64)
-        fy = sy - y0.astype(np.float64)
-
-        profiles[i] = (
-            (1 - fy) * ((1 - fx) * roi_f[y0, x0] + fx * roi_f[y0, x1])
-            + fy * ((1 - fx) * roi_f[y1, x0] + fx * roi_f[y1, x1])
-        )
+    profiles = (
+        (1 - fy) * ((1 - fx) * roi_f[y0, x0] + fx * roi_f[y0, x1])
+        + fy * ((1 - fx) * roi_f[y1, x0] + fx * roi_f[y1, x1])
+    )
 
     profiles = np.clip(profiles, 0, 255)
     return profiles, max_dist
@@ -300,6 +297,165 @@ def fit_half_ray(
     }
 
 
+def _minimize_bounded_batch(
+    t_refine: np.ndarray,
+    p_refine: np.ndarray,
+    n_real: np.ndarray,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    sigma: float,
+    xatol: float = 1e-5,
+    maxiter: int = 500,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Vectorised ``scipy.optimize.minimize_scalar(method="bounded")``.
+
+    Each row of *t_refine* / *p_refine* is one independent 1-D problem.  Rows
+    are zero-padded at the tail; *n_real* holds each row's real sample count.
+    The algorithm mirrors SciPy's Brent implementation operation for operation,
+    so each row produces the same ``x``, ``fun`` and ``success`` as calling
+    ``minimize_scalar`` on that row.
+
+    Returns ``(x, fun, success)`` arrays of shape ``(n_rows,)``.
+    """
+    abs_t = np.abs(t_refine)
+    sqrt2 = np.sqrt(2.0)
+    n_rows = t_refine.shape[0]
+    n_int = n_real.astype(np.intp)
+    widths = np.arange(t_refine.shape[1])[None, :] < n_real[:, None]
+
+    # Flatten the valid (row, sample) pairs so the template is only evaluated
+    # where it is actually used.
+    row_ids = np.repeat(np.arange(n_rows), n_int)
+    col_ids = (
+        np.concatenate([np.arange(n) for n in n_int])
+        if n_rows
+        else np.empty(0, dtype=np.intp)
+    )
+    t_flat = abs_t[row_ids, col_ids]
+
+    def evaluate(x: np.ndarray) -> np.ndarray:
+        m_flat = x[row_ids]
+        u = t_flat / m_flat
+        s = sigma / m_flat
+        template = 0.5 * erfc(-(u - 1.5) / (s * sqrt2))
+        template -= 0.5 * erfc(-(u - 2.5) / (s * sqrt2))
+        template += 0.5 * erfc(-(u - 3.5) / (s * sqrt2))
+        template_full = np.zeros_like(abs_t)
+        template_full[row_ids, col_ids] = template
+        sq = (template_full - p_refine) ** 2
+        # Masked reduction over each row's exact sample count reproduces
+        # ``np.mean`` on the unpadded row bit for bit.
+        return np.sum(sq, axis=1, where=widths) / n_real
+
+    sqrt_eps = np.sqrt(2.2e-16)
+    golden_mean = 0.5 * (3.0 - np.sqrt(5.0))
+    a = lower.astype(np.float64).copy()
+    b = upper.astype(np.float64).copy()
+    fulc = a + golden_mean * (b - a)
+    nfc = fulc.copy()
+    xf = fulc.copy()
+    rat = np.zeros(n_rows)
+    e = np.zeros(n_rows)
+    fx = evaluate(xf)
+    num = np.ones(n_rows, dtype=np.int64)
+    ffulc = fx.copy()
+    fnfc = fx.copy()
+    xm = 0.5 * (a + b)
+    tol1 = sqrt_eps * np.abs(xf) + xatol / 3.0
+    tol2 = 2.0 * tol1
+    fu = np.full(n_rows, np.inf)
+    flag = np.zeros(n_rows, dtype=np.int64)
+
+    active = np.abs(xf - xm) > (tol2 - 0.5 * (b - a))
+    while np.any(active):
+        # ── parabolic candidate ──
+        cond_e = np.abs(e) > tol1
+        r = (xf - nfc) * (fx - ffulc)
+        q = (xf - fulc) * (fx - fnfc)
+        p = (xf - fulc) * q - (xf - nfc) * r
+        q = 2.0 * (q - r)
+        q_positive = q > 0.0
+        p = np.where(q_positive, -p, p)
+        q = np.abs(q)
+        r_prev = e
+        e_prev = rat
+        accept = (
+            (np.abs(p) < np.abs(0.5 * q * r_prev))
+            & (p > q * (a - xf))
+            & (p < q * (b - xf))
+        )
+        parabolic = active & cond_e & accept
+        golden = active & ~parabolic
+
+        with np.errstate(invalid="ignore", divide="ignore"):
+            rat_par = (p + 0.0) / q
+        x_par = xf + rat_par
+        si_near = np.sign(xm - xf) + ((xm - xf) == 0)
+        near = ((x_par - a) < tol2) | ((b - x_par) < tol2)
+        rat_par = np.where(near, tol1 * si_near, rat_par)
+        rat = np.where(parabolic, rat_par, rat)
+        e = np.where(parabolic, e_prev, e)
+
+        # ── golden-section step ──
+        e_golden = np.where(xf >= xm, a - xf, b - xf)
+        rat_golden = golden_mean * e_golden
+        e = np.where(golden, e_golden, e)
+        rat = np.where(golden, rat_golden, rat)
+
+        si = np.sign(rat) + (rat == 0)
+        x_new = xf + si * np.maximum(np.abs(rat), tol1)
+        x_eval = np.where(active, x_new, xf)
+        fu_new = evaluate(x_eval)
+        fu = np.where(active, fu_new, fu)
+        num = num + active.astype(np.int64)
+
+        # ── bracket update ──
+        better = fu_new <= fx
+        a_better = np.where(x_new >= xf, xf, a)
+        b_better = np.where(x_new < xf, xf, b)
+        nfc_better = xf
+        fnfc_better = fx
+        xf_better = x_new
+        fx_better = fu_new
+
+        a_worse = np.where(x_new < xf, x_new, a)
+        b_worse = np.where(x_new >= xf, x_new, b)
+        cond1 = (fu_new <= fnfc) | (nfc == xf)
+        cond2 = (fu_new <= ffulc) | (fulc == xf) | (fulc == nfc)
+        fulc_worse = np.where(cond1, nfc, np.where(cond2, x_new, fulc))
+        ffulc_worse = np.where(cond1, fnfc, np.where(cond2, fu_new, ffulc))
+        nfc_worse = np.where(cond1, x_new, nfc)
+        fnfc_worse = np.where(cond1, fu_new, fnfc)
+
+        a = np.where(active, np.where(better, a_better, a_worse), a)
+        b = np.where(active, np.where(better, b_better, b_worse), b)
+        fulc = np.where(
+            active, np.where(better, nfc, fulc_worse), fulc
+        )
+        ffulc = np.where(
+            active, np.where(better, fnfc, ffulc_worse), ffulc
+        )
+        nfc = np.where(active, np.where(better, nfc_better, nfc_worse), nfc)
+        fnfc = np.where(active, np.where(better, fnfc_better, fnfc_worse), fnfc)
+        xf = np.where(active, np.where(better, xf_better, xf), xf)
+        fx = np.where(active, np.where(better, fx_better, fx), fx)
+
+        xm = np.where(active, 0.5 * (a + b), xm)
+        tol1 = np.where(active, sqrt_eps * np.abs(xf) + xatol / 3.0, tol1)
+        tol2 = np.where(active, 2.0 * tol1, tol2)
+
+        converged = active & ~(np.abs(xf - xm) > (tol2 - 0.5 * (b - a)))
+        active = active & ~converged
+        hit_max = active & (num >= maxiter)
+        flag[hit_max] = 1
+        active = active & ~hit_max
+
+    nan = np.isnan(xf) | np.isnan(fx) | np.isnan(fu)
+    flag[nan] = 2
+    success = flag == 0
+    return xf, fx, success
+
+
 def fit_all_rays(
     profiles: np.ndarray,
     m_est: float,
@@ -317,20 +473,94 @@ def fit_all_rays(
     mse : ndarray (num_rays,)
     success : ndarray (num_rays,) bool
     """
-    n_rays = profiles.shape[0]
-    t_pos = np.linspace(0, max_dist, profiles.shape[1])
+    n_rays, n_samples = profiles.shape
+    t_pos = np.linspace(0, max_dist, n_samples)
 
     m = np.full(n_rays, np.nan, dtype=np.float64)
     mse_arr = np.full(n_rays, np.nan, dtype=np.float64)
     success = np.full(n_rays, False)
 
-    for i in range(n_rays):
-        res = fit_half_ray(
-            t_pos, profiles[i], m_est, mask_boundary, num_grid, grid_width, sigma
+    finite = np.isfinite(profiles)
+    enough = np.sum(finite, axis=1) >= 10
+
+    if not (finite.all() and enough.all()):
+        # Rare degenerate case: use the original per-ray implementation.
+        for i in range(n_rays):
+            res = fit_half_ray(
+                t_pos, profiles[i], m_est, mask_boundary, num_grid, grid_width, sigma
+            )
+            m[i] = res["m_fitted"]
+            mse_arr[i] = res["mse"]
+            success[i] = res["success"]
+        return m, mse_arr, success
+
+    m_grid = np.linspace(m_est / grid_width, m_est * grid_width, num_grid)
+    abs_t = np.abs(t_pos)  # (S,)
+    m_col = m_grid[:, None]  # (K, 1)
+
+    # Prefix length of the mask for each grid m (t is increasing).
+    prefix_n = np.sum(abs_t[None, :] <= mask_boundary * m_col, axis=1)  # (K,)
+    widths = np.arange(n_samples)[None, :] < prefix_n[:, None]  # (K, S)
+
+    # finder_soft_template for every (grid m, sample) at once.
+    u = abs_t[None, :] / m_col
+    s = sigma / m_col
+    sqrt2 = np.sqrt(2.0)
+    template = 0.5 * erfc(-(u - 1.5) / (s * sqrt2))
+    template -= 0.5 * erfc(-(u - 2.5) / (s * sqrt2))
+    template += 0.5 * erfc(-(u - 3.5) / (s * sqrt2))  # (K, S)
+
+    diff = (template[None, :, :] - profiles[:, None, :]) ** 2  # (R, K, S)
+    losses = np.full((n_rays, num_grid), np.inf, dtype=np.float64)
+    ok = prefix_n >= 3
+    losses[:, ok] = (
+        np.sum(diff[:, ok, :], axis=2, where=widths[ok, :]) / prefix_n[ok]
+    )
+
+    rows = np.arange(n_rays)
+    best_idx = np.argmin(losses, axis=1)
+    best_loss = losses[rows, best_idx]
+    m_best = m_grid[best_idx]
+
+    step = m_grid[1] - m_grid[0] if num_grid > 1 else m_est * 0.05
+
+    # Rays whose grid fit is unusable mirror fit_half_ray's early exits.
+    failed_grid = ~np.isfinite(best_loss)
+    m[failed_grid] = m_est
+    mse_arr[failed_grid] = best_loss[failed_grid]
+
+    refine = np.nonzero(~failed_grid)[0]
+    if refine.size:
+        n_refine = np.sum(
+            abs_t[None, :] <= mask_boundary * m_best[refine, None], axis=1
         )
-        m[i] = res["m_fitted"]
-        mse_arr[i] = res["mse"]
-        success[i] = res["success"]
+        small = n_refine < 3
+        for i, n_i in zip(refine[small], n_refine[small]):
+            m[i] = m_best[i]
+            mse_arr[i] = best_loss[i]
+            success[i] = True
+
+        big = refine[~small]
+        if big.size:
+            n_big = n_refine[~small]
+            width = int(n_big.max())
+            t_batch = np.zeros((big.size, width), dtype=np.float64)
+            p_batch = np.zeros((big.size, width), dtype=np.float64)
+            for k, i in enumerate(big):
+                n_i = int(n_big[k])
+                t_batch[k, :n_i] = t_pos[:n_i]
+                p_batch[k, :n_i] = profiles[i, :n_i]
+            x_fit, fun_fit, ok_fit = _minimize_bounded_batch(
+                t_batch,
+                p_batch,
+                n_big.astype(np.float64),
+                m_best[big] - step,
+                m_best[big] + step,
+                sigma,
+            )
+            m[big] = x_fit
+            mse_arr[big] = fun_fit
+            success[big] = ok_fit
 
     return m, mse_arr, success
 

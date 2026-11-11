@@ -150,13 +150,53 @@ def build_pair_distance_matrix(
     pairs = np.stack([np.arange(m), (np.arange(m) + 1) % m], axis=1)
     dist = np.full((m, m), FAR_DISTANCE, dtype=np.float64)
     np.fill_diagonal(dist, 0.0)
-    for i in range(m):
-        for j in range(i + 1, m):
-            gap = _min_cyclic_gap(pairs[i], pairs[j], orig_indices, n_total)
-            if gap > max_gap:
-                continue
-            union = np.unique(np.concatenate([pairs[i], pairs[j]]))
-            dist[i, j] = dist[j, i] = sigma_ratio(points[union])
+
+    if m < 2:
+        return dist, pairs
+
+    # Cyclic gap between every pair of initial pairs, computed at once
+    # (upper triangle only).
+    orig = np.asarray(orig_indices).astype(np.int64)
+    ii, jj = np.triu_indices(m, k=1)
+    oi = orig[pairs[ii]]
+    oj = orig[pairs[jj]]
+    d = np.abs(oi[:, :, None] - oj[:, None, :]) % n_total  # (P, 2, 2)
+    d = np.minimum(d, n_total - d)
+    gaps = np.maximum(d.min(axis=(1, 2)) - 1, 0)
+
+    close = gaps <= max_gap
+    ii = ii[close]
+    jj = jj[close]
+    if ii.size == 0:
+        return dist, pairs
+
+    # Unique (sorted) union of each qualifying pair, compacted per row.
+    stacked = np.sort(
+        np.stack([pairs[ii, 0], pairs[ii, 1], pairs[jj, 0], pairs[jj, 1]], axis=1),
+        axis=1,
+    )
+    keep = np.ones(stacked.shape, dtype=bool)
+    keep[:, 1:] = np.diff(stacked, axis=1) != 0
+    ranks = np.cumsum(keep, axis=1) - 1
+    # Kept columns land on their rank; a dropped duplicate lands on the next
+    # kept rank (it is overwritten there by the equal kept value).
+    dest = np.where(keep, ranks, ranks + 1)
+    union_all = np.empty_like(stacked)
+    rows = np.broadcast_to(np.arange(ii.size)[:, None], stacked.shape)
+    union_all[rows, dest] = stacked
+    counts = ranks[:, -1] + 1
+
+    # Batch the TLS fits, grouped by union size.
+    for cnt in np.unique(counts):
+        sel = counts == cnt
+        union = union_all[sel][:, : int(cnt)]
+        pts = points[union]
+        mu = pts.mean(axis=1)
+        _, s, vt = np.linalg.svd(pts - mu[:, None, :], full_matrices=False)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratio = np.where(s[:, 0] <= 1e-12, FAR_DISTANCE, s[:, 1] / s[:, 0])
+        dist[ii[sel], jj[sel]] = ratio
+        dist[jj[sel], ii[sel]] = ratio
     return dist, pairs
 
 
