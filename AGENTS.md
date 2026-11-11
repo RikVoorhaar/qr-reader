@@ -24,6 +24,7 @@ Every source file under `src/qr_reader/` and its role.
 | File | Purpose | Depends on |
 |------|---------|------------|
 | `qr_gen.py` | Generate synthetic QR images with noise, rotation, and perspective warp for testing | `qrcode`, `cv2` |
+| `pipeline.py` | End-to-end `decode_image`: ranks triplets by cross-ratio, tries bounded (triplet, version) candidates, samples + decodes, returns `DecodeResult` with attempt trace | All detector modules, `decoder.decoder` |
 | `__init__.py` | Package root (empty) | — |
 
 ### Detector (`detector/`)
@@ -101,16 +102,29 @@ clustering.cluster_candidates()          → list[CandidateCluster]
 ray_fit.fit_finder_ray()                   → RayFitResult (corners, score, valid)
   │
   ▼
-detector._run_detection() : deduplicate → find triplets →
-  estimate version → fit global homography (similarity init, optional DLT,
-  LM-refined)                                  → DetectionResult (H, V)
+detector._prepare_detection() : deduplicate → find_valid_triplets()
+                                               → DetectionContext (img, fps, triplets)
   │
   ▼
-homography.compute_qr_corners() / sample.sample_qr_bits() → decoded text string
+detector._rank_triplets() : build_named_landmarks → build_constraints →
+  filter_constraints → estimate_version      → list[TripletCandidate] (best first)
+  │
+  ▼ (bounded triplet × version loop)
+detector._fit_candidate_homography() : 12-corner DLT + LM
   │
   ▼
-decoder.decode()                           → decoded text string
+sample.sample_qr_bits()                    → N×N bool bit matrix
+  │
+  ▼
+decoder.decode()                           → text; stop on accepted payload
+  │
+  ▼
+pipeline.decode_image()                    → DecodeResult (text, attempts, timings)
 ```
+
+The single-candidate wrappers (`detect_corners`, `detect_homography`,
+`detect_sample`) call `detector._run_detection()`, which uses only the
+top-ranked triplet and its best cross-ratio version.
 
 ### Decoder sub-pipeline (`decode()`)
 
@@ -137,6 +151,10 @@ bit matrix (N×N bool)
 - **`RayFitResult`** (`ray_fit.py`): `corners` (4×2), `score` (float), `valid` (bool). Returned by ``fit_finder_ray``. Corners are in (x, y).
 - **`DetectionResult`** (`detector.py`): `success`, `H` (3×3), `version`, `error` (Exception | None), `n_candidates`, `n_finder_patterns`, `n_triplets`, `timings`. Always returned by ``_run_detection`` — even on failure, so callers can inspect partial stage counts and why the pipeline stopped.
 - **`DetectionTimings`** (`detector.py`): per-stage wall times in seconds (binarize, alignment, clustering, refinement, dedup, triplet, homography, total).
+- **`DetectionContext`** (`detector.py`): preprocessing output reused across candidates — `img_gray`, `fps`, `score_map`, `global_corners_xy`, `triplets`, `timings`, and stage counts.
+- **`TripletCandidate`** (`detector.py`): `triplet`, `landmarks`, `version_candidates` (best first), `version_scores`, `best_version`, `cross_ratio_score`.
+- **`DecodeAttempt`** (`pipeline.py`): one (triplet, version) trial — candidate ids, version, cross-ratio score, homography/sample/decode times, decoded text, success flag, and `failure_reason`.
+- **`DecodeResult`** (`pipeline.py`): `success`, `text`, `version`, `H`, `error`, `attempts`, stage counts, `detection_ok`, `prep_time_s`, `total_time_s`, `time_budget_exhausted`.
 - **`DataBlock`** (`data_block.py`): `data: bytes`, `ec: bytes` — one error-correction block after de-interleaving.
 
 ## Coordinate Conventions
@@ -149,8 +167,8 @@ bit matrix (N×N bool)
 ## Common Modification Tasks
 
 - **Add a new encoding mode** (e.g., Kanji): add tables to `decoder/tables.py`, add a `_decode_kanji` function in `decoder/bitstream.py`, wire it into `decode_bitstream`.
-- **Improve finder pattern detection**: modify `detector/finder_pattern.py` (extraction, association, triplet finding). The thresholds (`angle_tol`, `offset_tol`) live in `check_association` and `find_all_associations`.
-- **Change the detection pipeline order**: edit `_run_detection` in `detector/detector.py`. Update the Data Flow in this file and the Architecture section in README.md.
+- **Improve finder pattern detection**: modify `detector/finder_pattern.py` (`find_valid_triplets` for triplet discovery). Legacy association thresholds live in `check_association` / `find_all_associations`.
+- **Change the detection pipeline order**: edit `_prepare_detection` or `_run_detection` in `detector/detector.py`. Update the Data Flow in this file and the Architecture section in README.md.
 - **Add a new QR version table entry**: edit `tables.py` `VERSIONS` dict (EC block layout, alignment pattern positions, etc.).
 - **Fix a version estimation issue**: work in `detector/version.py` (cross-ratio computation, constraint filtering, `estimate_version`).
 - **Change binarization**: edit `qr_gen.binarize_image`. The default uses Otsu thresholding.

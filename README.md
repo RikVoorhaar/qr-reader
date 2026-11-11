@@ -37,19 +37,24 @@ Image
   → Binarize (Otsu threshold)
   → Alignment patterns (1:1:3:1:1 ratio scan)
   → Cluster candidates
-  → Fit finder pattern per cluster (orientation + 1-D profile fit)
+  → Fit finder pattern per cluster (ray-profile + edge fit)
   → Deduplicate overlapping candidates
-  → Associate colinear finder patterns
-  → Find L-shaped triplets
-  → Estimate version (inter-finder distance / pitch)
-  → Estimate homography (similarity init, optional DLT, LM)
+  → Find L-shaped triplets (centre geometry + axis alignment)
+  → Rank triplets and versions (cross-ratio landmarks)
+  → Fit homography for a candidate (12-corner DLT + LM)
   → Sample module bit matrix
+  → Decode; on failure try the next ranked (triplet, version)
 ```
 
-Three public API functions:
+Three single-candidate detection functions:
 - **`detect_corners(image)`** → `(corners, version)` — 4 corner points in [TL, TR, BR, BL] order
 - **`detect_homography(image)`** → `(H, version)` — 3×3 matrix mapping grid → image
 - **`detect_sample(image)`** → bit matrix — N×N boolean array (True = dark module)
+
+And one full end-to-end function:
+- **`decode_image(image, expected_payload=None, ...)`** → `DecodeResult` —
+  tries a bounded set of cross-ratio-ranked triplets and versions, samples and
+  decodes each, and returns the first accepted payload plus the attempt trace.
 
 ### Decoding Pipeline
 
@@ -72,6 +77,7 @@ One public API function:
 |-----------|---------|
 | `src/qr_reader/detector/` | Geometric detection: finder patterns, alignment, homography, version estimation |
 | `src/qr_reader/decoder/` | Symbol decoding: format/version info, codewords, Reed-Solomon, bitstream |
+| `src/qr_reader/pipeline.py` | End-to-end `decode_image`: multi-triplet / multi-version attempt loop |
 | `src/qr_reader/scripts/` | Runnable scripts: full pipeline, benchmarks, debug tools |
 | `src/qr_reader/tests/` | Unit tests for detector and decoder subsystems |
 | `src/qr_reader/qr_gen.py` | Synthetic QR image generation for testing |
