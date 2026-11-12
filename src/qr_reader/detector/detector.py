@@ -40,7 +40,7 @@ from qr_reader.detector.version import (
     estimate_version,
     filter_constraints,
 )
-from qr_reader.qr_gen import binarize_image
+from qr_reader.qr_gen import binarize_image_illumination_corrected
 
 
 def _score_timing_pattern(img_gray: np.ndarray, H: np.ndarray, N: int) -> float:
@@ -179,7 +179,7 @@ def _prepare_detection(image: np.ndarray, result: DetectionResult) -> DetectionC
         img_gray = cv2.cvtColor(img_gray, cv2.COLOR_BGR2GRAY)
 
     t0 = perf_counter()
-    img_binary = binarize_image(img_gray)
+    img_binary = binarize_image_illumination_corrected(img_gray)
     timings.binarize_s = perf_counter() - t0
 
     max_error = np.log(1.3)

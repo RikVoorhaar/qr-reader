@@ -31,7 +31,7 @@ Every source file under `src/qr_reader/` and its role.
 
 | File | Purpose | Depends on |
 |------|---------|------------|
-| `detector.py` | High-level API: `detect_corners`, `detect_homography`, `detect_sample`. Orchestrates `_run_detection`, which returns a `DetectionResult` (always, even on failure). | All detector modules, `qr_gen.binarize_image` |
+| `detector.py` | High-level API: `detect_corners`, `detect_homography`, `detect_sample`. Orchestrates `_run_detection`, which returns a `DetectionResult` (always, even on failure). | All detector modules, `qr_gen.binarize_image_illumination_corrected` |
 | `alignment.py` | Find candidate alignment patterns via 1:1:3:1:1 ratio scanning (horizontal + vertical cross-validation) | — |
 | `clustering.py` | Merge overlapping alignment pattern candidates into `CandidateCluster` groups | — |
 | `corner.py` | Angular non-maximum suppression to pick the 4 corner points of a region | — |
@@ -90,7 +90,7 @@ These are human-inspectable; the user opens them interactively.
 Image (ndarray)
   │
   ▼
-qr_gen.binarize_image()                    → binary image
+qr_gen.binarize_image_illumination_corrected() → binary image
   │
   ▼
 alignment.find_alignment_patterns_2d()   → (rows, cols_all) candidate positions
@@ -171,7 +171,7 @@ bit matrix (N×N bool)
 - **Change the detection pipeline order**: edit `_prepare_detection` or `_run_detection` in `detector/detector.py`. Update the Data Flow in this file and the Architecture section in README.md.
 - **Add a new QR version table entry**: edit `tables.py` `VERSIONS` dict (EC block layout, alignment pattern positions, etc.).
 - **Fix a version estimation issue**: work in `detector/version.py` (cross-ratio computation, constraint filtering, `estimate_version`).
-- **Change binarization**: edit `qr_gen.binarize_image`. The default uses Otsu thresholding.
+- **Change binarization**: edit `qr_gen.binarize_image_illumination_corrected`. The default estimates the illumination field with a 101×101 box blur, divides it out, applies Otsu, and removes isolated noise with a 3×3 opening. `qr_gen.binarize_image` remains the plain Otsu helper.
 - **Run the full pipeline for debugging**: `python src/qr_reader/scripts/full-pipeline-current.py`.
 - **Run benchmarks**: `python src/qr_reader/scripts/qr_benchmark.py`.
 

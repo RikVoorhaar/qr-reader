@@ -34,7 +34,7 @@ its module grid) and **decoding** (extract the text from the module grid).
 
 ```
 Image
-  → Binarize (Otsu threshold)
+  → Binarize (illumination correction + Otsu)
   → Alignment patterns (1:1:3:1:1 ratio scan)
   → Cluster candidates
   → Fit finder pattern per cluster (ray-profile + edge fit)

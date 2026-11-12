@@ -117,6 +117,51 @@ def binarize_image(img: np.ndarray, threshold: int | None = None) -> np.ndarray:
     return cv2.threshold(img, threshold, 255, cv2.THRESH_BINARY)[1].astype(bool)
 
 
+def estimate_illumination(
+    img: np.ndarray, blur_size: int = 101
+) -> np.ndarray:
+    """Estimate the slowly-varying illumination field with a box blur.
+
+    The window is much larger than a QR module, so the dark/light pattern
+    averages out and only the local brightness remains.  Returns ``float32``
+    gray levels in the same shape as *img*.
+    """
+    return cv2.blur(img.astype(np.float32), (blur_size, blur_size))
+
+
+def illumination_corrected_image(
+    img: np.ndarray, blur_size: int = 101
+) -> np.ndarray:
+    """Divide out the estimated illumination and rescale to 8-bit."""
+    background = estimate_illumination(img, blur_size)
+    normalized = (
+        img.astype(np.float32) / np.maximum(background, 1.0) * 128.0
+    )
+    return np.clip(normalized, 0, 255).astype(np.uint8)
+
+
+def binarize_image_illumination_corrected(
+    img: np.ndarray,
+    blur_size: int = 101,
+    open_kernel_size: int = 3,
+) -> np.ndarray:
+    """Threshold to a boolean image after removing uneven illumination.
+
+    Estimates the illumination field with a large box blur, divides it out,
+    applies Otsu's method to the normalized image, and removes isolated noise
+    with a small morphological opening.  Returns True for white pixels.
+    """
+    corrected = illumination_corrected_image(img, blur_size)
+    _, binary = cv2.threshold(
+        corrected, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU
+    )
+    kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (open_kernel_size, open_kernel_size)
+    )
+    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
+    return binary.astype(bool)
+
+
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
