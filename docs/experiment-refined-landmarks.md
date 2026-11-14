@@ -111,3 +111,19 @@ The codebase historically calls the 1:1:3:1:1 ratio scan "alignment patterns"
 The true **alignment patterns** are the interior 5×5 patterns (ratio
 1:1:1:1:1), which this experiment detects for the first time via template
 matching.  This naming drift predates this experiment and is left unchanged.
+
+## Implementation note (no OpenCV)
+
+The alignment-pattern centre is found by **normalized template matching**, but
+the cross-correlation is implemented directly with numpy/scipy
+(`scipy.signal.fftconvolve` + integral images) rather than `cv2.matchTemplate`,
+so the pipeline core has no OpenCV dependency for this step.  The result is
+bit-for-bit equivalent to `TM_CCOEFF_NORMED` (max difference ~1e-9).
+
+A **ray-profile** variant (reusing the finder pattern's per-ray module-pitch fit
++ 4-edge clustering, with the 5×5 cross-section and boundary points at 2.5
+modules) was also tried.  It finds the centre perfectly on clean synthetic
+patterns but fails on real photos (decode 56 → 38) and is ~70× slower
+(~35 ms/pattern vs ~1 ms), because the ray + edge-clustering machinery is the
+right tool for the three large finder patterns but overkill and fragile for many
+small alignment patterns.  It was therefore rejected.

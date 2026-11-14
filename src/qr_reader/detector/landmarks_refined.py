@@ -12,13 +12,15 @@ the position predicted by the initial homography, and the homography is refit
 from the combined point set with DLT + LM.
 
 Everything works in ``(x, y)`` image coordinates (matching the homography
-module's convention).
+module's convention).  No OpenCV is used: the normalized cross-correlation is
+implemented directly with numpy/scipy (``scipy.signal.fftconvolve`` + integral
+images) rather than ``cv2.matchTemplate``.
 """
 
 from __future__ import annotations
 
-import cv2
 import numpy as np
+from scipy.signal import fftconvolve
 
 from qr_reader.decoder.tables import VERSIONS
 from qr_reader.detector.homography import (
@@ -29,14 +31,13 @@ from qr_reader.detector.homography import (
 
 
 # ---------------------------------------------------------------------------
-# Alignment-pattern template matching
+# Alignment-pattern template matching (numpy/scipy — no OpenCV)
 # ---------------------------------------------------------------------------
 
 
 def alignment_pattern_template(
     module_px: float,
     pad_modules: float = 1.0,
-    sigma: float | None = None,
 ) -> np.ndarray:
     """Render a synthetic 5×5 alignment-pattern template at *module_px*.
 
@@ -58,12 +59,46 @@ def alignment_pattern_template(
     t = np.where(u < 0.5, 0.0, 1.0)
     t = np.where((u >= 1.5) & (u < 2.5), 0.0, t)
 
-    if sigma is not None and sigma > 0.0:
-        from scipy.ndimage import gaussian_filter
-
-        t = gaussian_filter(t, sigma=sigma)
-
     return t.astype(np.float32)
+
+
+def _ncc_match(window: np.ndarray, template: np.ndarray) -> np.ndarray:
+    """Zero-mean normalized cross-correlation (== cv2.TM_CCOEFF_NORMED).
+
+    Returns a ``(H-th+1, W-tw+1)`` array where entry ``(i, j)`` is the
+    correlation between the template and the window patch whose top-left corner
+    is ``(i, j)``.
+    """
+    th, tw = template.shape
+    t = template.astype(np.float64)
+    t = t - t.mean()
+    t_norm = float(np.linalg.norm(t))
+    if t_norm < 1e-12:
+        return np.zeros((window.shape[0] - th + 1, window.shape[1] - tw + 1))
+
+    img = window.astype(np.float64)
+
+    # Numerator: cross-correlation of the zero-mean template with the image.
+    num = fftconvolve(img, t[::-1, ::-1], mode="valid")
+
+    # Denominator: ||t|| * per-patch population std * sqrt(n), via integral
+    # images for the local sum and sum-of-squares.
+    S = np.pad(np.cumsum(np.cumsum(img, axis=0), axis=1), ((1, 0), (1, 0)))
+    S2 = np.pad(np.cumsum(np.cumsum(img * img, axis=0), axis=1), ((1, 0), (1, 0)))
+
+    nh, nw = num.shape
+    i = np.arange(nh)[:, None]
+    j = np.arange(nw)[None, :]
+    sum1 = S[i + th, j + tw] - S[i, j + tw] - S[i + th, j] + S[i, j]
+    sum2 = S2[i + th, j + tw] - S2[i, j + tw] - S2[i + th, j] + S2[i, j]
+    n = th * tw
+    var = (sum2 - sum1 * sum1 / n) / n
+    std = np.sqrt(np.clip(var, 0.0, None))
+
+    denom = t_norm * std * np.sqrt(n)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        res = num / denom
+    return np.nan_to_num(res, nan=0.0, posinf=0.0, neginf=0.0)
 
 
 def _parabolic_peak(res: np.ndarray, mx: int, my: int) -> tuple[float, float]:
@@ -107,8 +142,7 @@ def match_alignment_pattern(
     Returns
     -------
     (image_xy, confidence) where ``image_xy`` is the sub-pixel centre in
-    ``(x, y)`` and ``confidence`` is the TM_CCOEFF_NORMED correlation in
-    ``[0, 1]``.
+    ``(x, y)`` and ``confidence`` is the normalized correlation in ``[0, 1]``.
     """
     if search_radius_px is None:
         search_radius_px = 2.0 * module_px
@@ -143,10 +177,9 @@ def match_alignment_pattern(
     if window.shape[0] < th or window.shape[1] < tw:
         return np.array([cx, cy]), 0.0
 
-    res = cv2.matchTemplate(window, template, cv2.TM_CCOEFF_NORMED)
-    _min_val, max_val, _min_loc, max_loc = cv2.minMaxLoc(res)
-
-    mx, my = int(max_loc[0]), int(max_loc[1])
+    res = _ncc_match(window, template)
+    my, mx = np.unravel_index(int(np.argmax(res)), res.shape)
+    max_val = float(res[my, mx])
     dx, dy = _parabolic_peak(res, mx, my)
 
     image_x = (x0 - pad_l) + (mx + dx) + ctr_x
@@ -154,6 +187,11 @@ def match_alignment_pattern(
 
     confidence = float(max(0.0, min(1.0, max_val)))
     return np.array([image_x, image_y]), confidence
+
+
+# ---------------------------------------------------------------------------
+# Canonical positions and refined homography
+# ---------------------------------------------------------------------------
 
 
 def alignment_centers_grid(version: int) -> list[tuple[float, float]]:
@@ -178,11 +216,6 @@ def alignment_centers_grid(version: int) -> list[tuple[float, float]]:
                 continue
             centers.append((col_pos + 0.5, row_pos + 0.5))
     return centers
-
-
-# ---------------------------------------------------------------------------
-# Refined homography
-# ---------------------------------------------------------------------------
 
 
 def _local_module_px(H: np.ndarray, gx: float, gy: float) -> float:
