@@ -16,12 +16,15 @@ Right panel
     corners mapped through ``H^{-1}``: they should sit on the open circles.
 
 Bottom inset
-    A zoom on the top-left finder.  Open circles are the ideal canonical
-    corners; filled dots are the mapped detected corners.  Because the true
-    residual is sub-pixel at the figure scale, the error vectors are drawn
-    ``EXAGGERATION`` times longer than life, and the factor is printed in the
-    inset and in the statistics block.  The un-exaggerated mapped points are
-    also drawn as small dots, so nothing is silently distorted.
+    A high-resolution, true-scale zoom on the bottom-left corner of the
+    top-left finder.  The open circle is the ideal canonical corner; the
+    filled dot is the mapped detected corner; the thin connector is the actual
+    residual.  No scaling is applied.  A callout rectangle in the rectified
+    panel marks the zoomed region.
+
+    The inset is rectified separately at ``INSET_PX_PER_MODULE`` pixels per
+    module, so the one- to two-pixel residual is visible against a crisp
+    module edge.  The main rectified panel stays at 25 px/module.
 
 The detector pipeline used here is the real one:
 
@@ -58,7 +61,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.collections import LineCollection
-from matplotlib.patches import FancyArrowPatch, Polygon
+from matplotlib.patches import Polygon, Rectangle
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "src"))
@@ -103,8 +106,12 @@ BOX_BG = "#0d0d0d"
 BOX_EDGE = "#3f3f3f"
 TEXT_BRIGHT = "#f2f2f2"
 
-EXAGGERATION = 10.0
-
+# The main rectified panel is at RECT_PX_PER_MODULE; the inset is a separate,
+# much higher-resolution render of one corner region.
+INSET_PX_PER_MODULE = 200
+INSET_X0, INSET_Y0 = -1.25, 5.5
+INSET_X1, INSET_Y1 = 1.75, 8.5
+INSET_CORNER = 3  # TL group order is (0,0), (7,0), (7,7), (0,7)
 # Figure layout, in inches / figure fractions.
 FIG_W, FIG_H = 10.0, 8.0
 TOP_W_IN = 4.25
@@ -112,8 +119,8 @@ TOP_H_IN = 4.30
 TOP_X = (0.032, 0.540)
 TOP_Y = 0.448
 
-INSET_IN = 3.25
-INSET_XY = (0.035, 0.014)
+INSET_IN = 3.0
+INSET_XY = (0.04, 0.04)
 
 
 @dataclass
@@ -131,12 +138,52 @@ class Fit:
     fit_error: float
     rect: np.ndarray
     scale: float
+    inset_rect: np.ndarray  # high-resolution corner zoom
+    inset_scale: float
 
     @property
     def image_errors(self) -> np.ndarray:
         return np.linalg.norm(
             project_points(self.H, self.src) - self.dst, axis=1
         )
+
+
+# ---------------------------------------------------------------------------
+# Rectification
+# ---------------------------------------------------------------------------
+
+
+def warp_region(
+    gray: np.ndarray,
+    H_inv: np.ndarray,
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    scale: float,
+) -> np.ndarray:
+    """Warp one grid region into a ``scale``-px/module image.
+
+    The grid origin of the output is ``(x0, y0)`` in module coordinates; the
+    output size is ``(x1-x0, y1-y0) * scale`` pixels.
+    """
+    transform = np.array(
+        [
+            [scale, 0.0, -scale * x0],
+            [0.0, scale, -scale * y0],
+            [0.0, 0.0, 1.0],
+        ]
+    )
+    width = int(round((x1 - x0) * scale))
+    height = int(round((y1 - y0) * scale))
+    return cv2.warpPerspective(
+        gray,
+        transform @ H_inv,
+        (width, height),
+        flags=cv2.INTER_CUBIC,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=255,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -214,14 +261,16 @@ def detect(data_dir: Path = DATA_DIR) -> Fit:
 
     H_inv = np.linalg.inv(H)
     scale = float(RECT_PX_PER_MODULE)
-    rect_size = int(round(scale * n))
-    rectified = cv2.warpPerspective(
+    rectified = warp_region(gray, H_inv, 0.0, 0.0, float(n), float(n), scale)
+    inset_scale = float(INSET_PX_PER_MODULE)
+    inset_rect = warp_region(
         gray,
-        np.diag([scale, scale, 1.0]) @ H_inv,
-        (rect_size, rect_size),
-        flags=cv2.INTER_CUBIC,
-        borderMode=cv2.BORDER_CONSTANT,
-        borderValue=255,
+        H_inv,
+        INSET_X0,
+        INSET_Y0,
+        INSET_X1,
+        INSET_Y1,
+        inset_scale,
     )
 
     return Fit(
@@ -236,6 +285,8 @@ def detect(data_dir: Path = DATA_DIR) -> Fit:
         fit_error=fit_error,
         rect=rectified,
         scale=scale,
+        inset_rect=inset_rect,
+        inset_scale=inset_scale,
     )
 
 
@@ -323,6 +374,54 @@ def draw_grid(ax: plt.Axes, n: int, scale: float, *, minor_alpha: float, major_a
             major,
             colors=GRID_MAJOR,
             linewidths=0.85,
+            alpha=major_alpha,
+            zorder=5,
+            antialiased=True,
+        )
+    )
+
+
+def draw_inset_grid(
+    ax: plt.Axes,
+    n: int,
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    *,
+    minor_alpha: float,
+    major_alpha: float,
+):
+    """Module grid for the inset, whose data coordinates are modules."""
+    minor: list[list[tuple[float, float]]] = []
+    major: list[list[tuple[float, float]]] = []
+    w, h = x1 - x0, y1 - y0
+
+    for k in range(n + 1):
+        if x0 <= k <= x1:
+            x = k - x0
+            seg = [[x, 0.0], [x, h]]
+            (major if k % 7 == 0 else minor).append(seg)
+        if y0 <= k <= y1:
+            y = k - y0
+            seg = [[0.0, y], [w, y]]
+            (major if k % 7 == 0 else minor).append(seg)
+
+    ax.add_collection(
+        LineCollection(
+            minor,
+            colors=GRID_MINOR,
+            linewidths=0.42,
+            alpha=minor_alpha,
+            zorder=4,
+            antialiased=True,
+        )
+    )
+    ax.add_collection(
+        LineCollection(
+            major,
+            colors=GRID_MAJOR,
+            linewidths=1.0,
             alpha=major_alpha,
             zorder=5,
             antialiased=True,
@@ -452,6 +551,20 @@ def add_rectified_panel(fig: plt.Figure, fit: Fit, margins: tuple[float, float, 
             zorder=10,
         )
 
+    # Callout around the corner region shown in the bottom inset.
+    ax.add_patch(
+        Rectangle(
+            (INSET_X0 * fit.scale, INSET_Y0 * fit.scale),
+            (INSET_X1 - INSET_X0) * fit.scale,
+            (INSET_Y1 - INSET_Y0) * fit.scale,
+            fill=False,
+            edgecolor=TL_COLOR,
+            lw=1.25,
+            alpha=0.95,
+            zorder=12,
+        )
+    )
+
     ax.set_xlim(-m_l, size + m_r)
     ax.set_ylim(size + m_b, -m_t)
     ax.set_aspect("equal")
@@ -516,6 +629,7 @@ def add_correspondence(
 
 
 def add_inset(fig: plt.Figure, fit: Fit) -> plt.Axes:
+    """True-scale, high-resolution zoom on one corner of the TL finder."""
     ax = fig.add_axes(
         [
             INSET_XY[0],
@@ -525,98 +639,117 @@ def add_inset(fig: plt.Figure, fit: Fit) -> plt.Axes:
         ]
     )
     ax.set_facecolor("white")
-    size = fit.n_modules * fit.scale
+
+    w_mod = INSET_X1 - INSET_X0
+    h_mod = INSET_Y1 - INSET_Y0
     ax.imshow(
-        fit.rect,
+        fit.inset_rect,
         cmap="gray",
         vmin=0,
         vmax=255,
-        extent=[0.0, size, size, 0.0],
+        extent=[0.0, w_mod, h_mod, 0.0],
         interpolation="lanczos",
         zorder=1,
     )
-    draw_grid(ax, 9, fit.scale, minor_alpha=0.36, major_alpha=0.62)
+    draw_inset_grid(
+        ax,
+        fit.n_modules,
+        INSET_X0,
+        INSET_Y0,
+        INSET_X1,
+        INSET_Y1,
+        minor_alpha=0.34,
+        major_alpha=0.62,
+    )
 
-    idx = fit.groups["TL"]
-    ideal = fit.src[idx] * fit.scale
-    mapped = project_points(fit.H_inv, fit.dst[idx]) * fit.scale
-    exaggerated = ideal + EXAGGERATION * (mapped - ideal)
+    # The zoomed landmark: bottom-left corner of the TL finder, grid (0, 7).
+    corner = fit.groups["TL"][INSET_CORNER]
+    ideal = fit.src[corner] - np.array([INSET_X0, INSET_Y0])
+    mapped = (
+        project_points(fit.H_inv, fit.dst[[corner]])[0]
+        - np.array([INSET_X0, INSET_Y0])
+    )
 
-    # Exaggerated error vectors.  The true mapped point lies on the arrow, one
-    # EXAGGERATION-th of the way from the open circle to the filled head.  A
-    # white under-stroke keeps the dark arrow visible where it crosses the
-    # black finder ring.
-    for p, q in zip(ideal, exaggerated):
-        ax.add_patch(
-            FancyArrowPatch(
-                (p[0], p[1]),
-                (q[0], q[1]),
-                arrowstyle="-|>",
-                mutation_scale=14,
-                color="#ffffff",
-                lw=3.6,
-                alpha=0.9,
-                shrinkA=4.0,
-                shrinkB=0.0,
-                zorder=7,
-            )
-        )
-    for p, q in zip(ideal, exaggerated):
-        ax.add_patch(
-            FancyArrowPatch(
-                (p[0], p[1]),
-                (q[0], q[1]),
-                arrowstyle="-|>",
-                mutation_scale=13,
-                color=INK,
-                lw=1.25,
-                alpha=0.95,
-                shrinkA=5.0,
-                shrinkB=0.0,
-                zorder=8,
-            )
-        )
-
-    # True mapped positions, faint: visible for the corners whose residual is
-    # large enough to escape the ideal marker.
-    ax.scatter(
-        mapped[:, 0],
-        mapped[:, 1],
-        s=22,
-        facecolors=TL_COLOR,
-        edgecolors="#ffffff",
-        linewidths=0.8,
+    # True-length connector.  The white under-stroke keeps it readable where
+    # it crosses the black finder ring.
+    ax.plot(
+        [ideal[0], mapped[0]],
+        [ideal[1], mapped[1]],
+        color="#ffffff",
+        lw=3.4,
         alpha=0.9,
+        solid_capstyle="round",
+        zorder=8,
+    )
+    ax.plot(
+        [ideal[0], mapped[0]],
+        [ideal[1], mapped[1]],
+        color=TL_COLOR,
+        lw=1.5,
+        alpha=0.98,
+        solid_capstyle="round",
         zorder=9,
     )
+
+    # Mapped corner: filled dot.  Ideal corner: open circle, drawn on top so
+    # the true separation remains legible.
     ax.scatter(
-        exaggerated[:, 0],
-        exaggerated[:, 1],
-        s=46,
+        [mapped[0]],
+        [mapped[1]],
+        s=26,
         facecolors=TL_COLOR,
         edgecolors="#ffffff",
-        linewidths=1.3,
+        linewidths=1.2,
         zorder=10,
     )
     ax.scatter(
-        ideal[:, 0],
-        ideal[:, 1],
-        s=60,
+        [ideal[0]],
+        [ideal[1]],
+        s=38,
         facecolors="white",
         edgecolors=INK,
         linewidths=1.4,
         zorder=11,
     )
 
-    ax.set_xlim(-1.35 * fit.scale, 8.35 * fit.scale)
-    ax.set_ylim(8.35 * fit.scale, -1.35 * fit.scale)
+    # One-module scale bar in the white margin outside the QR.
+    bar_y = 2.62
+    ax.plot(
+        [0.10, 1.10],
+        [bar_y, bar_y],
+        color=INK,
+        lw=1.5,
+        solid_capstyle="butt",
+        zorder=12,
+    )
+    for x in (0.10, 1.10):
+        ax.plot(
+            [x, x],
+            [bar_y - 0.08, bar_y + 0.08],
+            color=INK,
+            lw=1.2,
+            zorder=12,
+        )
+    ax.text(
+        0.60,
+        bar_y + 0.12,
+        "1 module",
+        color=INK,
+        fontsize=8.6,
+        ha="center",
+        va="top",
+        zorder=12,
+    )
+
+    ax.set_xlim(0.0, w_mod)
+    ax.set_ylim(h_mod, 0.0)
     ax.set_aspect("equal")
     ax.axis("off")
     rounded_label(
         ax,
         0.014,
         0.986,
-        f"top-left finder  ·  residual ×{EXAGGERATION:g}",
+        "TL finder  ·  bottom-left corner",
         fontsize=10.5,
     )
     return ax
@@ -637,6 +770,13 @@ def add_stats(fig: plt.Figure, fit: Fit) -> None:
     mapped = project_points(fit.H_inv, fit.dst)
     rect_err = np.linalg.norm(mapped - fit.src, axis=1) * fit.scale
 
+    corner = fit.groups["TL"][INSET_CORNER]
+    corner_delta = (
+        project_points(fit.H_inv, fit.dst[[corner]])[0] - fit.src[corner]
+    )
+    corner_modules = float(np.linalg.norm(corner_delta))
+    corner_inset_px = corner_modules * fit.inset_scale
+
     ax.text(
         0.0,
         0.95,
@@ -649,7 +789,7 @@ def add_stats(fig: plt.Figure, fit: Fit) -> None:
     )
     ax.text(
         0.0,
-        0.785,
+        0.79,
         f"mean {image_err.mean():.2f} px   ·   max {image_err.max():.2f} px",
         color=INK,
         fontsize=13.5,
@@ -658,8 +798,8 @@ def add_stats(fig: plt.Figure, fit: Fit) -> None:
     )
     ax.text(
         0.0,
-        0.665,
-        "residual in the photo (image pixels)",
+        0.675,
+        "residual in the photo (image pixels) · true scale",
         color=MUTED,
         fontsize=10.6,
         ha="left",
@@ -667,9 +807,9 @@ def add_stats(fig: plt.Figure, fit: Fit) -> None:
     )
     ax.text(
         0.0,
-        0.585,
+        0.60,
         f"after rectification: {rect_err.mean():.2f} px mean  ·  "
-        f"{rect_err.max():.2f} px max",
+        f"{rect_err.max():.2f} px max (at 25 px/module)",
         color=MUTED,
         fontsize=10.6,
         ha="left",
@@ -677,7 +817,7 @@ def add_stats(fig: plt.Figure, fit: Fit) -> None:
     )
 
     # Compact marker key.
-    y_key = 0.37
+    y_key = 0.45
     ax.scatter(
         [0.016],
         [y_key],
@@ -698,10 +838,11 @@ def add_stats(fig: plt.Figure, fit: Fit) -> None:
         clip_on=False,
     )
     ax.text(0.435, y_key, "mapped detected corner", color=INK, fontsize=11.0, va="center")
+
     ax.text(
         0.0,
-        0.255,
-        f"inset error vectors (arrow + dot) drawn ×{EXAGGERATION:g}",
+        0.355,
+        f"inset: true scale · {fit.inset_scale:g} px/module",
         color=MUTED,
         fontsize=10.6,
         ha="left",
@@ -709,7 +850,17 @@ def add_stats(fig: plt.Figure, fit: Fit) -> None:
     )
     ax.text(
         0.0,
-        0.185,
+        0.285,
+        f"chosen corner (max): {corner_modules:.2f} modules = {corner_inset_px:.1f} px"
+        " at this scale",
+        color=MUTED,
+        fontsize=10.6,
+        ha="left",
+        va="top",
+    )
+    ax.text(
+        0.0,
+        0.205,
         "correspondence lines drawn for the zoomed finder; all twelve corners marked",
         color=MUTED,
         fontsize=10.6,
@@ -718,7 +869,7 @@ def add_stats(fig: plt.Figure, fit: Fit) -> None:
     )
 
     # Finder colour key.
-    y_col = 0.06
+    y_col = 0.09
     x = 0.0
     for name, label in (("TL", "top-left"), ("TR", "top-right"), ("BL", "bottom-left")):
         ax.scatter(
@@ -816,9 +967,17 @@ def main() -> None:
     print(f"N (modules)     : {fit.n_modules}")
     print(f"fit residual    : mean {image_err.mean():.3f} px, max {image_err.max():.3f} px (image)")
     print(
-        f"rectified error : mean {rect_err.mean():.3f} px, max {rect_err.max():.3f} px"
+        f"rectified error : mean {rect_err.mean():.3f} px, max {rect_err.max():.3f} px "
+        "(25 px/module)"
     )
-    print(f"exaggeration    : x{EXAGGERATION:g}")
+    corner = fit.groups["TL"][INSET_CORNER]
+    corner_delta = project_points(fit.H_inv, fit.dst[[corner]])[0] - fit.src[corner]
+    corner_modules = float(np.linalg.norm(corner_delta))
+    print(f"zoom corner     : TL finder bottom-left (grid {fit.src[corner].tolist()})")
+    print(
+        f"zoom residual   : {corner_modules:.4f} modules = "
+        f"{corner_modules * fit.inset_scale:.2f} px at {fit.inset_scale:g} px/module"
+    )
     print(f"wrote           : {args.out}")
 
 
