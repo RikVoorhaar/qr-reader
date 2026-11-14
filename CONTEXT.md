@@ -27,8 +27,12 @@ A named reference point (A–F) on the QR code grid used for homography estimati
 _Avoid_: Anchor point, reference point
 
 **Alignment Pattern**:
-A smaller 1:1:3:1:1 ratio pattern scattered across the QR code (versions ≥ 2)
-used to locate candidate regions.
+A 5×5 interior square (ratio 1:1:1:1:1) that appears at version-dependent grid
+positions (versions ≥ 2).  Its centre is a landmark for homography estimation.
+Note: `detector/alignment.py` historically names its 1:1:3:1:1 scan "alignment
+patterns", but that ratio is actually the **Finder Pattern** — a pre-existing
+naming drift.  The true 5×5 alignment pattern is detected for the first time by
+`detector/landmarks_refined.py`.
 _Avoid_: Timing pattern, positioning mark
 
 **Candidate Cluster**:

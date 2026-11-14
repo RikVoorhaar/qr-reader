@@ -23,6 +23,7 @@ from qr_reader.detector.edge_fitting import (
     compute_corners,
     fit_finder_edges,
     refine_finder_edges_joint,
+    thetarho_to_homogeneous_line,
     _reorder_to_standard,
 )
 
@@ -37,6 +38,11 @@ class RayFitResult:
     ----------
     corners : ndarray (4, 2)
         Outer finder corners in ``(x, y)`` ROI-local coordinates.
+    inner_corners : ndarray (4, 2) or None
+        Inner (white-ring) finder corners in ``(x, y)`` ROI-local coordinates,
+        ordered ``[TL, TR, BR, BL]``.  ``None`` if fewer than four inner edge
+        clusters were found.  Computed in the same pass as *corners*, reusing
+        the per-ray module-pitch estimates, so it adds no extra ray fitting.
     score : float
         Quality score in [0, 1]; higher is better.
     valid : bool
@@ -46,6 +52,7 @@ class RayFitResult:
     corners: np.ndarray
     score: float
     valid: bool
+    inner_corners: np.ndarray | None = None
 
 
 # ── Soft template ────────────────────────────────────────────────────────────
@@ -568,6 +575,62 @@ def fit_all_rays(
 # ── Public API ────────────────────────────────────────────────────────────────
 
 
+def _reorder_clusters(clusters: list) -> list:
+    """Return the clusters reordered ``[L, R, T, B]``."""
+    l_idx, r_idx, t_idx, b_idx = _reorder_to_standard(clusters)
+    return [clusters[l_idx], clusters[r_idx], clusters[t_idx], clusters[b_idx]]
+
+
+def _ordered_clusters_to_corners(ordered: list) -> np.ndarray:
+    """Return the four ``[TL, TR, BR, BL]`` corners in ``(x, y)`` for four
+    clusters already ordered ``[L, R, T, B]``."""
+    ell_L = thetarho_to_homogeneous_line(
+        float(np.arctan2(ordered[0].normal[1], ordered[0].normal[0])),
+        float(ordered[0].rho),
+    )
+    ell_R = thetarho_to_homogeneous_line(
+        float(np.arctan2(ordered[1].normal[1], ordered[1].normal[0])),
+        float(ordered[1].rho),
+    )
+    ell_T = thetarho_to_homogeneous_line(
+        float(np.arctan2(ordered[2].normal[1], ordered[2].normal[0])),
+        float(ordered[2].rho),
+    )
+    ell_B = thetarho_to_homogeneous_line(
+        float(np.arctan2(ordered[3].normal[1], ordered[3].normal[0])),
+        float(ordered[3].rho),
+    )
+    p_LT, p_RT, p_RB, p_LB = compute_corners(ell_L, ell_R, ell_T, ell_B)
+    return np.array([p_LT, p_RT, p_RB, p_LB], dtype=np.float64)
+
+
+def _fit_corners_at_pitch(
+    center_xy: np.ndarray,
+    m: np.ndarray,
+    theta_rad: np.ndarray,
+    pitch_constant: float,
+    max_gap: int,
+    distance_threshold: float,
+) -> tuple[np.ndarray | None, object]:
+    """Fit the four corners of the square at ``pitch_constant`` modules.
+
+    Builds boundary points at the requested pitch (3.5 = outer edge, 2.5 = inner
+    white-ring edge), clusters them into four edges, and intersects the fitted
+    lines.  Returns ``(corners, edge_result)`` where *corners* is ``None`` when
+    fewer than four clusters are found.
+    """
+    bp = compute_boundary_points(
+        center_xy, m, theta_rad, pitch_constant=pitch_constant
+    )
+    edge_result = fit_finder_edges(
+        bp, max_gap=max_gap, distance_threshold=distance_threshold, k=4,
+    )
+    if len(edge_result.clusters) < 4:
+        return None, edge_result
+    corners = _ordered_clusters_to_corners(_reorder_clusters(edge_result.clusters))
+    return corners, edge_result
+
+
 def fit_finder_ray(
     roi: np.ndarray,
     center_xy: np.ndarray,
@@ -650,13 +713,11 @@ def fit_finder_ray(
         profiles_norm, m_est, max_dist, sigma=sigma,
     )
 
-    # ── 4. Boundary points ──
+    # ── 4. Boundary points + edge clustering (outer at 3.5 modules) ──
     theta_rad = np.linspace(0, 2 * np.pi, num_rays, endpoint=False)
-    bp = compute_boundary_points(center_xy, m, theta_rad, pitch_constant=3.5)
-
-    # ── 5. Edge clustering ──
-    edge_result = fit_finder_edges(
-        bp, max_gap=max_gap, distance_threshold=distance_threshold, k=4,
+    _outer_corners, edge_result = _fit_corners_at_pitch(
+        center_xy, m, theta_rad, pitch_constant=3.5,
+        max_gap=max_gap, distance_threshold=distance_threshold,
     )
     if len(edge_result.clusters) < 4:
         return RayFitResult(
@@ -665,7 +726,13 @@ def fit_finder_ray(
             valid=False,
         )
 
-    # ── 6. Concentration-ratio check ──
+    # ── 4b. Inner corners reuse the same per-ray m — no extra ray fitting ──
+    inner_corners, _inner_edge_result = _fit_corners_at_pitch(
+        center_xy, m, theta_rad, pitch_constant=2.5,
+        max_gap=max_gap, distance_threshold=distance_threshold,
+    )
+
+    # ── 5. Concentration-ratio check ──
     n_points = len(edge_result.points)
     top4_support = set()
     for ec in edge_result.clusters:
@@ -678,10 +745,10 @@ def fit_finder_ray(
             valid=False,
         )
 
-    # ── 7. Assignment ──
+    # ── 6. Assignment ──
     assignment = assign_points(edge_result.clusters, n_points)
 
-    # ── 8. Optional joint refinement ──
+    # ── 7. Optional joint refinement ──
     if refine_joint:
         try:
             half_dirs = np.column_stack(
@@ -696,54 +763,16 @@ def fit_finder_ray(
                 s_samples,
                 sigma=sigma,
             )
-            # Reorder to L, R, T, B
-            l_idx, r_idx, t_idx, b_idx = _reorder_to_standard(refined_clusters)
-            ordered = [
-                refined_clusters[l_idx],
-                refined_clusters[r_idx],
-                refined_clusters[t_idx],
-                refined_clusters[b_idx],
-            ]
+            ordered = _reorder_clusters(refined_clusters)
         except Exception:
-            l_idx, r_idx, t_idx, b_idx = _reorder_to_standard(edge_result.clusters)
-            ordered = [
-                edge_result.clusters[l_idx],
-                edge_result.clusters[r_idx],
-                edge_result.clusters[t_idx],
-                edge_result.clusters[b_idx],
-            ]
+            ordered = _reorder_clusters(edge_result.clusters)
     else:
-        l_idx, r_idx, t_idx, b_idx = _reorder_to_standard(edge_result.clusters)
-        ordered = [
-            edge_result.clusters[l_idx],
-            edge_result.clusters[r_idx],
-            edge_result.clusters[t_idx],
-            edge_result.clusters[b_idx],
-        ]
+        ordered = _reorder_clusters(edge_result.clusters)
 
-    # ── 9. Compute corners ──
-    from qr_reader.detector.edge_fitting import thetarho_to_homogeneous_line
+    # ── 8. Compute outer corners ──
+    corners = _ordered_clusters_to_corners(ordered)
 
-    ell_L = thetarho_to_homogeneous_line(
-        float(np.arctan2(ordered[0].normal[1], ordered[0].normal[0])),
-        float(ordered[0].rho),
-    )
-    ell_R = thetarho_to_homogeneous_line(
-        float(np.arctan2(ordered[1].normal[1], ordered[1].normal[0])),
-        float(ordered[1].rho),
-    )
-    ell_T = thetarho_to_homogeneous_line(
-        float(np.arctan2(ordered[2].normal[1], ordered[2].normal[0])),
-        float(ordered[2].rho),
-    )
-    ell_B = thetarho_to_homogeneous_line(
-        float(np.arctan2(ordered[3].normal[1], ordered[3].normal[0])),
-        float(ordered[3].rho),
-    )
-    p_LT, p_RT, p_RB, p_LB = compute_corners(ell_L, ell_R, ell_T, ell_B)
-    corners = np.array([p_LT, p_RT, p_RB, p_LB], dtype=np.float64)
-
-    # ── 10. Score ──
+    # ── 9. Score ──
     frac_valid = float(int(np.sum(success & np.isfinite(m)))) / float(num_rays)
     mean_sigma_ratio = float(
         np.mean([ec.sigma_ratio for ec in ordered])
@@ -754,4 +783,5 @@ def fit_finder_ray(
         corners=corners,
         score=float(score),
         valid=True,
+        inner_corners=inner_corners,
     )

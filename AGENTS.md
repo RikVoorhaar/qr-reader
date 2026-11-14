@@ -39,6 +39,7 @@ Every source file under `src/qr_reader/` and its role.
 | `geometry.py` | Low-level geometric primitives: angular distance, local offset, polygon area, segment intersection | — |
 | `homography.py` | DLT, RANSAC, Levenberg-Marquardt homography estimation, point projection, QR corner projection | `scipy` |
 | `landmarks.py` | Build `NamedLandmarks` from a Triplet, compute colinear quadruples for cross-ratio measurement | `finder_pattern.py` |
+| `landmarks_refined.py` | Experimental: extra correspondences for a better homography — inner finder corners (ray profile at 2.5 modules), interior 5×5 alignment-pattern centres (template matching), weighted/RANSAC homography fitting | `ray_fit.py`, `edge_fitting.py`, `homography.py`, `tables.py` |
 | `region.py` | Wave-front fill, 8-connected boundary trace, connected-components on boundaries | `scipy`, `networkx` |
 | `sample.py` | Sample the module bit matrix from the rectified QR image using the homography | `homography.py`, `scipy` |
 | `version.py` | Cross-ratio measurement, constraint building/filtering, version estimation | `landmarks.py` |
@@ -66,6 +67,8 @@ Every source file under `src/qr_reader/` and its role.
 |------|---------|
 | `full-pipeline-current.py` | End-to-end pipeline with per-seed backgrounds (composited QR); ray-profile finder fitting |
 | `qr_benchmark.py` | Benchmark detection/decoding across presets, versions, and seeds |
+| `benchmark_homography_quality.py` | Measure baseline vs. refined-landmark homography quality against a reconstructed ground-truth homography |
+| `benchmark_captured_refined.py` | A/B on the captured dataset: baseline vs. refined-landmark homography — decode accuracy and wall time |
 | `benchmark_captured.py` | Benchmark on the captured dataset (100 photos encoding `rikvoorhaar.com`): 6-stage detection funnel, decode accuracy, wall time |
 | `debug_find_all_associations.py` | Targeted debug script for the `find_all_associations` high-version failure |
 | `ray-profile.py` | Diagnostic script for ray-profile fitting; reference implementation (plotting) |
@@ -148,7 +151,7 @@ bit matrix (N×N bool)
 - **`Constraint`** (`version.py`): `type` ("outer"/"inner"), `label`, `r_measured`, `line_error`, `span`.
 - **`CandidateCluster`** (`clustering.py`): `row`, `cols` (6 boundaries), `height`, `num_candidates`.
 - **`Quadruple`** (`landmarks.py`): `points` (4×2), `type` ("outer"/"inner"), `label` — four colinear points for cross-ratio measurement.
-- **`RayFitResult`** (`ray_fit.py`): `corners` (4×2), `score` (float), `valid` (bool). Returned by ``fit_finder_ray``. Corners are in (x, y).
+- **`RayFitResult`** (`ray_fit.py`): `corners` (4×2), `inner_corners` (4×2 | None), `score` (float), `valid` (bool). Returned by ``fit_finder_ray``. Corners are in (x, y). ``inner_corners`` is the white-ring square, computed in the same pass reusing the per-ray module pitch.
 - **`DetectionResult`** (`detector.py`): `success`, `H` (3×3), `version`, `error` (Exception | None), `n_candidates`, `n_finder_patterns`, `n_triplets`, `timings`. Always returned by ``_run_detection`` — even on failure, so callers can inspect partial stage counts and why the pipeline stopped.
 - **`DetectionTimings`** (`detector.py`): per-stage wall times in seconds (binarize, alignment, clustering, refinement, dedup, triplet, homography, total).
 - **`DetectionContext`** (`detector.py`): preprocessing output reused across candidates — `img_gray`, `fps`, `score_map`, `global_corners_xy`, `triplets`, `timings`, and stage counts.
