@@ -228,17 +228,7 @@ def _prepare_detection(image: np.ndarray, result: DetectionResult) -> DetectionC
             continue
 
         corners_rc = corners_xy_global[:, ::-1]
-        inner_rc = None
-        if fr.inner_corners is not None:
-            inner_xy_global = fr.inner_corners + np.array(
-                [c0, r0], dtype=np.float64
-            )
-            inner_rc = inner_xy_global[:, ::-1]
-        fps.append(
-            FinderPattern(
-                cluster_idx=ci, outer_corners=corners_rc, inner_corners=inner_rc
-            )
-        )
+        fps.append(FinderPattern(cluster_idx=ci, outer_corners=corners_rc))
         score_map[ci] = fr.score
         global_corners_xy[ci] = corners_xy_global
     timings.refinement_s = perf_counter() - t0

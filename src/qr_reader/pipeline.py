@@ -2,8 +2,9 @@
 
 ``decode_image`` runs the finder/triplet stage once, ranks every triplet by
 its cross-ratio version score, and tries a bounded set of (triplet, version)
-candidates.  Each candidate is rectified with the 12-corner DLT + LM
-homography, sampled, and decoded.  The first payload that passes the optional
+candidates.  Each candidate is rectified with a DLT + LM homography fit from
+the 12 outer finder corners plus the interior alignment patterns (versions ≥ 2),
+sampled, and decoded.  The first payload that passes the optional
 ``expected_payload`` check wins; otherwise the result carries every attempt
 and its failure reason.
 
@@ -26,6 +27,7 @@ from qr_reader.detector.detector import (
     _prepare_detection,
     _rank_triplets,
 )
+from qr_reader.detector.landmarks_refined import build_refined_homography
 from qr_reader.detector.sample import sample_qr_bits
 
 
@@ -153,6 +155,16 @@ def decode_image(
             t0 = perf_counter()
             try:
                 H, err = _fit_candidate_homography(context, candidate.triplet, N)
+                # Refine with interior alignment patterns (versions >= 2).
+                # Falls back to the 12-corner H on any failure, so this can
+                # only improve (or match) the baseline.
+                try:
+                    H, _ref_stats = build_refined_homography(
+                        context.img_gray, H, candidate.triplet,
+                        context.fps, version,
+                    )
+                except Exception:
+                    pass
             except Exception as exc:
                 attempt.fit_time_s = perf_counter() - t0
                 attempt.failure_reason = (

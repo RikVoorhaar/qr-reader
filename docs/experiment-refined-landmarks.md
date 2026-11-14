@@ -1,10 +1,7 @@
 # Experiment: refined landmark extraction for a better homography
 
-**Status:** integrated (spike) — inner corners emitted in `fit_finder_ray`;
-alignment-pattern refinement via `build_refined_homography`.  Not yet wired into
-`decode_image`.
-**Script:** `src/qr_reader/scripts/benchmark_captured_refined.py` (A/B +
-ablation); `src/qr_reader/scripts/benchmark_homography_quality.py` (geometry)
+**Status:** integrated — wired into `decode_image` as the default homography
+fit (12 outer corners + interior alignment patterns, DLT + LM).
 **Module:** `src/qr_reader/detector/landmarks_refined.py`
 
 ## Question
@@ -13,14 +10,12 @@ Is homography estimation ever the limiting factor for decoding, and can we
 measurably improve correspondence quality by extracting **more landmarks** after
 cross-ratio version estimation?
 
-The current pipeline fits the homography from only the **12 outer finder
-corners** (three finder patterns × four corners).  The idea under test:
-
-1. Reuse the ray-profile machinery to also find the **inner** finder corners
-   (the white-ring square at grid offset 1..6).
-2. Because the version is known, template-match the interior **alignment
-   patterns** (the 5×5 patterns) for extra, spread-out correspondences.
-3. Optionally weight each correspondence by a confidence score and refit.
+The pipeline originally fitted the homography from only the **12 outer finder
+corners** (three finder patterns × four corners).  The idea under test: because
+the version is known, template-match the interior **alignment patterns** (the
+5×5 patterns) for extra, spread-out correspondences and refit.  Inner finder
+corners were also tried as a candidate source of extra corners, and rejected
+(see below).
 
 ## What was measured
 
@@ -77,9 +72,8 @@ Per-landmark correspondence error vs ground truth (all presets):
 
 ## Captured (real-photo) benchmark
 
-The A/B + ablation was run on the 100-photo captured benchmark
-(`scripts/benchmark_captured_refined.py`), fitting each homography variant per
-candidate and decoding with each (**no RANSAC**):
+An A/B ablation was run on the 100-photo captured benchmark, fitting each
+homography variant per candidate and decoding with each (**no RANSAC**):
 
 | Variant | decode accuracy | vs baseline |
 |---------|----------------:|-------------|
@@ -93,28 +87,18 @@ none**.  Adding inner corners on top changes nothing (both == align).  Inner
 corners *alone* are neutral-to-slightly-negative (they are colinear with the
 outer corners and add no spatial spread, only a little extra noise).
 
-### Runtime (whole benchmark, 100 images; integrated inner corners)
-
-| Variant | homography fit | per image |
-|---------|---------------:|----------:|
-| baseline | 0.14 s | 1.4 ms |
-| inner | 0.17 s | 1.7 ms |
-| align | 0.31 s | 3.1 ms |
-| both | 0.34 s | 3.4 ms |
-
-After the integration, the extra cost of the useful (alignment) step is
-**~1.7 ms/image** vs the naive re-fit's 23 ms/image — a >10× speedup.  Emitting
-the inner corners inside `fit_finder_ray` reuses the per-ray module-pitch
-estimates already computed for the outer corners, so it adds only ~0.4 ms/image
-of homography work (plus a small always-on detection cost of ~2–3 ms/image
-because inner corners are fitted for every candidate cluster).
+**Result:** `decode_image` now fits the homography from outer corners +
+alignment patterns, and `benchmark_captured.py` reports **56 / 100** (up from
+52), with no image lost.  The added runtime is ~1–2 ms/image (alignment
+template matching), vs ~23 ms/image for a naive re-fit that also recomputed the
+inner-corner ray profiles — so the integrated version is >10× cheaper.
 
 ## Conclusion
 
 The "cleaner story" the team wanted is the correct one: **the alignment patterns
 are what make the homography estimation better** — inner corners are not needed.
 On the real-photo captured benchmark, alignment patterns lift decode accuracy
-52 → 56 (4 images recovered, 0 lost) at ~1.7 ms/image.  On synthetic images the
+52 → 56 (4 images recovered, 0 lost) at ~1–2 ms/image.  On synthetic images the
 improvement is geometric only (Reed-Solomon absorbs the residual sub-module
 error, so decode accuracy is unchanged).  Inner finder corners are a red
 herring for homography: colinear and co-located with the outer corners, they add
