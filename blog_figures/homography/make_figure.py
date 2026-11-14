@@ -528,7 +528,31 @@ def add_photo_panel(fig: plt.Figure, fit: Fit, crop: tuple[int, int, int, int]) 
             zorder=9,
         )
 
-    # The six matched alignment centres.
+    # The six matched alignment centres, plus a green 5x5 outline around
+    # each pattern so the new landmarks are unmistakable.
+    for i in fit.align_idx:
+        gx, gy = fit.src[i]
+        corners = np.array(
+            [
+                [gx - 2.5, gy - 2.5],
+                [gx + 2.5, gy - 2.5],
+                [gx + 2.5, gy + 2.5],
+                [gx - 2.5, gy + 2.5],
+            ]
+        )
+        image_corners = project_points(fit.H, corners)
+        ax.add_patch(
+            Polygon(
+                image_corners,
+                closed=True,
+                fill=False,
+                edgecolor=ALIGN_COLOR,
+                lw=1.15,
+                alpha=0.80,
+                zorder=8,
+            )
+        )
+
     apts = fit.dst[fit.align_idx]
     ax.scatter(
         apts[:, 0],
@@ -635,6 +659,32 @@ def add_rectified_panel(fig: plt.Figure, fit: Fit, margins: tuple[float, float, 
         linewidths=0.5,
         zorder=10,
     )
+
+    # Green 5x5 outlines around the alignment patterns.  The chosen one gets
+    # the thicker callout below instead, so skip it here to avoid a double line.
+    for i in fit.align_idx:
+        if i == fit.inset_center_idx:
+            continue
+        gx, gy = fit.src[i]
+        corners = np.array(
+            [
+                [gx - 2.5, gy - 2.5],
+                [gx + 2.5, gy - 2.5],
+                [gx + 2.5, gy + 2.5],
+                [gx - 2.5, gy + 2.5],
+            ]
+        ) * fit.scale
+        ax.add_patch(
+            Polygon(
+                corners,
+                closed=True,
+                fill=False,
+                edgecolor=ALIGN_COLOR,
+                lw=1.0,
+                alpha=0.72,
+                zorder=8,
+            )
+        )
 
     # Callout around the corner region shown in the bottom inset.
     ax.add_patch(
