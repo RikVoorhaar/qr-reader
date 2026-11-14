@@ -1,42 +1,41 @@
 #!/usr/bin/env python3
 """Build the homography figure for the QR-reader blog post.
 
-The figure shows the twelve finder-pattern corners that the detector fits, and
-the mapping from those corners in a captured photo to the canonical corner
-positions of a rectified QR grid.
+The figure shows the correspondence set that the production pipeline fits:
+the twelve outer finder corners plus the six interior alignment-pattern
+centres (versions >= 2), eighteen points in total.
 
 Left panel
-    A tight crop of the real photo, with the twelve detected outer finder
-    corners marked (four per finder).  No grid.
+    A tight crop of the real photo, with the twelve outer finder corners in
+    their finder colours and the six alignment centres as green diamonds.
 
 Right panel
     The same photo warped into a top-down, module-aligned square with the
-    inverse homography.  A module grid is overlaid and the twelve canonical
-    corners are marked as open circles.  The small filled dots are the detected
-    corners mapped through ``H^{-1}``: they should sit on the open circles.
+    inverse *refined* homography.  The twelve canonical outer corners are open
+    circles; the six canonical alignment centres are open green diamonds.
+    Tiny filled dots are the detected points mapped through ``H^{-1}``.
+
+Correspondence lines
+    Only the six alignment centres (green) and the four top-left outer corners
+    (amber) are joined across the gutter.  The alignment lines are the point:
+    they show the new constraints spread across the symbol.
 
 Bottom inset
-    A high-resolution, true-scale zoom on the bottom-left corner of the
-    top-left finder.  The open circle is the ideal canonical corner; the
-    filled dot is the mapped detected corner; the thin connector is the actual
-    residual.  No scaling is applied.  A callout rectangle in the rectified
-    panel marks the zoomed region.
+    A high-resolution, true-scale zoom on the alignment pattern with the
+    largest alignment residual, centred at (28.5, 28.5).  The open circle is
+    the ideal canonical centre; the filled dot is the matched image point; the
+    thin connector is the actual residual.  No scaling is applied.  A green
+    callout rectangle in the rectified panel marks the zoomed pattern.
 
-    The inset is rectified separately at ``INSET_PX_PER_MODULE`` pixels per
-    module, so the one- to two-pixel residual is visible against a crisp
-    module edge.  The main rectified panel stays at 25 px/module.
-
-The detector pipeline used here is the real one:
+The production pipeline used here is the real one:
 
     _prepare_detection -> _rank_triplets -> _fit_candidate_homography
+        -> build_refined_homography
 
-``H`` maps QR-grid (x, y) to image (x, y).  The twelve source points are the
-same ones ``_fit_candidate_homography`` builds, in the same [TL, TR, BR, BL]
-order per finder:
-
-    TL finder  (0,0), (7,0), (7,7), (0,7)
-    TR finder  (N-7,0), (N,0), (N,7), (N-7,7)
-    BL finder  (0,N-7), (7,N-7), (7,N), (0,N)
+``H`` maps QR-grid (x, y) to image (x, y).  The outer source points are the
+same ones ``_fit_candidate_homography`` builds, in [TL, TR, BR, BL] order per
+finder.  The six alignment centres come from ``alignment_centers_grid(10)``
+and are matched with ``match_alignment_pattern`` exactly as the refit does.
 
 Usage (from the repository root):
 
@@ -75,6 +74,12 @@ from qr_reader.detector.detector import (  # noqa: E402
     _triplet_axes,
 )
 from qr_reader.detector.homography import compute_qr_corners, project_points  # noqa: E402
+from qr_reader.detector.landmarks_refined import (  # noqa: E402
+    _local_module_px,
+    alignment_centers_grid,
+    build_refined_homography,
+    match_alignment_pattern,
+)
 
 DATA_DIR = REPO_ROOT / "data" / "bench" / "captured-fullsize"
 DEFAULT_OUT = (
@@ -96,6 +101,7 @@ PHOTO_BOTTOM = 2732
 TL_COLOR = "#f5a524"  # amber
 TR_COLOR = "#4cc9f0"  # cyan
 BL_COLOR = "#8b5cf6"  # violet
+ALIGN_COLOR = "#2f9e44"  # green
 
 GRID_MINOR = "#9ca3af"
 GRID_MAJOR = "#374151"
@@ -107,20 +113,21 @@ BOX_EDGE = "#3f3f3f"
 TEXT_BRIGHT = "#f2f2f2"
 
 # The main rectified panel is at RECT_PX_PER_MODULE; the inset is a separate,
-# much higher-resolution render of one corner region.
-INSET_PX_PER_MODULE = 200
-INSET_X0, INSET_Y0 = -1.25, 5.5
-INSET_X1, INSET_Y1 = 1.75, 8.5
-INSET_CORNER = 3  # TL group order is (0,0), (7,0), (7,7), (0,7)
+# higher-resolution render of the chosen alignment pattern (5x5) plus a
+# one-module context margin.
+INSET_PX_PER_MODULE = 160
+INSET_HALF_MODULES = 2.5  # exactly the 5x5 alignment pattern
+INSET_FOOTER_MODULES = 0.55
 # Figure layout, in inches / figure fractions.
-FIG_W, FIG_H = 10.0, 8.0
-TOP_W_IN = 4.25
-TOP_H_IN = 4.30
-TOP_X = (0.032, 0.540)
-TOP_Y = 0.448
+FIG_W, FIG_H = 10.0, 9.2
+TOP_W_IN = 4.15
+TOP_H_IN = 4.15
+TOP_X = (0.032, 0.525)
+TOP_Y = 0.535
 
-INSET_IN = 3.0
-INSET_XY = (0.04, 0.04)
+INSET_W_IN = 4.0
+INSET_H_IN = INSET_W_IN * (2 * INSET_HALF_MODULES + INSET_FOOTER_MODULES) / (2 * INSET_HALF_MODULES)
+INSET_XY = (0.03, 0.02)
 
 
 @dataclass
@@ -132,14 +139,20 @@ class Fit:
     n_modules: int
     H: np.ndarray
     H_inv: np.ndarray
-    src: np.ndarray  # (12, 2) canonical grid corners, (x, y)
-    dst: np.ndarray  # (12, 2) detected image corners, (x, y)
-    groups: dict[str, np.ndarray]  # finder -> indices into src/dst
+    src: np.ndarray  # (18, 2) canonical grid points: 12 outer + 6 alignment
+    dst: np.ndarray  # (18, 2) detected/matched image points
+    groups: dict[str, np.ndarray]  # finder -> indices into src/dst (0..11)
+    align_idx: np.ndarray  # indices 12..17 in src/dst
+    align_conf: np.ndarray  # template-match confidences for the 6 centres
     fit_error: float
+    base_error: float
+    ref_stats: dict
     rect: np.ndarray
     scale: float
-    inset_rect: np.ndarray  # high-resolution corner zoom
+    inset_rect: np.ndarray  # high-resolution alignment-pattern zoom
     inset_scale: float
+    inset_region: tuple[float, float, float, float]  # x0, y0, x1, y1
+    inset_center_idx: int  # index into align_idx
 
     @property
     def image_errors(self) -> np.ndarray:
@@ -192,7 +205,7 @@ def warp_region(
 
 
 def detect(data_dir: Path = DATA_DIR) -> Fit:
-    """Run the real detector and build the twelve-point correspondence."""
+    """Run the production detector and build the 12 + 6 correspondence."""
     path = data_dir / IMAGE_NAME
     img = cv2.imread(str(path))
     if img is None:
@@ -213,10 +226,14 @@ def detect(data_dir: Path = DATA_DIR) -> Fit:
 
     version = candidate.best_version
     n = 17 + 4 * version
-    H, fit_error = _fit_candidate_homography(ctx, candidate.triplet, n)
+    H_base, base_error = _fit_candidate_homography(ctx, candidate.triplet, n)
+    H, ref_stats = build_refined_homography(
+        ctx.img_gray, H_base, candidate.triplet, ctx.fps, version
+    )
+    if ref_stats["n_outer"] != 12 or ref_stats["n_align"] != 6:
+        raise SystemExit(f"unexpected refined correspondence counts: {ref_stats}")
 
-    # Rebuild exactly the correspondence _fit_candidate_homography uses, so
-    # the residuals plotted here are the ones behind ``fit_error``.
+    # Rebuild exactly the 12 outer correspondences used by the fit.
     right, down = _triplet_axes(ctx, candidate.triplet)
     corners = {
         "TL": (
@@ -249,15 +266,43 @@ def detect(data_dir: Path = DATA_DIR) -> Fit:
             src.append([origin[0] + grid_offsets[i, 0], origin[1] + grid_offsets[i, 1]])
             dst.append(quad[i].tolist())
 
+    n_outer = len(src)
+
+    # Match the six interior alignment centres exactly as build_refined_homography
+    # does: seed with H_base, use the local module pitch from H_base.
+    align_conf: list[float] = []
+    for gx, gy in alignment_centers_grid(version):
+        center0 = project_points(H_base, np.array([[gx, gy]]))[0]
+        module_px = _local_module_px(H_base, gx, gy)
+        image_xy, confidence = match_alignment_pattern(
+            ctx.img_gray, center0, module_px
+        )
+        src.append([gx, gy])
+        dst.append(image_xy.tolist())
+        align_conf.append(confidence)
+
     src_arr = np.array(src, dtype=np.float64)
     dst_arr = np.array(dst, dtype=np.float64)
+    align_idx = np.arange(n_outer, len(src_arr))
 
     proj = project_points(H, src_arr)
     recomputed = float(np.mean(np.linalg.norm(proj - dst_arr, axis=1)))
-    if abs(recomputed - fit_error) > 1e-9:
+    if abs(recomputed - ref_stats["err"]) > 1e-9:
         raise SystemExit(
-            f"recomputed fit error {recomputed} != returned {fit_error}"
+            f"recomputed refined error {recomputed} != returned {ref_stats['err']}"
         )
+
+    # The alignment pattern with the largest image-plane residual becomes the
+    # inset subject.  For v10 that is the centre (28.5, 28.5).
+    align_err = np.linalg.norm(proj[align_idx] - dst_arr[align_idx], axis=1)
+    inset_center_idx = int(align_idx[int(np.argmax(align_err))])
+    cx, cy = src_arr[inset_center_idx]
+    inset_region = (
+        float(cx - INSET_HALF_MODULES),
+        float(cy - INSET_HALF_MODULES),
+        float(cx + INSET_HALF_MODULES),
+        float(cy + INSET_HALF_MODULES),
+    )
 
     H_inv = np.linalg.inv(H)
     scale = float(RECT_PX_PER_MODULE)
@@ -266,10 +311,7 @@ def detect(data_dir: Path = DATA_DIR) -> Fit:
     inset_rect = warp_region(
         gray,
         H_inv,
-        INSET_X0,
-        INSET_Y0,
-        INSET_X1,
-        INSET_Y1,
+        *inset_region,
         inset_scale,
     )
 
@@ -282,11 +324,17 @@ def detect(data_dir: Path = DATA_DIR) -> Fit:
         src=src_arr,
         dst=dst_arr,
         groups=groups,
-        fit_error=fit_error,
+        align_idx=align_idx,
+        align_conf=np.array(align_conf, dtype=np.float64),
+        fit_error=float(ref_stats["err"]),
+        base_error=float(base_error),
+        ref_stats=ref_stats,
         rect=rectified,
         scale=scale,
         inset_rect=inset_rect,
         inset_scale=inset_scale,
+        inset_region=inset_region,
+        inset_center_idx=inset_center_idx,
     )
 
 
@@ -479,6 +527,19 @@ def add_photo_panel(fig: plt.Figure, fit: Fit, crop: tuple[int, int, int, int]) 
             linewidths=0.9,
             zorder=9,
         )
+
+    # The six matched alignment centres.
+    apts = fit.dst[fit.align_idx]
+    ax.scatter(
+        apts[:, 0],
+        apts[:, 1],
+        marker="D",
+        s=38,
+        facecolors=ALIGN_COLOR,
+        edgecolors="#ffffff",
+        linewidths=0.9,
+        zorder=10,
+    )
     return ax
 
 
@@ -551,14 +612,38 @@ def add_rectified_panel(fig: plt.Figure, fit: Fit, margins: tuple[float, float, 
             zorder=10,
         )
 
+    # Canonical alignment centres: open green diamonds; matched centres are
+    # tiny green dots inside them.
+    align_grid = fit.src[fit.align_idx] * fit.scale
+    align_mapped = mapped[fit.align_idx]
+    ax.scatter(
+        align_grid[:, 0],
+        align_grid[:, 1],
+        marker="D",
+        s=46,
+        facecolors="white",
+        edgecolors=ALIGN_COLOR,
+        linewidths=1.5,
+        zorder=9,
+    )
+    ax.scatter(
+        align_mapped[:, 0],
+        align_mapped[:, 1],
+        s=13,
+        facecolors=ALIGN_COLOR,
+        edgecolors="#ffffff",
+        linewidths=0.5,
+        zorder=10,
+    )
+
     # Callout around the corner region shown in the bottom inset.
     ax.add_patch(
         Rectangle(
-            (INSET_X0 * fit.scale, INSET_Y0 * fit.scale),
-            (INSET_X1 - INSET_X0) * fit.scale,
-            (INSET_Y1 - INSET_Y0) * fit.scale,
+            (fit.inset_region[0] * fit.scale, fit.inset_region[1] * fit.scale),
+            (fit.inset_region[2] - fit.inset_region[0]) * fit.scale,
+            (fit.inset_region[3] - fit.inset_region[1]) * fit.scale,
             fill=False,
-            edgecolor=TL_COLOR,
+            edgecolor=ALIGN_COLOR,
             lw=1.25,
             alpha=0.95,
             zorder=12,
@@ -576,12 +661,13 @@ def add_rectified_panel(fig: plt.Figure, fit: Fit, margins: tuple[float, float, 
 def add_correspondence(
     fig: plt.Figure, fit: Fit, left_ax: plt.Axes, right_ax: plt.Axes
 ) -> None:
-    """Thin colour-coded bridges for the zoomed finder's four corners.
+    """Thin colour-coded bridges for the alignment centres and TL outer corners.
 
-    Twelve lines across two dense panels read as spaghetti, so only the
-    top-left finder — the one the inset zooms — gets lines.  The other eight
-    corners keep their colour-coded dots and open circles; the colour key and
-    the finder outlines carry that part of the correspondence.
+    Eighteen lines across two dense panels read as spaghetti.  The new
+    alignment constraints are the point, so all six are drawn (green); the
+    four top-left finder corners (amber) tie the inset colour story together.
+    The other eight outer corners keep their colour-coded dots and open
+    circles.
     """
     overlay = fig.add_axes([0.0, 0.0, 1.0, 1.0], zorder=20)
     overlay.set_xlim(0.0, 1.0)
@@ -598,29 +684,36 @@ def add_correspondence(
     gutter_l = left_box.x1
     gutter_r = right_box.x0
 
+    lines: list[tuple[np.ndarray, str, float, float, float, float]] = []
     for i in fit.groups["TL"]:
-        p0, p1 = left_fig[i], right_fig[i]
-        overlay.plot(
-            [p0[0], p1[0]],
-            [p0[1], p1[1]],
-            color=TL_COLOR,
-            lw=1.05,
-            alpha=0.28,
-            solid_capstyle="round",
-            zorder=3,
-        )
+        lines.append((np.array([i]), TL_COLOR, 1.05, 1.45, 0.28, 0.95))
+    for i in fit.align_idx:
+        lines.append((np.array([i]), ALIGN_COLOR, 1.15, 1.40, 0.34, 0.92))
 
-        a = clip_segment_to_x(p0, p1, gutter_l)
-        b = clip_segment_to_x(p0, p1, gutter_r)
-        overlay.plot(
-            [a[0], b[0]],
-            [a[1], b[1]],
-            color=TL_COLOR,
-            lw=1.45,
-            alpha=0.95,
-            solid_capstyle="round",
-            zorder=4,
-        )
+    for indices, color, in_lw, gap_lw, in_alpha, gap_alpha in lines:
+        for i in indices:
+            p0, p1 = left_fig[i], right_fig[i]
+            overlay.plot(
+                [p0[0], p1[0]],
+                [p0[1], p1[1]],
+                color=color,
+                lw=in_lw,
+                alpha=in_alpha,
+                solid_capstyle="round",
+                zorder=3,
+            )
+
+            a = clip_segment_to_x(p0, p1, gutter_l)
+            b = clip_segment_to_x(p0, p1, gutter_r)
+            overlay.plot(
+                [a[0], b[0]],
+                [a[1], b[1]],
+                color=color,
+                lw=gap_lw,
+                alpha=gap_alpha,
+                solid_capstyle="round",
+                zorder=4,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -629,19 +722,20 @@ def add_correspondence(
 
 
 def add_inset(fig: plt.Figure, fit: Fit) -> plt.Axes:
-    """True-scale, high-resolution zoom on one corner of the TL finder."""
+    """True-scale, high-resolution zoom on the chosen alignment pattern."""
     ax = fig.add_axes(
         [
             INSET_XY[0],
             INSET_XY[1],
-            INSET_IN / FIG_W,
-            INSET_IN / FIG_H,
+            INSET_W_IN / FIG_W,
+            INSET_H_IN / FIG_H,
         ]
     )
     ax.set_facecolor("white")
 
-    w_mod = INSET_X1 - INSET_X0
-    h_mod = INSET_Y1 - INSET_Y0
+    x0, y0, x1, y1 = fit.inset_region
+    w_mod = x1 - x0
+    h_mod = y1 - y0
     ax.imshow(
         fit.inset_rect,
         cmap="gray",
@@ -654,29 +748,25 @@ def add_inset(fig: plt.Figure, fit: Fit) -> plt.Axes:
     draw_inset_grid(
         ax,
         fit.n_modules,
-        INSET_X0,
-        INSET_Y0,
-        INSET_X1,
-        INSET_Y1,
+        x0,
+        y0,
+        x1,
+        y1,
         minor_alpha=0.34,
-        major_alpha=0.62,
+        major_alpha=0.55,
     )
 
-    # The zoomed landmark: bottom-left corner of the TL finder, grid (0, 7).
-    corner = fit.groups["TL"][INSET_CORNER]
-    ideal = fit.src[corner] - np.array([INSET_X0, INSET_Y0])
-    mapped = (
-        project_points(fit.H_inv, fit.dst[[corner]])[0]
-        - np.array([INSET_X0, INSET_Y0])
-    )
+    idx = fit.inset_center_idx
+    ideal = fit.src[idx] - np.array([x0, y0])
+    mapped = project_points(fit.H_inv, fit.dst[[idx]])[0] - np.array([x0, y0])
 
-    # True-length connector.  The white under-stroke keeps it readable where
-    # it crosses the black finder ring.
+    # True-length connector; white under-stroke keeps it visible over the
+    # dark alignment-pattern centre.
     ax.plot(
         [ideal[0], mapped[0]],
         [ideal[1], mapped[1]],
         color="#ffffff",
-        lw=3.4,
+        lw=2.4,
         alpha=0.9,
         solid_capstyle="round",
         zorder=8,
@@ -684,55 +774,56 @@ def add_inset(fig: plt.Figure, fit: Fit) -> plt.Axes:
     ax.plot(
         [ideal[0], mapped[0]],
         [ideal[1], mapped[1]],
-        color=TL_COLOR,
-        lw=1.5,
+        color=ALIGN_COLOR,
+        lw=1.2,
         alpha=0.98,
         solid_capstyle="round",
         zorder=9,
     )
 
-    # Mapped corner: filled dot.  Ideal corner: open circle, drawn on top so
-    # the true separation remains legible.
+    # Matched centre: filled dot.  Ideal centre: open circle.
     ax.scatter(
         [mapped[0]],
         [mapped[1]],
-        s=26,
-        facecolors=TL_COLOR,
+        s=12,
+        facecolors=ALIGN_COLOR,
         edgecolors="#ffffff",
-        linewidths=1.2,
+        linewidths=0.9,
         zorder=10,
     )
     ax.scatter(
         [ideal[0]],
         [ideal[1]],
-        s=38,
+        s=20,
         facecolors="white",
         edgecolors=INK,
-        linewidths=1.4,
+        linewidths=1.3,
         zorder=11,
     )
 
-    # One-module scale bar in the white margin outside the QR.
-    bar_y = 2.62
+    # The scale bar and label live in a white footer band below the pattern,
+    # so neither covers the 5x5 alignment pattern.
+    footer_y = h_mod + 0.5 * INSET_FOOTER_MODULES
+    bar_x0, bar_x1 = 3.55, 4.55
     ax.plot(
-        [0.10, 1.10],
-        [bar_y, bar_y],
+        [bar_x0, bar_x1],
+        [footer_y, footer_y],
         color=INK,
         lw=1.5,
         solid_capstyle="butt",
         zorder=12,
     )
-    for x in (0.10, 1.10):
+    for x in (bar_x0, bar_x1):
         ax.plot(
             [x, x],
-            [bar_y - 0.08, bar_y + 0.08],
+            [footer_y - 0.12, footer_y + 0.12],
             color=INK,
             lw=1.2,
             zorder=12,
         )
     ax.text(
-        0.60,
-        bar_y + 0.12,
+        0.5 * (bar_x0 + bar_x1),
+        footer_y + 0.07,
         "1 module",
         color=INK,
         fontsize=8.6,
@@ -740,18 +831,21 @@ def add_inset(fig: plt.Figure, fit: Fit) -> plt.Axes:
         va="top",
         zorder=12,
     )
+    ax.text(
+        0.10,
+        footer_y,
+        "alignment pattern  ·  centre",
+        color=INK,
+        fontsize=10.5,
+        ha="left",
+        va="center",
+        zorder=12,
+    )
 
     ax.set_xlim(0.0, w_mod)
-    ax.set_ylim(h_mod, 0.0)
+    ax.set_ylim(h_mod + INSET_FOOTER_MODULES, 0.0)
     ax.set_aspect("equal")
     ax.axis("off")
-    rounded_label(
-        ax,
-        0.014,
-        0.986,
-        "TL finder  ·  bottom-left corner",
-        fontsize=10.5,
-    )
     return ax
 
 
@@ -761,7 +855,7 @@ def add_inset(fig: plt.Figure, fit: Fit) -> plt.Axes:
 
 
 def add_stats(fig: plt.Figure, fit: Fit) -> None:
-    ax = fig.add_axes([0.397, 0.018, 0.575, 0.385])
+    ax = fig.add_axes([0.51, 0.03, 0.46, 0.47])
     ax.set_xlim(0.0, 1.0)
     ax.set_ylim(0.0, 1.0)
     ax.axis("off")
@@ -770,17 +864,18 @@ def add_stats(fig: plt.Figure, fit: Fit) -> None:
     mapped = project_points(fit.H_inv, fit.dst)
     rect_err = np.linalg.norm(mapped - fit.src, axis=1) * fit.scale
 
-    corner = fit.groups["TL"][INSET_CORNER]
-    corner_delta = (
-        project_points(fit.H_inv, fit.dst[[corner]])[0] - fit.src[corner]
-    )
-    corner_modules = float(np.linalg.norm(corner_delta))
-    corner_inset_px = corner_modules * fit.inset_scale
+    align_img_err = image_err[fit.align_idx]
+    idx = int(fit.align_idx[int(np.argmax(align_img_err))])
+    cx, cy = fit.src[idx]
+    chosen_delta = project_points(fit.H_inv, fit.dst[[idx]])[0] - fit.src[idx]
+    chosen_modules = float(np.linalg.norm(chosen_delta))
+    chosen_inset_px = chosen_modules * fit.inset_scale
+    chosen_img_px = float(image_err[idx])
 
     ax.text(
         0.0,
         0.95,
-        "Twelve-point fit",
+        "18 correspondences",
         color=INK,
         fontsize=14.5,
         ha="left",
@@ -789,8 +884,17 @@ def add_stats(fig: plt.Figure, fit: Fit) -> None:
     )
     ax.text(
         0.0,
-        0.79,
-        f"mean {image_err.mean():.2f} px   ·   max {image_err.max():.2f} px",
+        0.865,
+        "12 outer finder corners  +  6 alignment centres",
+        color=MUTED,
+        fontsize=10.8,
+        ha="left",
+        va="top",
+    )
+    ax.text(
+        0.0,
+        0.755,
+        f"refined mean {image_err.mean():.2f} px   ·   max {image_err.max():.2f} px",
         color=INK,
         fontsize=13.5,
         ha="left",
@@ -798,7 +902,7 @@ def add_stats(fig: plt.Figure, fit: Fit) -> None:
     )
     ax.text(
         0.0,
-        0.675,
+        0.655,
         "residual in the photo (image pixels) · true scale",
         color=MUTED,
         fontsize=10.6,
@@ -807,41 +911,78 @@ def add_stats(fig: plt.Figure, fit: Fit) -> None:
     )
     ax.text(
         0.0,
-        0.60,
-        f"after rectification: {rect_err.mean():.2f} px mean  ·  "
-        f"{rect_err.max():.2f} px max (at 25 px/module)",
+        0.59,
+        f"rectified (25 px/module): {rect_err.mean():.2f} px mean  ·  "
+        f"{rect_err.max():.2f} px max",
         color=MUTED,
         fontsize=10.6,
         ha="left",
         va="top",
     )
 
-    # Compact marker key.
-    y_key = 0.45
+    # Compact marker key, two rows.
+    y_key = 0.475
     ax.scatter(
         [0.016],
         [y_key],
-        s=68,
+        s=62,
         facecolors="white",
         edgecolors=INK,
         linewidths=1.4,
         clip_on=False,
     )
-    ax.text(0.052, y_key, "ideal canonical corner", color=INK, fontsize=11.0, va="center")
+    ax.text(0.05, y_key, "ideal outer corner", color=INK, fontsize=10.8, va="center")
     ax.scatter(
         [0.405],
         [y_key],
-        s=38,
+        s=36,
         facecolors=TL_COLOR,
         edgecolors="#ffffff",
         linewidths=1.0,
         clip_on=False,
     )
-    ax.text(0.435, y_key, "mapped detected corner", color=INK, fontsize=11.0, va="center")
+    ax.text(0.435, y_key, "mapped detected", color=INK, fontsize=10.8, va="center")
+
+    y_align = 0.395
+    ax.scatter(
+        [0.016],
+        [y_align],
+        marker="D",
+        s=48,
+        facecolors="white",
+        edgecolors=ALIGN_COLOR,
+        linewidths=1.5,
+        clip_on=False,
+    )
+    ax.text(
+        0.05,
+        y_align,
+        "alignment centre (6)",
+        color=INK,
+        fontsize=10.8,
+        va="center",
+    )
+    ax.scatter(
+        [0.405],
+        [y_align],
+        s=30,
+        facecolors=ALIGN_COLOR,
+        edgecolors="#ffffff",
+        linewidths=0.9,
+        clip_on=False,
+    )
+    ax.text(
+        0.435,
+        y_align,
+        "mapped alignment",
+        color=INK,
+        fontsize=10.8,
+        va="center",
+    )
 
     ax.text(
         0.0,
-        0.355,
+        0.30,
         f"inset: true scale · {fit.inset_scale:g} px/module",
         color=MUTED,
         fontsize=10.6,
@@ -850,9 +991,8 @@ def add_stats(fig: plt.Figure, fit: Fit) -> None:
     )
     ax.text(
         0.0,
-        0.285,
-        f"chosen corner (max): {corner_modules:.2f} modules = {corner_inset_px:.1f} px"
-        " at this scale",
+        0.235,
+        f"chosen alignment centre ({cx:g}, {cy:g})",
         color=MUTED,
         fontsize=10.6,
         ha="left",
@@ -860,29 +1000,54 @@ def add_stats(fig: plt.Figure, fit: Fit) -> None:
     )
     ax.text(
         0.0,
-        0.205,
-        "correspondence lines drawn for the zoomed finder; all twelve corners marked",
+        0.18,
+        f"{chosen_modules:.3f} modules = {chosen_inset_px:.1f} px at this scale"
+        f"  ·  {chosen_img_px:.2f} px in the photo",
+        color=MUTED,
+        fontsize=10.6,
+        ha="left",
+        va="top",
+    )
+    ax.text(
+        0.0,
+        0.11,
+        "lines: 6 alignment centres + 4 TL outer corners; all 18 marked",
         color=MUTED,
         fontsize=10.6,
         ha="left",
         va="top",
     )
 
-    # Finder colour key.
-    y_col = 0.09
+    # Finder colour key plus the alignment colour.
+    y_col = 0.035
     x = 0.0
-    for name, label in (("TL", "top-left"), ("TR", "top-right"), ("BL", "bottom-left")):
+    for name, label in (
+        ("TL", "top-left"),
+        ("TR", "top-right"),
+        ("BL", "bottom-left"),
+    ):
         ax.scatter(
             [x],
             [y_col],
-            s=46,
+            s=40,
             facecolors=finder_color(name),
             edgecolors="#ffffff",
-            linewidths=0.9,
+            linewidths=0.8,
             clip_on=False,
         )
-        ax.text(x + 0.017, y_col, label, color=MUTED, fontsize=10.2, va="center")
-        x += 0.225
+        ax.text(x + 0.016, y_col, label, color=MUTED, fontsize=9.4, va="center")
+        x += 0.235
+    ax.scatter(
+        [x],
+        [y_col],
+        marker="D",
+        s=34,
+        facecolors=ALIGN_COLOR,
+        edgecolors="#ffffff",
+        linewidths=0.8,
+        clip_on=False,
+    )
+    ax.text(x + 0.016, y_col, "alignment", color=MUTED, fontsize=9.4, va="center")
 
 
 # ---------------------------------------------------------------------------
@@ -965,18 +1130,36 @@ def main() -> None:
     print(f"photo           : {IMAGE_NAME}")
     print(f"version         : {fit.version}")
     print(f"N (modules)     : {fit.n_modules}")
-    print(f"fit residual    : mean {image_err.mean():.3f} px, max {image_err.max():.3f} px (image)")
+    print(
+        f"correspondences : {fit.ref_stats['n_outer']} outer + "
+        f"{fit.ref_stats['n_align']} alignment = {fit.ref_stats['n_corr']}"
+    )
+    print(
+        f"refined fit     : mean {image_err.mean():.3f} px, max {image_err.max():.3f} px "
+        "(image)"
+    )
+    print(f"base fit        : mean {fit.base_error:.3f} px (12 outer only)")
     print(
         f"rectified error : mean {rect_err.mean():.3f} px, max {rect_err.max():.3f} px "
         "(25 px/module)"
     )
-    corner = fit.groups["TL"][INSET_CORNER]
-    corner_delta = project_points(fit.H_inv, fit.dst[[corner]])[0] - fit.src[corner]
-    corner_modules = float(np.linalg.norm(corner_delta))
-    print(f"zoom corner     : TL finder bottom-left (grid {fit.src[corner].tolist()})")
+    align_err = image_err[fit.align_idx]
     print(
-        f"zoom residual   : {corner_modules:.4f} modules = "
-        f"{corner_modules * fit.inset_scale:.2f} px at {fit.inset_scale:g} px/module"
+        "alignment errs  : "
+        + ", ".join(
+            f"({fit.src[i][0]:g},{fit.src[i][1]:g})={e:.3f}"
+            for i, e in zip(fit.align_idx, align_err)
+        )
+    )
+    idx = fit.inset_center_idx
+    cx, cy = fit.src[idx]
+    delta = project_points(fit.H_inv, fit.dst[[idx]])[0] - fit.src[idx]
+    modules = float(np.linalg.norm(delta))
+    print(f"zoom alignment  : centre ({cx:g}, {cy:g}), grid {fit.src[idx].tolist()}")
+    print(
+        f"zoom residual   : {modules:.4f} modules = "
+        f"{modules * fit.inset_scale:.2f} px at {fit.inset_scale:g} px/module "
+        f"({image_err[idx]:.3f} px in image)"
     )
     print(f"wrote           : {args.out}")
 
