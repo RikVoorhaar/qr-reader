@@ -21,11 +21,13 @@ Correspondence lines
     they show the new constraints spread across the symbol.
 
 Bottom inset
-    A high-resolution, true-scale zoom on the alignment pattern with the
-    largest alignment residual, centred at (28.5, 28.5).  The open circle is
-    the ideal canonical centre; the filled dot is the matched image point; the
-    thin connector is the actual residual.  No scaling is applied.  A green
-    callout rectangle in the rectified panel marks the zoomed pattern.
+    A high-resolution, true-scale zoom on the top-left finder pattern.  Open
+    circles are the ideal corners; filled dots are the mapped corners; the thin
+    connectors are the actual residuals.  No scaling is applied.  An amber
+    callout rectangle in the rectified panel marks the finder.
+
+The image itself carries no statistics or explanatory text, only a compact
+three-symbol legend.
 
 The production pipeline used here is the real one:
 
@@ -113,11 +115,9 @@ BOX_EDGE = "#3f3f3f"
 TEXT_BRIGHT = "#f2f2f2"
 
 # The main rectified panel is at RECT_PX_PER_MODULE; the inset is a separate,
-# higher-resolution render of the chosen alignment pattern (5x5) plus a
-# one-module context margin.
-INSET_PX_PER_MODULE = 160
-INSET_HALF_MODULES = 2.5  # exactly the 5x5 alignment pattern
-INSET_FOOTER_MODULES = 0.55
+# higher-resolution render of one finder-pattern corner plus context.
+INSET_PX_PER_MODULE = 100
+INSET_HALF_MODULES = 4.0  # 8x8 modules: the 7x7 finder plus a small margin
 # Figure layout, in inches / figure fractions.
 FIG_W, FIG_H = 10.0, 9.2
 TOP_W_IN = 4.15
@@ -126,8 +126,8 @@ TOP_X = (0.032, 0.525)
 TOP_Y = 0.535
 
 INSET_W_IN = 4.0
-INSET_H_IN = INSET_W_IN * (2 * INSET_HALF_MODULES + INSET_FOOTER_MODULES) / (2 * INSET_HALF_MODULES)
-INSET_XY = (0.03, 0.02)
+INSET_H_IN = INSET_W_IN
+INSET_XY = (0.22, 0.02)
 
 
 @dataclass
@@ -292,16 +292,17 @@ def detect(data_dir: Path = DATA_DIR) -> Fit:
             f"recomputed refined error {recomputed} != returned {ref_stats['err']}"
         )
 
-    # The alignment pattern with the largest image-plane residual becomes the
-    # inset subject.  For v10 that is the centre (28.5, 28.5).
-    align_err = np.linalg.norm(proj[align_idx] - dst_arr[align_idx], axis=1)
-    inset_center_idx = int(align_idx[int(np.argmax(align_err))])
+    # Zoom on the top-left finder corner with the largest image-plane
+    # residual.  For this photo that is the bottom-left corner, grid (0, 7).
+    tl_idx = groups["TL"]
+    tl_err = np.linalg.norm(proj[tl_idx] - dst_arr[tl_idx], axis=1)
+    inset_center_idx = int(tl_idx[int(np.argmax(tl_err))])
     cx, cy = src_arr[inset_center_idx]
     inset_region = (
-        float(cx - INSET_HALF_MODULES),
-        float(cy - INSET_HALF_MODULES),
-        float(cx + INSET_HALF_MODULES),
-        float(cy + INSET_HALF_MODULES),
+        3.5 - INSET_HALF_MODULES,
+        3.5 - INSET_HALF_MODULES,
+        3.5 + INSET_HALF_MODULES,
+        3.5 + INSET_HALF_MODULES,
     )
 
     H_inv = np.linalg.inv(H)
@@ -498,7 +499,6 @@ def add_photo_panel(fig: plt.Figure, fit: Fit, crop: tuple[int, int, int, int]) 
     ax.set_xlim(c0, c1)
     ax.set_ylim(r1, r0)
     ax.axis("off")
-    rounded_label(ax, 0.014, 0.986, "captured photo")
 
     # Finder outlines: the detected quadrilateral, in the finder's colour.
     for name, idx in fit.groups.items():
@@ -686,14 +686,14 @@ def add_rectified_panel(fig: plt.Figure, fit: Fit, margins: tuple[float, float, 
             )
         )
 
-    # Callout around the corner region shown in the bottom inset.
+    # Callout around the finder corner shown in the bottom inset.
     ax.add_patch(
         Rectangle(
             (fit.inset_region[0] * fit.scale, fit.inset_region[1] * fit.scale),
             (fit.inset_region[2] - fit.inset_region[0]) * fit.scale,
             (fit.inset_region[3] - fit.inset_region[1]) * fit.scale,
             fill=False,
-            edgecolor=ALIGN_COLOR,
+            edgecolor=TL_COLOR,
             lw=1.25,
             alpha=0.95,
             zorder=12,
@@ -704,7 +704,6 @@ def add_rectified_panel(fig: plt.Figure, fit: Fit, margins: tuple[float, float, 
     ax.set_ylim(size + m_b, -m_t)
     ax.set_aspect("equal")
     ax.axis("off")
-    rounded_label(ax, 0.014, 0.986, f"rectified grid  ·  {fit.n_modules} × {fit.n_modules}")
     return ax
 
 
@@ -772,7 +771,7 @@ def add_correspondence(
 
 
 def add_inset(fig: plt.Figure, fit: Fit) -> plt.Axes:
-    """True-scale, high-resolution zoom on the chosen alignment pattern."""
+    """True-scale, high-resolution zoom on the top-left finder pattern."""
     ax = fig.add_axes(
         [
             INSET_XY[0],
@@ -806,94 +805,53 @@ def add_inset(fig: plt.Figure, fit: Fit) -> plt.Axes:
         major_alpha=0.55,
     )
 
-    idx = fit.inset_center_idx
-    ideal = fit.src[idx] - np.array([x0, y0])
-    mapped = project_points(fit.H_inv, fit.dst[[idx]])[0] - np.array([x0, y0])
+    for idx in fit.groups["TL"]:
+        ideal = fit.src[idx] - np.array([x0, y0])
+        mapped = project_points(fit.H_inv, fit.dst[[idx]])[0] - np.array([x0, y0])
 
-    # True-length connector; white under-stroke keeps it visible over the
-    # dark alignment-pattern centre.
-    ax.plot(
-        [ideal[0], mapped[0]],
-        [ideal[1], mapped[1]],
-        color="#ffffff",
-        lw=2.4,
-        alpha=0.9,
-        solid_capstyle="round",
-        zorder=8,
-    )
-    ax.plot(
-        [ideal[0], mapped[0]],
-        [ideal[1], mapped[1]],
-        color=ALIGN_COLOR,
-        lw=1.2,
-        alpha=0.98,
-        solid_capstyle="round",
-        zorder=9,
-    )
-
-    # Matched centre: filled dot.  Ideal centre: open circle.
-    ax.scatter(
-        [mapped[0]],
-        [mapped[1]],
-        s=12,
-        facecolors=ALIGN_COLOR,
-        edgecolors="#ffffff",
-        linewidths=0.9,
-        zorder=10,
-    )
-    ax.scatter(
-        [ideal[0]],
-        [ideal[1]],
-        s=20,
-        facecolors="white",
-        edgecolors=INK,
-        linewidths=1.3,
-        zorder=11,
-    )
-
-    # The scale bar and label live in a white footer band below the pattern,
-    # so neither covers the 5x5 alignment pattern.
-    footer_y = h_mod + 0.5 * INSET_FOOTER_MODULES
-    bar_x0, bar_x1 = 3.55, 4.55
-    ax.plot(
-        [bar_x0, bar_x1],
-        [footer_y, footer_y],
-        color=INK,
-        lw=1.5,
-        solid_capstyle="butt",
-        zorder=12,
-    )
-    for x in (bar_x0, bar_x1):
+        # True-length connectors; white under-stroke keeps them visible over
+        # the black finder-pattern modules.
         ax.plot(
-            [x, x],
-            [footer_y - 0.12, footer_y + 0.12],
-            color=INK,
-            lw=1.2,
-            zorder=12,
+            [ideal[0], mapped[0]],
+            [ideal[1], mapped[1]],
+            color="#ffffff",
+            lw=2.4,
+            alpha=0.9,
+            solid_capstyle="round",
+            zorder=8,
         )
-    ax.text(
-        0.5 * (bar_x0 + bar_x1),
-        footer_y + 0.07,
-        "1 module",
-        color=INK,
-        fontsize=8.6,
-        ha="center",
-        va="top",
-        zorder=12,
-    )
-    ax.text(
-        0.10,
-        footer_y,
-        "alignment pattern  ·  centre",
-        color=INK,
-        fontsize=10.5,
-        ha="left",
-        va="center",
-        zorder=12,
-    )
+        ax.plot(
+            [ideal[0], mapped[0]],
+            [ideal[1], mapped[1]],
+            color=TL_COLOR,
+            lw=1.2,
+            alpha=0.98,
+            solid_capstyle="round",
+            zorder=9,
+        )
+
+        # Matched corner: filled dot.  Ideal corner: open circle.
+        ax.scatter(
+            [mapped[0]],
+            [mapped[1]],
+            s=12,
+            facecolors=TL_COLOR,
+            edgecolors="#ffffff",
+            linewidths=0.9,
+            zorder=10,
+        )
+        ax.scatter(
+            [ideal[0]],
+            [ideal[1]],
+            s=20,
+            facecolors="white",
+            edgecolors=INK,
+            linewidths=1.3,
+            zorder=11,
+        )
 
     ax.set_xlim(0.0, w_mod)
-    ax.set_ylim(h_mod + INSET_FOOTER_MODULES, 0.0)
+    ax.set_ylim(h_mod, 0.0)
     ax.set_aspect("equal")
     ax.axis("off")
     return ax
@@ -1101,6 +1059,59 @@ def add_stats(fig: plt.Figure, fit: Fit) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Legend
+# ---------------------------------------------------------------------------
+
+
+def add_legend(fig: plt.Figure) -> None:
+    """Compact symbol key.  No statistics, no explanatory text."""
+    ax = fig.add_axes([0.66, 0.12, 0.30, 0.22])
+    ax.set_xlim(0.0, 1.0)
+    ax.set_ylim(0.0, 1.0)
+    ax.axis("off")
+
+    rows = (
+        ("ideal", "open"),
+        ("mapped", "filled"),
+        ("alignment", "diamond"),
+    )
+    for row, (label, kind) in enumerate(rows):
+        y = 0.82 - row * 0.31
+        if kind == "open":
+            ax.scatter(
+                [0.08],
+                [y],
+                s=62,
+                facecolors="white",
+                edgecolors=INK,
+                linewidths=1.4,
+                clip_on=False,
+            )
+        elif kind == "filled":
+            ax.scatter(
+                [0.08],
+                [y],
+                s=34,
+                facecolors=INK,
+                edgecolors="#ffffff",
+                linewidths=0.8,
+                clip_on=False,
+            )
+        else:
+            ax.scatter(
+                [0.08],
+                [y],
+                marker="D",
+                s=44,
+                facecolors="white",
+                edgecolors=ALIGN_COLOR,
+                linewidths=1.5,
+                clip_on=False,
+            )
+        ax.text(0.16, y, label, color=INK, fontsize=11.5, va="center")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1158,7 +1169,7 @@ def build(out_path: Path, data_dir: Path = DATA_DIR) -> Fit:
     right_ax = add_rectified_panel(fig, fit, margins)
     add_correspondence(fig, fit, left_ax, right_ax)
     add_inset(fig, fit)
-    add_stats(fig, fit)
+    add_legend(fig)
 
     fig.savefig(out_path, dpi=200, facecolor="white")
     plt.close(fig)
@@ -1205,7 +1216,7 @@ def main() -> None:
     cx, cy = fit.src[idx]
     delta = project_points(fit.H_inv, fit.dst[[idx]])[0] - fit.src[idx]
     modules = float(np.linalg.norm(delta))
-    print(f"zoom alignment  : centre ({cx:g}, {cy:g}), grid {fit.src[idx].tolist()}")
+    print(f"zoom finder     : TL finder, max-residual corner ({cx:g}, {cy:g})")
     print(
         f"zoom residual   : {modules:.4f} modules = "
         f"{modules * fit.inset_scale:.2f} px at {fit.inset_scale:g} px/module "
