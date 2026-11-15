@@ -41,7 +41,7 @@ from qr_reader.detector.version import (
     estimate_version,
     filter_constraints,
 )
-from qr_reader.qr_gen import binarize_image_illumination_corrected
+from qr_reader.preprocess import binarize_image_illumination_corrected, to_gray
 
 logger = logging.getLogger(__name__)
 
@@ -175,11 +175,7 @@ def _prepare_detection(image: np.ndarray, result: DetectionResult) -> DetectionC
     """
     timings = result.timings
 
-    img_gray = np.asarray(image)
-    if img_gray.ndim == 3:
-        import cv2
-
-        img_gray = cv2.cvtColor(img_gray, cv2.COLOR_BGR2GRAY)
+    img_gray = to_gray(image)
 
     t0 = perf_counter()
     img_binary = binarize_image_illumination_corrected(img_gray)
@@ -525,10 +521,4 @@ def detect_sample(image: np.ndarray) -> np.ndarray:
     assert result.H is not None and result.version is not None
     N = 4 * result.version + 17
 
-    img_gray = np.asarray(image)
-    if img_gray.ndim == 3:
-        import cv2
-
-        img_gray = cv2.cvtColor(img_gray, cv2.COLOR_BGR2GRAY)
-
-    return sample_qr_bits(img_gray, result.H, N)
+    return sample_qr_bits(to_gray(image), result.H, N)

@@ -454,7 +454,8 @@ def _full_pipeline_decode(
         build_named_landmarks,
         canonical_grid_landmarks,
     )
-    from qr_reader.qr_gen import binarize_image, generate_test_image
+    from qr_reader.preprocess import binarize_image
+    from qr_reader.qr_gen import generate_test_image
     from qr_reader.detector.region import (
         boundary_connected_components_ndimage,
         region_boundary_8,

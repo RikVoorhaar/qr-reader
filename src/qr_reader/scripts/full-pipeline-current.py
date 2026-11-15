@@ -37,7 +37,7 @@ from qr_reader.detector.homography import (
 )
 from qr_reader.detector.roi import cluster_to_bbox, cutout
 from qr_reader.detector.sample import sample_qr_bits
-from qr_reader.qr_gen import binarize_image
+from qr_reader.preprocess import binarize_image
 from qr_reader.synth.config import AugmentationConfig
 from qr_reader.synth.pipeline import generate_sample
 from qr_reader.synth.presets import PRESET_MAP

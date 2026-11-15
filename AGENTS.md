@@ -10,6 +10,17 @@
 > repository root. This includes plans, reports, research notes, and agent
 > session artifacts.
 
+## Dependency rule: no OpenCV in the main pipeline
+
+OpenCV is a **testing / synthesis / verification** dependency. It may be used in
+`qr_gen.py`, `synth/`, `scripts/`, and `tests/` — and nowhere else.
+
+Code on the detection path (`pipeline.py`, `detector/`, `decoder/`,
+`preprocess.py`) must not import `cv2`, nor import a module that does.
+Numerical image operations used by the pipeline live in `preprocess.py`
+(NumPy/SciPy only). `tests/test_no_opencv_in_pipeline.py` enforces this in a
+subprocess, so a violation fails CI even if `cv2` is already loaded elsewhere.
+
 ## Blog
 
 A personal blog lives in `blog/` (git submodule). Posts are in `blog/src/posts/` as MDX files.
@@ -23,7 +34,8 @@ Every source file under `src/qr_reader/` and its role.
 
 | File | Purpose | Depends on |
 |------|---------|------------|
-| `qr_gen.py` | Generate synthetic QR images with noise, rotation, and perspective warp for testing | `qrcode`, `cv2` |
+| `preprocess.py` | Grayscale conversion, Otsu thresholding, illumination correction and binarization (NumPy/SciPy only) | `scipy.ndimage` |
+| `qr_gen.py` | Generate synthetic QR images with noise, rotation, and perspective warp for testing; also ground-truth finder-pattern geometry. May use OpenCV. | `qrcode`, `cv2` |
 | `pipeline.py` | End-to-end `decode_image`: ranks triplets by cross-ratio, tries bounded (triplet, version) candidates, samples + decodes, returns `DecodeResult` with attempt trace | All detector modules, `decoder.decoder` |
 | `__init__.py` | Package root (empty) | — |
 
@@ -31,7 +43,7 @@ Every source file under `src/qr_reader/` and its role.
 
 | File | Purpose | Depends on |
 |------|---------|------------|
-| `detector.py` | High-level API: `detect_corners`, `detect_homography`, `detect_sample`. Orchestrates `_run_detection`, which returns a `DetectionResult` (always, even on failure). | All detector modules, `qr_gen.binarize_image_illumination_corrected` |
+| `detector.py` | High-level API: `detect_corners`, `detect_homography`, `detect_sample`. Orchestrates `_run_detection`, which returns a `DetectionResult` (always, even on failure). | All detector modules, `preprocess.binarize_image_illumination_corrected`, `preprocess.to_gray` |
 | `alignment.py` | Find candidate alignment patterns via 1:1:3:1:1 ratio scanning (horizontal + vertical cross-validation) | — |
 | `clustering.py` | Merge overlapping alignment pattern candidates into `CandidateCluster` groups | — |
 | `corner.py` | Angular non-maximum suppression to pick the 4 corner points of a region | — |
@@ -91,7 +103,10 @@ These are human-inspectable; the user opens them interactively.
 Image (ndarray)
   │
   ▼
-qr_gen.binarize_image_illumination_corrected() → binary image
+preprocess.to_gray()                              → 2-D grayscale
+  │
+  ▼
+preprocess.binarize_image_illumination_corrected() → binary image
   │
   ▼
 alignment.find_alignment_patterns_2d()   → (rows, cols_all) candidate positions
@@ -176,13 +191,14 @@ bit matrix (N×N bool)
 - **Change the detection pipeline order**: edit `_prepare_detection` or `_run_detection` in `detector/detector.py`. Update the Data Flow in this file and the Architecture section in README.md.
 - **Add a new QR version table entry**: edit `tables.py` `VERSIONS` dict (EC block layout, alignment pattern positions, etc.).
 - **Fix a version estimation issue**: work in `detector/version.py` (cross-ratio computation, constraint filtering, `estimate_version`).
-- **Change binarization**: edit `qr_gen.binarize_image_illumination_corrected`. The default estimates the illumination field with a 101×101 box blur, divides it out, applies Otsu, and removes isolated noise with a 3×3 opening. `qr_gen.binarize_image` remains the plain Otsu helper.
+- **Change binarization**: edit `preprocess.binarize_image_illumination_corrected`. The default estimates the illumination field with a 101×101 box blur, divides it out, applies Otsu, and removes isolated noise with a cross-shaped 3×3 opening. `preprocess.binarize_image` remains the plain Otsu helper. Keep this module OpenCV-free — `tests/test_no_opencv_in_pipeline.py` will fail otherwise.
 - **Run the full pipeline for debugging**: `python src/qr_reader/scripts/full-pipeline-current.py`.
 - **Run benchmarks**: `python src/qr_reader/scripts/qr_benchmark.py`.
 
 ## Testing
 
 - Tests live under `src/qr_reader/tests/`, organized by subsystem (decoder/, detector/).
+- `tests/test_no_opencv_in_pipeline.py` guards the OpenCV dependency rule: it imports the production entry points in a fresh subprocess and fails if `cv2`, `qr_reader.qr_gen`, or `qr_reader.synth` end up in `sys.modules`.
 - Test QR images are generated via `qr_gen.generate_test_image(seed=N)` for reproducibility.
 - The `qr_gen.py` pipeline: clean QR → rotate → perspective warp → Gaussian noise → blur.
 - Run tests: `pytest` from the repo root.

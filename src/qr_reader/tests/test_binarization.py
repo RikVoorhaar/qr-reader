@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import numpy as np
 
-from qr_reader.qr_gen import (
+from qr_reader.preprocess import (
     binarize_image,
     binarize_image_illumination_corrected,
-    make_qr_image,
 )
+from qr_reader.qr_gen import make_qr_image
 
 
 def _smooth_gradient(img: np.ndarray) -> np.ndarray:

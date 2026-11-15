@@ -37,7 +37,7 @@ C_E2 = "#ff7f0e"
 from qr_reader.detector.alignment import find_alignment_patterns_2d
 from qr_reader.detector.clustering import CandidateCluster, cluster_candidates
 from qr_reader.detector.roi import cluster_to_bbox, cutout
-from qr_reader.qr_gen import binarize_image
+from qr_reader.preprocess import binarize_image
 from qr_reader.synth.config import AugmentationConfig
 from qr_reader.synth.pipeline import generate_sample
 from qr_reader.synth.presets import PRESET_MAP

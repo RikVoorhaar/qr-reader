@@ -21,9 +21,10 @@ python src/qr_reader/scripts/qr_benchmark.py
 pytest
 ```
 
-Requires Python ≥ 3.10. Dependencies: `numpy`, `scipy`, `opencv-python`
-(for image I/O and binarization), `matplotlib` (visualization), `networkx`,
-and `qrcode` (test image generation only).
+Requires Python ≥ 3.10. Dependencies: `numpy`, `scipy`, `networkx`, `matplotlib`
+(visualization), and `opencv-python` + `qrcode` (image I/O, synthetic image
+generation, and verification only — the detection and decoding path is
+OpenCV-free; see `src/qr_reader/preprocess.py`).
 
 ## Architecture
 
