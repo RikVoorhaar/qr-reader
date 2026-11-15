@@ -156,15 +156,12 @@ def decode_image(
             try:
                 H, err = _fit_candidate_homography(context, candidate.triplet, N)
                 # Refine with interior alignment patterns (versions >= 2).
-                # Falls back to the 12-corner H on any failure, so this can
-                # only improve (or match) the baseline.
-                try:
-                    H, _ref_stats = build_refined_homography(
-                        context.img_gray, H, candidate.triplet,
-                        context.fps, version,
-                    )
-                except Exception:
-                    pass
+                # A refinement failure is allowed to fail this candidate; the
+                # outer handler records it and the search moves on.
+                H, _ref_stats = build_refined_homography(
+                    context.img_gray, H, candidate.triplet,
+                    context.fps, version,
+                )
             except Exception as exc:
                 attempt.fit_time_s = perf_counter() - t0
                 attempt.failure_reason = (

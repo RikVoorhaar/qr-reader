@@ -98,3 +98,32 @@ class TestDecodeImage:
         assert result.attempts == []
         assert result.time_budget_exhausted
         assert result.n_candidates > 0
+
+    def test_alignment_refinement_failure_is_not_swallowed(self, monkeypatch):
+        """A refinement exception must fail the candidate, not vanish."""
+        import qr_reader.pipeline as pipeline_module
+
+        img = make_qr_image(
+            content="refine failure", version=2, box_size=10, border=4
+        )
+
+        def fail_refinement(*args, **kwargs):
+            raise RuntimeError("alignment refinement exploded")
+
+        monkeypatch.setattr(
+            pipeline_module, "build_refined_homography", fail_refinement
+        )
+
+        result = decode_image(img, expected_payload="refine failure")
+
+        assert not result.success
+        assert not result.detection_ok
+        assert result.attempts
+        assert all(
+            "homography failed" in attempt.failure_reason
+            for attempt in result.attempts
+        )
+        assert all(
+            "alignment refinement exploded" in attempt.failure_reason
+            for attempt in result.attempts
+        )

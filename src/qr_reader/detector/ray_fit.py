@@ -683,35 +683,26 @@ def fit_finder_ray(
 
     # ── 8. Optional joint refinement ──
     if refine_joint:
-        try:
-            half_dirs = np.column_stack(
-                [np.cos(theta_rad), np.sin(theta_rad)]
-            )
-            s_samples = np.linspace(0, max_dist, num_samples)
-            refined_clusters, _ = refine_finder_edges_joint(
-                edge_result.clusters,
-                center_xy,
-                profiles_norm,
-                half_dirs,
-                s_samples,
-                sigma=sigma,
-            )
-            # Reorder to L, R, T, B
-            l_idx, r_idx, t_idx, b_idx = _reorder_to_standard(refined_clusters)
-            ordered = [
-                refined_clusters[l_idx],
-                refined_clusters[r_idx],
-                refined_clusters[t_idx],
-                refined_clusters[b_idx],
-            ]
-        except Exception:
-            l_idx, r_idx, t_idx, b_idx = _reorder_to_standard(edge_result.clusters)
-            ordered = [
-                edge_result.clusters[l_idx],
-                edge_result.clusters[r_idx],
-                edge_result.clusters[t_idx],
-                edge_result.clusters[b_idx],
-            ]
+        half_dirs = np.column_stack(
+            [np.cos(theta_rad), np.sin(theta_rad)]
+        )
+        s_samples = np.linspace(0, max_dist, num_samples)
+        refined_clusters, _ = refine_finder_edges_joint(
+            edge_result.clusters,
+            center_xy,
+            profiles_norm,
+            half_dirs,
+            s_samples,
+            sigma=sigma,
+        )
+        # Reorder to L, R, T, B
+        l_idx, r_idx, t_idx, b_idx = _reorder_to_standard(refined_clusters)
+        ordered = [
+            refined_clusters[l_idx],
+            refined_clusters[r_idx],
+            refined_clusters[t_idx],
+            refined_clusters[b_idx],
+        ]
     else:
         l_idx, r_idx, t_idx, b_idx = _reorder_to_standard(edge_result.clusters)
         ordered = [

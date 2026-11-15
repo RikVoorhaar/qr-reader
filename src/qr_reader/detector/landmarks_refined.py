@@ -19,6 +19,8 @@ images) rather than ``cv2.matchTemplate``.
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 from scipy.signal import fftconvolve
 
@@ -28,6 +30,8 @@ from qr_reader.detector.homography import (
     project_points,
     refine_homography_lm,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -174,9 +178,6 @@ def match_alignment_pattern(
     if pad_l or pad_t or pad_r or pad_b:
         window = np.pad(window, ((pad_t, pad_b), (pad_l, pad_r)), mode="edge")
 
-    if window.shape[0] < th or window.shape[1] < tw:
-        return np.array([cx, cy]), 0.0
-
     res = _ncc_match(window, template)
     my, mx = np.unravel_index(int(np.argmax(res)), res.shape)
     max_val = float(res[my, mx])
@@ -320,8 +321,12 @@ def build_refined_homography(
     H = estimate_homography_dlt(src_arr, dst_arr)
     try:
         H = refine_homography_lm(H, src_arr, dst_arr, loss="linear")
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "LM refinement of the alignment-pattern homography failed; "
+            "keeping the DLT solution: %s",
+            exc,
+        )
 
     proj = project_points(H, src_arr)
     err = float(np.mean(np.linalg.norm(proj - dst_arr, axis=1)))

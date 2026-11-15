@@ -11,6 +11,7 @@ All functions assume the input contains **one** QR code.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from time import perf_counter
 
@@ -41,6 +42,8 @@ from qr_reader.detector.version import (
     filter_constraints,
 )
 from qr_reader.qr_gen import binarize_image_illumination_corrected
+
+logger = logging.getLogger(__name__)
 
 
 def _score_timing_pattern(img_gray: np.ndarray, H: np.ndarray, N: int) -> float:
@@ -410,8 +413,12 @@ def _fit_candidate_homography(
     H = estimate_homography_dlt(src_arr, dst_arr)
     try:
         H = refine_homography_lm(H, src_arr, dst_arr, loss="linear")
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "LM refinement of the 12-corner homography failed; "
+            "keeping the DLT solution: %s",
+            exc,
+        )
 
     proj = project_points(H, src_arr)
     err = float(np.mean(np.linalg.norm(proj - dst_arr, axis=1)))
