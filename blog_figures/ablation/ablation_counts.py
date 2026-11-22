@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Per-image stage attribution for the 100-image captured benchmark.
 
-Replicates the ``decode_image`` candidate loop (up to 5 triplets x 2 versions,
-same ordering, same 15 s budget) but instruments every pipeline stage so we can
-count how many images reach each stage and how many are lost there.
+Instruments the first-pass candidate loop (up to 5 triplets x 2 versions) and
+cross-checks it against the actual ``decode_image`` trace. Fallback recoveries
+are attributed using the successful attempt's provenance, not a simulated
+copy of the retry logic.
 
 The unit is the image: an image "reaches" a stage if at least one candidate
 gets a usable output from that stage.  An image that never decodes is lost at
@@ -40,12 +41,15 @@ from qr_reader.detector.detector import (
     _rank_triplets,
 )
 from qr_reader.detector.edge_fitting import DISTANCE_THRESHOLD, MAX_GAP
-from qr_reader.detector.finder_pattern import FinderPattern, find_valid_triplets
+from qr_reader.detector.finder_pattern import (
+    FinderPattern, find_all_associations, find_triplets,
+)
 from qr_reader.detector.landmarks_refined import build_refined_homography
 from qr_reader.detector.ray_fit import fit_finder_ray
 from qr_reader.detector.roi import cluster_to_bbox, cutout
 from qr_reader.detector.sample import sample_qr_bits
 from qr_reader.preprocess import binarize_image_illumination_corrected, to_gray
+from qr_reader.pipeline import decode_image
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = REPO_ROOT / "data" / "bench" / "captured"
@@ -198,7 +202,7 @@ def _prep(
     reached["fit_finders"] = True
 
     try:
-        triplets = find_valid_triplets(fps, score_map)
+        triplets = find_triplets(fps, find_all_associations(fps, offset_tol=0.62))
     except Exception as exc:  # noqa: BLE001
         reasons["find_triplets"].append(f"{type(exc).__name__}: {exc}")
         return reached, reasons, None, info
@@ -321,7 +325,7 @@ def evaluate_image(img_path: Path) -> dict:
         reasons["decode"].append("time budget exhausted")
 
     version = decoded_version if decoded_version is not None else first_homography_version
-    return _record(
+    record = _record(
         img_path,
         reached,
         reasons,
@@ -331,6 +335,21 @@ def evaluate_image(img_path: Path) -> dict:
         info["n_finder_patterns"],
         info["n_triplets"],
     )
+    # Run the actual cascade rather than duplicating its retry logic. The
+    # instrumented first pass above supplies stage-level diagnostics; verify it
+    # agrees with the production trace before attributing a recovery.
+    result = decode_image(gray, expected_payload=PAYLOAD)
+    first_pass = any(a.success and a.provenance == "production" for a in result.attempts)
+    if first_pass != reached["decode"]:
+        raise RuntimeError(f"{img_path.name}: instrumented and production first passes disagree")
+    if (result.n_candidates, result.n_finder_patterns, result.n_triplets) != (
+        info["n_candidates"], info["n_finder_patterns"], info["n_triplets"]
+    ):
+        raise RuntimeError(f"{img_path.name}: instrumented and production stage counts disagree")
+    successes = [a.provenance for a in result.attempts if a.success]
+    record["final_decoded"] = result.success
+    record["success_provenance"] = successes[0] if successes else None
+    return record
 
 
 def _record(
@@ -413,6 +432,11 @@ def main() -> None:
         },
         "counts": counts,
         "losses": losses,
+        "recoveries": dict(Counter(
+            r["success_provenance"] for r in images
+            if r["success_provenance"] not in (None, "production")
+        )),
+        "final_decoded": sum(r["final_decoded"] for r in images),
         "images": images,
     }
     OUT_PATH.write_text(json.dumps(output, indent=2) + "\n")
@@ -453,7 +477,11 @@ def _print_table(
         )
         print(f"{stage:<18} {counts[stage]:>8} {losses[stage]:>6}  {top}")
 
-    print(f"\nDecoded exact payload: {counts['decode']}/{n}")
+    recoveries = Counter(r["success_provenance"] for r in images)
+    print(f"\nFirst-pass exact payload: {counts['decode']}/{n}")
+    for provenance in ("scale_retry", "base_global_retry", "refined_spatial_retry"):
+        print(f"  {provenance}: +{recoveries[provenance]}")
+    print(f"Final exact payload: {sum(r['final_decoded'] for r in images)}/{n}")
 
     few_candidates = sum(1 for r in images if r["n_candidates"] < 3)
     few_finders = sum(1 for r in images if r["n_finder_patterns"] < 3)

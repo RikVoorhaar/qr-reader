@@ -1,6 +1,6 @@
 {
   "config": {
-    "commit": "8f8081f4568d8310eb6a527dc3287f8ae69d29de",
+    "commit": "6a4fed73e5f2c6543ff18d24d94c3fc88c4aa49d",
     "dataset": "data/bench/captured",
     "payload": "rikvoorhaar.com"
   },
@@ -9,25 +9,31 @@
     "find_candidates": 95,
     "cluster": 95,
     "fit_finders": 95,
-    "find_triplets": 70,
-    "rank_versions": 70,
-    "fit_homography": 70,
-    "refine_alignment": 70,
-    "sample": 70,
-    "decode": 58
+    "find_triplets": 72,
+    "rank_versions": 72,
+    "fit_homography": 72,
+    "refine_alignment": 72,
+    "sample": 72,
+    "decode": 60
   },
   "losses": {
     "binarize": 0,
     "find_candidates": 5,
     "cluster": 0,
     "fit_finders": 0,
-    "find_triplets": 25,
+    "find_triplets": 23,
     "rank_versions": 0,
     "fit_homography": 0,
     "refine_alignment": 0,
     "sample": 0,
     "decode": 12
   },
+  "recoveries": {
+    "refined_spatial_retry": 2,
+    "scale_retry": 3,
+    "base_global_retry": 1
+  },
+  "final_decoded": 66,
   "images": [
     {
       "image": "qr_code_ - 1.jpeg",
@@ -39,7 +45,9 @@
       "version": 3,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 2.jpeg",
@@ -51,7 +59,9 @@
       "version": 3,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 3.jpeg",
@@ -59,11 +69,13 @@
       "payload": "",
       "furthest_stage": "sample",
       "failure_reason": "DecodeError: RS error correction failed for version 3 ECL L (block with 55 data + 15 EC bytes)",
-      "attempts": 6,
+      "attempts": 2,
       "version": 3,
       "n_candidates": 14,
       "n_finder_patterns": 12,
-      "n_triplets": 3
+      "n_triplets": 1,
+      "final_decoded": false,
+      "success_provenance": null
     },
     {
       "image": "qr_code_ - 4.jpeg",
@@ -75,7 +87,9 @@
       "version": 3,
       "n_candidates": 4,
       "n_finder_patterns": 4,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 5.jpeg",
@@ -87,7 +101,9 @@
       "version": 5,
       "n_candidates": 42,
       "n_finder_patterns": 21,
-      "n_triplets": 8
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 6.jpeg",
@@ -99,7 +115,9 @@
       "version": 5,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 7.jpeg",
@@ -111,7 +129,9 @@
       "version": 5,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 8.jpeg",
@@ -123,7 +143,9 @@
       "version": 5,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "refined_spatial_retry"
     },
     {
       "image": "qr_code_ - 9.jpeg",
@@ -135,7 +157,9 @@
       "version": 5,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 10.jpeg",
@@ -147,7 +171,9 @@
       "version": 5,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 11.jpeg",
@@ -159,7 +185,9 @@
       "version": 20,
       "n_candidates": 11,
       "n_finder_patterns": 6,
-      "n_triplets": 3
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 12.jpeg",
@@ -171,19 +199,23 @@
       "version": 20,
       "n_candidates": 5,
       "n_finder_patterns": 5,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 13.jpeg",
       "decoded": false,
       "payload": "",
-      "furthest_stage": "sample",
-      "failure_reason": "DecodeError: RS error correction failed for version 31 ECL M (block with 46 data + 28 EC bytes)",
-      "attempts": 2,
-      "version": 31,
+      "furthest_stage": "fit_finders",
+      "failure_reason": "no finder-pattern triplet found",
+      "attempts": 0,
+      "version": null,
       "n_candidates": 10,
       "n_finder_patterns": 5,
-      "n_triplets": 1
+      "n_triplets": 0,
+      "final_decoded": false,
+      "success_provenance": null
     },
     {
       "image": "qr_code_ - 14.jpeg",
@@ -195,19 +227,23 @@
       "version": 20,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 15.jpeg",
       "decoded": false,
       "payload": "",
-      "furthest_stage": "fit_finders",
-      "failure_reason": "no finder-pattern triplet found",
-      "attempts": 0,
-      "version": null,
+      "furthest_stage": "sample",
+      "failure_reason": "DecodeError: RS error correction failed for version 20 ECL L (block with 107 data + 28 EC bytes)",
+      "attempts": 2,
+      "version": 20,
       "n_candidates": 4,
       "n_finder_patterns": 3,
-      "n_triplets": 0
+      "n_triplets": 1,
+      "final_decoded": false,
+      "success_provenance": null
     },
     {
       "image": "qr_code_ - 16.jpeg",
@@ -219,7 +255,9 @@
       "version": 10,
       "n_candidates": 7,
       "n_finder_patterns": 4,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 17.jpeg",
@@ -231,7 +269,9 @@
       "version": 10,
       "n_candidates": 6,
       "n_finder_patterns": 4,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 18.jpeg",
@@ -243,7 +283,9 @@
       "version": 10,
       "n_candidates": 6,
       "n_finder_patterns": 5,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 19.jpeg",
@@ -255,7 +297,9 @@
       "version": 10,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": false,
+      "success_provenance": null
     },
     {
       "image": "qr_code_ - 20.jpeg",
@@ -267,7 +311,9 @@
       "version": 10,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 21.jpeg",
@@ -275,11 +321,13 @@
       "payload": "",
       "furthest_stage": "sample",
       "failure_reason": "DecodeError: RS error correction failed for version 1 ECL L (block with 19 data + 7 EC bytes)",
-      "attempts": 4,
+      "attempts": 2,
       "version": 1,
       "n_candidates": 29,
       "n_finder_patterns": 27,
-      "n_triplets": 2
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "refined_spatial_retry"
     },
     {
       "image": "qr_code_ - 22.jpeg",
@@ -291,7 +339,9 @@
       "version": null,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 0
+      "n_triplets": 0,
+      "final_decoded": false,
+      "success_provenance": null
     },
     {
       "image": "qr_code_ - 23.jpeg",
@@ -303,7 +353,9 @@
       "version": 1,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 24.jpeg",
@@ -315,7 +367,9 @@
       "version": null,
       "n_candidates": 2,
       "n_finder_patterns": 2,
-      "n_triplets": 0
+      "n_triplets": 0,
+      "final_decoded": true,
+      "success_provenance": "scale_retry"
     },
     {
       "image": "qr_code_ - 25.jpeg",
@@ -327,7 +381,9 @@
       "version": null,
       "n_candidates": 9,
       "n_finder_patterns": 9,
-      "n_triplets": 0
+      "n_triplets": 0,
+      "final_decoded": false,
+      "success_provenance": null
     },
     {
       "image": "qr_code_ - 26.jpeg",
@@ -339,19 +395,23 @@
       "version": 5,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 27.jpeg",
-      "decoded": false,
-      "payload": "",
-      "furthest_stage": "fit_finders",
-      "failure_reason": "no finder-pattern triplet found",
-      "attempts": 0,
-      "version": null,
+      "decoded": true,
+      "payload": "rikvoorhaar.com",
+      "furthest_stage": "decode",
+      "failure_reason": "",
+      "attempts": 1,
+      "version": 5,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 0
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 28.jpeg",
@@ -363,7 +423,9 @@
       "version": 5,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 29.jpeg",
@@ -375,7 +437,9 @@
       "version": 5,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 30.jpeg",
@@ -387,7 +451,9 @@
       "version": 5,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 31.jpeg",
@@ -399,7 +465,9 @@
       "version": 5,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 32.jpeg",
@@ -411,7 +479,9 @@
       "version": 5,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 33.jpeg",
@@ -423,7 +493,9 @@
       "version": null,
       "n_candidates": 1,
       "n_finder_patterns": 1,
-      "n_triplets": 0
+      "n_triplets": 0,
+      "final_decoded": false,
+      "success_provenance": null
     },
     {
       "image": "qr_code_ - 34.jpeg",
@@ -435,7 +507,9 @@
       "version": null,
       "n_candidates": 3,
       "n_finder_patterns": 2,
-      "n_triplets": 0
+      "n_triplets": 0,
+      "final_decoded": false,
+      "success_provenance": null
     },
     {
       "image": "qr_code_ - 35.jpeg",
@@ -447,7 +521,9 @@
       "version": 20,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 36.jpeg",
@@ -459,7 +535,9 @@
       "version": 20,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": false,
+      "success_provenance": null
     },
     {
       "image": "qr_code_ - 37.jpeg",
@@ -471,7 +549,9 @@
       "version": 20,
       "n_candidates": 6,
       "n_finder_patterns": 4,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 38.jpeg",
@@ -483,7 +563,9 @@
       "version": 10,
       "n_candidates": 5,
       "n_finder_patterns": 5,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": false,
+      "success_provenance": null
     },
     {
       "image": "qr_code_ - 39.jpeg",
@@ -495,7 +577,9 @@
       "version": 10,
       "n_candidates": 10,
       "n_finder_patterns": 5,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 40.jpeg",
@@ -507,7 +591,9 @@
       "version": null,
       "n_candidates": 2,
       "n_finder_patterns": 2,
-      "n_triplets": 0
+      "n_triplets": 0,
+      "final_decoded": true,
+      "success_provenance": "scale_retry"
     },
     {
       "image": "qr_code_ - 41.jpeg",
@@ -519,7 +605,9 @@
       "version": null,
       "n_candidates": 4,
       "n_finder_patterns": 4,
-      "n_triplets": 0
+      "n_triplets": 0,
+      "final_decoded": false,
+      "success_provenance": null
     },
     {
       "image": "qr_code_ - 42.jpeg",
@@ -531,7 +619,9 @@
       "version": 10,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 43.jpeg",
@@ -543,7 +633,9 @@
       "version": 10,
       "n_candidates": 5,
       "n_finder_patterns": 5,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": false,
+      "success_provenance": null
     },
     {
       "image": "qr_code_ - 44.jpeg",
@@ -555,7 +647,9 @@
       "version": 10,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": false,
+      "success_provenance": null
     },
     {
       "image": "qr_code_ - 45.jpeg",
@@ -567,7 +661,9 @@
       "version": 10,
       "n_candidates": 5,
       "n_finder_patterns": 4,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 46.jpeg",
@@ -579,7 +675,9 @@
       "version": 1,
       "n_candidates": 4,
       "n_finder_patterns": 4,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 47.jpeg",
@@ -591,7 +689,9 @@
       "version": 1,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 48.jpeg",
@@ -603,7 +703,9 @@
       "version": null,
       "n_candidates": 2,
       "n_finder_patterns": 2,
-      "n_triplets": 0
+      "n_triplets": 0,
+      "final_decoded": false,
+      "success_provenance": null
     },
     {
       "image": "qr_code_ - 49.jpeg",
@@ -615,7 +717,9 @@
       "version": 1,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 50.jpeg",
@@ -627,7 +731,9 @@
       "version": 1,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 51.jpeg",
@@ -639,7 +745,9 @@
       "version": null,
       "n_candidates": 1,
       "n_finder_patterns": 1,
-      "n_triplets": 0
+      "n_triplets": 0,
+      "final_decoded": false,
+      "success_provenance": null
     },
     {
       "image": "qr_code_ - 52.jpeg",
@@ -651,7 +759,9 @@
       "version": 1,
       "n_candidates": 5,
       "n_finder_patterns": 5,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 53.jpeg",
@@ -663,7 +773,9 @@
       "version": 3,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 54.jpeg",
@@ -675,7 +787,9 @@
       "version": 3,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 55.jpeg",
@@ -687,7 +801,9 @@
       "version": 3,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": false,
+      "success_provenance": null
     },
     {
       "image": "qr_code_ - 56.jpeg",
@@ -699,7 +815,9 @@
       "version": 3,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 57.jpeg",
@@ -711,7 +829,9 @@
       "version": 3,
       "n_candidates": 4,
       "n_finder_patterns": 4,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 58.jpeg",
@@ -723,7 +843,9 @@
       "version": null,
       "n_candidates": 0,
       "n_finder_patterns": 0,
-      "n_triplets": 0
+      "n_triplets": 0,
+      "final_decoded": false,
+      "success_provenance": null
     },
     {
       "image": "qr_code_ - 59.jpeg",
@@ -735,7 +857,9 @@
       "version": 3,
       "n_candidates": 6,
       "n_finder_patterns": 4,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 60.jpeg",
@@ -747,7 +871,9 @@
       "version": 3,
       "n_candidates": 17,
       "n_finder_patterns": 15,
-      "n_triplets": 1
+      "n_triplets": 2,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 61.jpeg",
@@ -759,7 +885,9 @@
       "version": 3,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 62.jpeg",
@@ -771,7 +899,9 @@
       "version": 3,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 63.jpeg",
@@ -783,19 +913,23 @@
       "version": 3,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 64.jpeg",
       "decoded": false,
       "payload": "",
-      "furthest_stage": "fit_finders",
-      "failure_reason": "no finder-pattern triplet found",
-      "attempts": 0,
-      "version": null,
+      "furthest_stage": "sample",
+      "failure_reason": "DecodeError: RS error correction failed for version 3 ECL L (block with 55 data + 15 EC bytes)",
+      "attempts": 2,
+      "version": 3,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 0
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "base_global_retry"
     },
     {
       "image": "qr_code_ - 65.jpeg",
@@ -807,7 +941,9 @@
       "version": 3,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 66.jpeg",
@@ -819,7 +955,9 @@
       "version": 3,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 67.jpeg",
@@ -831,7 +969,9 @@
       "version": null,
       "n_candidates": 1,
       "n_finder_patterns": 1,
-      "n_triplets": 0
+      "n_triplets": 0,
+      "final_decoded": false,
+      "success_provenance": null
     },
     {
       "image": "qr_code_ - 68.jpeg",
@@ -843,7 +983,9 @@
       "version": null,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 0
+      "n_triplets": 0,
+      "final_decoded": false,
+      "success_provenance": null
     },
     {
       "image": "qr_code_ - 69.jpeg",
@@ -855,7 +997,9 @@
       "version": 5,
       "n_candidates": 9,
       "n_finder_patterns": 8,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 70.jpeg",
@@ -867,7 +1011,9 @@
       "version": null,
       "n_candidates": 0,
       "n_finder_patterns": 0,
-      "n_triplets": 0
+      "n_triplets": 0,
+      "final_decoded": false,
+      "success_provenance": null
     },
     {
       "image": "qr_code_ - 71.jpeg",
@@ -879,7 +1025,9 @@
       "version": null,
       "n_candidates": 0,
       "n_finder_patterns": 0,
-      "n_triplets": 0
+      "n_triplets": 0,
+      "final_decoded": false,
+      "success_provenance": null
     },
     {
       "image": "qr_code_ - 72.jpeg",
@@ -891,7 +1039,9 @@
       "version": 10,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 73.jpeg",
@@ -903,19 +1053,23 @@
       "version": null,
       "n_candidates": 0,
       "n_finder_patterns": 0,
-      "n_triplets": 0
+      "n_triplets": 0,
+      "final_decoded": false,
+      "success_provenance": null
     },
     {
       "image": "qr_code_ - 74.jpeg",
-      "decoded": false,
-      "payload": "",
-      "furthest_stage": "fit_finders",
-      "failure_reason": "no finder-pattern triplet found",
-      "attempts": 0,
-      "version": null,
+      "decoded": true,
+      "payload": "rikvoorhaar.com",
+      "furthest_stage": "decode",
+      "failure_reason": "",
+      "attempts": 1,
+      "version": 10,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 0
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 75.jpeg",
@@ -927,7 +1081,9 @@
       "version": 10,
       "n_candidates": 4,
       "n_finder_patterns": 4,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 76.jpeg",
@@ -939,7 +1095,9 @@
       "version": null,
       "n_candidates": 2,
       "n_finder_patterns": 2,
-      "n_triplets": 0
+      "n_triplets": 0,
+      "final_decoded": false,
+      "success_provenance": null
     },
     {
       "image": "qr_code_ - 77.jpeg",
@@ -951,7 +1109,9 @@
       "version": 10,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 78.jpeg",
@@ -963,7 +1123,9 @@
       "version": 10,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 79.jpeg",
@@ -975,7 +1137,9 @@
       "version": null,
       "n_candidates": 1,
       "n_finder_patterns": 1,
-      "n_triplets": 0
+      "n_triplets": 0,
+      "final_decoded": false,
+      "success_provenance": null
     },
     {
       "image": "qr_code_ - 80.jpeg",
@@ -987,7 +1151,9 @@
       "version": 10,
       "n_candidates": 4,
       "n_finder_patterns": 4,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": false,
+      "success_provenance": null
     },
     {
       "image": "qr_code_ - 81.jpeg",
@@ -999,7 +1165,9 @@
       "version": null,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 0
+      "n_triplets": 0,
+      "final_decoded": false,
+      "success_provenance": null
     },
     {
       "image": "qr_code_ - 82.jpeg",
@@ -1011,7 +1179,9 @@
       "version": null,
       "n_candidates": 3,
       "n_finder_patterns": 2,
-      "n_triplets": 0
+      "n_triplets": 0,
+      "final_decoded": true,
+      "success_provenance": "scale_retry"
     },
     {
       "image": "qr_code_ - 83.jpeg",
@@ -1023,7 +1193,9 @@
       "version": null,
       "n_candidates": 1,
       "n_finder_patterns": 1,
-      "n_triplets": 0
+      "n_triplets": 0,
+      "final_decoded": false,
+      "success_provenance": null
     },
     {
       "image": "qr_code_ - 84.jpeg",
@@ -1035,7 +1207,9 @@
       "version": null,
       "n_candidates": 2,
       "n_finder_patterns": 1,
-      "n_triplets": 0
+      "n_triplets": 0,
+      "final_decoded": false,
+      "success_provenance": null
     },
     {
       "image": "qr_code_ - 85.jpeg",
@@ -1047,7 +1221,9 @@
       "version": 20,
       "n_candidates": 5,
       "n_finder_patterns": 4,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 86.jpeg",
@@ -1059,19 +1235,23 @@
       "version": 20,
       "n_candidates": 5,
       "n_finder_patterns": 5,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 87.jpeg",
       "decoded": false,
       "payload": "",
-      "furthest_stage": "sample",
-      "failure_reason": "DecodeError: RS error correction failed for version 20 ECL L (block with 107 data + 28 EC bytes)",
-      "attempts": 2,
-      "version": 20,
+      "furthest_stage": "fit_finders",
+      "failure_reason": "no finder-pattern triplet found",
+      "attempts": 0,
+      "version": null,
       "n_candidates": 4,
       "n_finder_patterns": 4,
-      "n_triplets": 1
+      "n_triplets": 0,
+      "final_decoded": false,
+      "success_provenance": null
     },
     {
       "image": "qr_code_ - 88.jpeg",
@@ -1083,7 +1263,9 @@
       "version": null,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 0
+      "n_triplets": 0,
+      "final_decoded": false,
+      "success_provenance": null
     },
     {
       "image": "qr_code_ - 89.jpeg",
@@ -1095,7 +1277,9 @@
       "version": null,
       "n_candidates": 2,
       "n_finder_patterns": 2,
-      "n_triplets": 0
+      "n_triplets": 0,
+      "final_decoded": false,
+      "success_provenance": null
     },
     {
       "image": "qr_code_ - 90.jpeg",
@@ -1107,7 +1291,9 @@
       "version": null,
       "n_candidates": 0,
       "n_finder_patterns": 0,
-      "n_triplets": 0
+      "n_triplets": 0,
+      "final_decoded": false,
+      "success_provenance": null
     },
     {
       "image": "qr_code_ - 91.jpeg",
@@ -1119,7 +1305,9 @@
       "version": null,
       "n_candidates": 2,
       "n_finder_patterns": 2,
-      "n_triplets": 0
+      "n_triplets": 0,
+      "final_decoded": false,
+      "success_provenance": null
     },
     {
       "image": "qr_code_ - 92.jpeg",
@@ -1131,7 +1319,9 @@
       "version": 1,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 93.jpeg",
@@ -1143,7 +1333,9 @@
       "version": 1,
       "n_candidates": 4,
       "n_finder_patterns": 4,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 94.jpeg",
@@ -1155,7 +1347,9 @@
       "version": 1,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 95.jpeg",
@@ -1167,7 +1361,9 @@
       "version": 1,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 96.jpeg",
@@ -1179,7 +1375,9 @@
       "version": 1,
       "n_candidates": 6,
       "n_finder_patterns": 5,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 97.jpeg",
@@ -1191,7 +1389,9 @@
       "version": 1,
       "n_candidates": 4,
       "n_finder_patterns": 4,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 98.jpeg",
@@ -1203,7 +1403,9 @@
       "version": null,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 0
+      "n_triplets": 0,
+      "final_decoded": false,
+      "success_provenance": null
     },
     {
       "image": "qr_code_ - 99.jpeg",
@@ -1215,7 +1417,9 @@
       "version": 1,
       "n_candidates": 3,
       "n_finder_patterns": 3,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     },
     {
       "image": "qr_code_ - 100.jpeg",
@@ -1227,7 +1431,9 @@
       "version": 3,
       "n_candidates": 4,
       "n_finder_patterns": 4,
-      "n_triplets": 1
+      "n_triplets": 1,
+      "final_decoded": true,
+      "success_provenance": "production"
     }
   ]
 }

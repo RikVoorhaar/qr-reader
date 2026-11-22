@@ -29,13 +29,6 @@ STAGES = [
 
 # Secondary annotations: viability thresholds are explicitly described as
 # diagnostics, not as gates that the pipeline actually enforced.
-NOTES = {
-    "find_candidates": ("5", " had no candidate clusters"),
-    "cluster": ("12", " below the 3-cluster viability threshold"),
-    "fit_finders": ("2", " below the 3-finder threshold after dedup"),
-    "find_triplets": ("11", " had ≥3 finders, but no valid triplet"),
-    "decode": ("12", " failed to decode after sampling"),
-}
 
 # Quiet, unified palette drawn from the QR-reader blog figures.
 INK = "#1c2136"
@@ -45,7 +38,7 @@ ARROW = "#ff7800"
 ACCENT = "#c2410c"
 ACCENT_RULE = "#ff7800"
 
-WIDTH, HEIGHT = 900, 458
+WIDTH, HEIGHT = 900, 575
 BOX_W, BOX_H = 400, 68
 X = (20, 480)
 Y0, ROW_GAP = 16, 88
@@ -60,14 +53,14 @@ def _stage_positions() -> list[tuple[int, int]]:
     return positions
 
 
-def render(counts: dict[str, int]) -> str:
+def render(counts: dict[str, int], notes: dict, recoveries: dict[str, int]) -> str:
     positions = _stage_positions()
     lines = [
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {WIDTH} {HEIGHT}" '
         f'width="{WIDTH}" height="{HEIGHT}" role="img">',
         (
-            "<desc>Actual pipeline stages and observed reach counts. Smaller notes "
-            "show candidate and finder viability thresholds and observed failures.</desc>"
+            "<desc>First-pass pipeline viability counts, followed separately by "
+            "the cumulative recoveries from the three fallback paths.</desc>"
         ),
         '<defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="7" '
         'refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 Z" '
@@ -98,7 +91,7 @@ def render(counts: dict[str, int]) -> str:
         )
 
     for i, ((key, label), (x, y)) in enumerate(zip(STAGES, positions)):
-        note = NOTES.get(key)
+        note = notes.get(key)
         lines.append(
             f'<rect x="{x}" y="{y}" width="{BOX_W}" height="{BOX_H}" rx="8" '
             f'fill="{CARD}" stroke="{CARD_STROKE}" stroke-width="1.4"/>'
@@ -123,13 +116,47 @@ def render(counts: dict[str, int]) -> str:
         if note:
             number, explanation = note
             lines.append(
-                f'<text x="{x + 16}" y="{y + 53}" '
+                f'<text x="{x + 16}" y="{y + 53}" xml:space="preserve" '
                 'font-family="ui-sans-serif, sans-serif" '
                 f'font-size="13" fill="{ACCENT}">'
                 f'<tspan font-weight="700">{html.escape(number)}</tspan>'
                 f'<tspan font-weight="500">{html.escape(explanation)}</tspan></text>'
             )
 
+    # Recoveries are cumulative decode totals, not images proceeding through
+    # a single serial pipeline: scale and sampling fallback gates differ.
+    total = counts["decode"]
+    retry_cards = [
+        ("Scale retry", "scale_retry"),
+        ("Original homography", "base_global_retry"),
+        ("Spatial threshold", "refined_spatial_retry"),
+    ]
+    for i, (label, key) in enumerate(retry_cards):
+        x, y, w = 20 + i * 295, 485, 270
+        gained = recoveries.get(key, 0)
+        total += gained
+        lines.append(
+            f'<rect x="{x}" y="{y}" width="{w}" height="{BOX_H}" rx="8" '
+            f'fill="{CARD}" stroke="{CARD_STROKE}" stroke-width="1.4"/>'
+        )
+        lines.append(
+            f'<path d="M {x + 2} {y + 9} V {y + BOX_H - 9}" '
+            f'stroke="{ACCENT_RULE}" stroke-width="3" stroke-linecap="round"/>'
+        )
+        lines.append(
+            f'<text x="{x + 16}" y="{y + 28}" font-family="ui-sans-serif, sans-serif" '
+            f'font-size="16" font-weight="700" fill="{INK}">{html.escape(label)}</text>'
+        )
+        lines.append(
+            f'<text x="{x + w - 16}" y="{y + 30}" text-anchor="end" '
+            f'font-family="ui-sans-serif, sans-serif" font-size="20" font-weight="700" '
+            f'fill="{INK}">{total}</text>'
+        )
+        lines.append(
+            f'<text x="{x + 16}" y="{y + 53}" xml:space="preserve" font-family="ui-sans-serif, sans-serif" '
+            f'font-size="13" fill="{ACCENT}"><tspan font-weight="700">+{gained}</tspan>'
+            '<tspan font-weight="500"> recovered</tspan></text>'
+        )
     lines.append("</svg>")
     return "\n".join(lines)
 
@@ -168,7 +195,14 @@ def main() -> None:
             for stage in ordered_stages[5:]
         },
     }
-    OUT_PATH.write_text(render(funnel_counts))
+    notes = {
+        "find_candidates": (str(len(images) - funnel_counts["find_candidates"]), " had no candidate clusters"),
+        "cluster": (str(funnel_counts["find_candidates"] - funnel_counts["cluster"]), " below the 3-cluster viability threshold"),
+        "fit_finders": (str(funnel_counts["cluster"] - funnel_counts["fit_finders"]), " below the 3-finder threshold after dedup"),
+        "find_triplets": (str(funnel_counts["fit_finders"] - funnel_counts["find_triplets"]), " had ≥3 finders, but no valid triplet"),
+        "decode": (str(funnel_counts["sample"] - funnel_counts["decode"]), " failed to decode after sampling"),
+    }
+    OUT_PATH.write_text(render(funnel_counts, notes, data["recoveries"]))
     print(f"wrote {OUT_PATH}")
 
 
