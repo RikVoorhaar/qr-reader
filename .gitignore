@@ -209,6 +209,9 @@ __marimo__/
 # Dataset downloads
 data/
 
+# Optional standalone blog checkout for regenerating article figures
+/blog/
+
 # Experiment outputs
 out/
 

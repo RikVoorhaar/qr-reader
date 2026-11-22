@@ -1,7 +1,8 @@
 # Experiment: refined landmark extraction for a better homography
 
-**Status:** integrated — wired into `decode_image` as the default homography
-fit (12 outer corners + interior alignment patterns, DLT + LM).
+**Status:** archived experiment. The method was integrated into `decode_image`,
+using 12 outer corners plus interior alignment patterns (DLT + LM). The
+measurements below describe the experiments, not the current pipeline.
 **Module:** `src/qr_reader/detector/landmarks_refined.py`
 
 ## Question

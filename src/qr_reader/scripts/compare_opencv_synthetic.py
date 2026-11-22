@@ -1,4 +1,4 @@
-"""Test OpenCV's QR detector against synthetic QR samples.
+"""Manually compare OpenCV's QR detector on synthetic QR samples.
 
 Generates 5 easy QR images using the augmentation pipeline, saves them
 as PNG (no JPEG recompression) and JPEG, then runs OpenCV's

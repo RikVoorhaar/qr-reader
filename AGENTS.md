@@ -4,7 +4,7 @@
 > sequence of function calls in `detector.py` or `decoder.py`), update the
 > "Data Flow" and "Module Map" sections below, and `README.md`'s "Architecture"
 > section. When you add or rename a domain concept, update `CONTEXT.md`.
-> Run the `doc-maintenance` skill afterward to audit for drift.
+> Audit these docs against the code afterward.
 >
 > **Markdown files always live in `docs/`.** Never create `.md` files in the
 > repository root. This includes plans, reports, research notes, and agent
@@ -13,22 +13,27 @@
 ## Dependency rule: no OpenCV in the main pipeline
 
 OpenCV is a **testing / synthesis / verification** dependency. It may be used in
-`qr_gen.py`, `synth/`, `scripts/`, and `tests/` — and nowhere else.
+`qr_gen.py`, `synth/`, `scripts/`, `tests/`, and figure or benchmark tooling
+outside the reader.
 
 Code on the detection path (`pipeline.py`, `detector/`, `decoder/`,
 `preprocess.py`) must not import `cv2`, nor import a module that does.
 Numerical image operations used by the pipeline live in `preprocess.py`
-(NumPy/SciPy only). `tests/test_no_opencv_in_pipeline.py` enforces this in a
-subprocess, so a violation fails CI even if `cv2` is already loaded elsewhere.
+(NumPy/SciPy only). `src/qr_reader/tests/test_no_opencv_in_pipeline.py` enforces
+this in a subprocess, so a violation fails CI even if `cv2` is already loaded
+elsewhere.
 
 ## Blog
 
-A personal blog lives in `blog/` (git submodule). Posts are in `blog/src/posts/` as MDX files.
-Run `npm install && npm run build` inside `blog/` after adding or editing a post.
+The [blog](https://github.com/RikVoorhaar/blog) is a separate repository, not a
+submodule. An optional checkout at `blog/` is ignored by this repository.
+Scripts in `blog_figures/` reproduce article assets and benchmark measurements;
+several write assets into that checkout. Follow the blog repository's own
+instructions when editing it.
 
 ## Module Map
 
-Every source file under `src/qr_reader/` and its role.
+Core modules and commonly used scripts under `src/qr_reader/`.
 
 ### Root
 
@@ -44,8 +49,8 @@ Every source file under `src/qr_reader/` and its role.
 | File | Purpose | Depends on |
 |------|---------|------------|
 | `detector.py` | High-level API: `detect_corners`, `detect_homography`, `detect_sample`. Orchestrates `_run_detection`; triplets use edge associations at offset tolerance 0.62. | All detector modules, `preprocess.binarize_image_illumination_corrected`, `preprocess.to_gray` |
-| `alignment.py` | Find candidate alignment patterns via 1:1:3:1:1 ratio scanning (horizontal + vertical cross-validation) | — |
-| `clustering.py` | Merge overlapping alignment pattern candidates into `CandidateCluster` groups | — |
+| `alignment.py` | Find finder-pattern candidates via 1:1:3:1:1 ratio scanning (horizontal + vertical cross-validation) | — |
+| `clustering.py` | Merge overlapping finder-pattern candidates into `CandidateCluster` groups | — |
 | `corner.py` | Angular non-maximum suppression to pick the 4 corner points of a region | — |
 | `finder_pattern.py` | Extract `FinderPattern` quads, check pairwise `Association`, find L-shaped `Triplet`s | `geometry.py` |
 | `geometry.py` | Low-level geometric primitives: angular distance, local offset, polygon area, segment intersection | — |
@@ -80,6 +85,7 @@ Every source file under `src/qr_reader/` and its role.
 | `full-pipeline-current.py` | End-to-end pipeline with per-seed backgrounds (composited QR); ray-profile finder fitting |
 | `qr_benchmark.py` | Benchmark detection/decoding across presets, versions, and seeds |
 | `benchmark_captured.py` | Benchmark on the captured dataset (100 photos encoding `rikvoorhaar.com`): 6-stage detection funnel, decode accuracy, wall time |
+| `compare_opencv_synthetic.py` | Manual OpenCV smoke check on synthetic QR samples |
 | `debug_find_all_associations.py` | Targeted debug script for the `find_all_associations` high-version failure |
 | `ray-profile.py` | Diagnostic script for ray-profile fitting; reference implementation (plotting) |
 
@@ -126,7 +132,7 @@ detector._prepare_detection() : deduplicate → find_all_associations(offset_tol
 detector._rank_triplets() : build_named_landmarks → build_constraints →
   filter_constraints → estimate_version      → list[TripletCandidate] (best first)
   │
-  ▼ (bounded triplet × version loop; first pass unchanged)
+  ▼ (bounded triplet × version loop)
 detector._fit_candidate_homography() : 12-corner DLT + LM
   │
   ▼
@@ -202,7 +208,7 @@ bit matrix (N×N bool)
 ## Common Modification Tasks
 
 - **Add a new encoding mode** (e.g., Kanji): add tables to `decoder/tables.py`, add a `_decode_kanji` function in `decoder/bitstream.py`, wire it into `decode_bitstream`.
-- **Improve finder pattern detection**: modify `detector/finder_pattern.py` (`find_valid_triplets` for triplet discovery). Legacy association thresholds live in `check_association` / `find_all_associations`.
+- **Change triplet discovery**: the production path uses `check_association` / `find_all_associations` and `find_triplets` in `detector/finder_pattern.py`. The production offset tolerance is set in `detector._prepare_detection()`.
 - **Change the detection pipeline order**: edit `_prepare_detection` or `_run_detection` in `detector/detector.py`, or the staged retries in `pipeline.py`. Update the Data Flow in this file and the Architecture section in README.md.
 - **Add a new QR version table entry**: edit `tables.py` `VERSIONS` dict (EC block layout, alignment pattern positions, etc.).
 - **Fix a version estimation issue**: work in `detector/version.py` (cross-ratio computation, constraint filtering, `estimate_version`).
@@ -213,11 +219,11 @@ bit matrix (N×N bool)
 ## Testing
 
 - Tests live under `src/qr_reader/tests/`, organized by subsystem (decoder/, detector/).
-- `tests/test_no_opencv_in_pipeline.py` guards the OpenCV dependency rule: it imports the production entry points in a fresh subprocess and fails if `cv2`, `qr_reader.qr_gen`, or `qr_reader.synth` end up in `sys.modules`.
+- `src/qr_reader/tests/test_no_opencv_in_pipeline.py` guards the OpenCV dependency rule: it imports the production entry points in a fresh subprocess and fails if `cv2`, `qr_reader.qr_gen`, or `qr_reader.synth` end up in `sys.modules`.
 - Test QR images are generated via `qr_gen.generate_test_image(seed=N)` for reproducibility.
 - The `qr_gen.py` pipeline: clean QR → rotate → perspective warp → Gaussian noise → blur.
 - Run tests: `pytest` from the repo root.
-- `third_party/` is excluded from pytest via `pyproject.toml`.
+- `third_party/` and the optional `blog/` checkout are excluded from pytest via `pyproject.toml`.
 
 ## Issue Tracking
 
