@@ -61,6 +61,19 @@ Exact comparison of a decoded string against an expected payload. A mismatch
 keeps the search going; it is not a decoding failure.
 _Avoid_: Validation, match test
 
+**Decode Retry Pass**:
+A provenance-tagged bounded retry after the production pass fails. Scale retry
+is reserved for exactly two fitted finders; otherwise ranked triplets may be
+sampled with the base homography/global threshold and then refined homography/
+spatial threshold, using the same candidate and version limits.
+_Avoid_: Oracle, expanded search
+
+**Finder Threshold Plane**:
+An affine threshold over QR-grid coordinates fitted through the three finder
+centres, using the midpoint of local black- and white-module medians at each
+finder.
+_Avoid_: Per-pixel threshold map, illumination field
+
 **Homography**:
 A 3×3 matrix mapping grid coordinates to image coordinates, estimated via DLT,
 refined with RANSAC and Levenberg-Marquardt optimization.

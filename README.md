@@ -40,11 +40,14 @@ Image
   → Cluster candidates
   → Fit finder pattern per cluster (ray-profile + edge fit)
   → Deduplicate overlapping candidates
-  → Find L-shaped triplets (centre geometry + axis alignment)
+  → Find L-shaped triplets (edge associations, offset tolerance 0.62)
   → Rank triplets and versions (cross-ratio landmarks)
   → Fit homography for a candidate (12-corner DLT + LM)
   → Sample module bit matrix
-  → Decode; on failure try the next ranked (triplet, version)
+  → Decode; on failure try the next bounded (triplet, version)
+  → If exactly 2 finders: one 1.25× linear SciPy zoom retry
+  → Otherwise on ranked-triplet misses: base-H/global threshold, then
+    refined-H/finder-derived spatial threshold
 ```
 
 Three single-candidate detection functions:
@@ -55,7 +58,10 @@ Three single-candidate detection functions:
 And one full end-to-end function:
 - **`decode_image(image, expected_payload=None, ...)`** → `DecodeResult` —
   tries a bounded set of cross-ratio-ranked triplets and versions, samples and
-  decodes each, and returns the first accepted payload plus the attempt trace.
+  decodes each, then uses gated retries without widening candidate/version
+  search. All retries share the call's time budget and the attempt trace records
+  each pass's provenance. The scale retry uses SciPy only and maps its returned
+  homography to the original image coordinates.
 
 ### Decoding Pipeline
 

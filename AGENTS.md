@@ -36,14 +36,14 @@ Every source file under `src/qr_reader/` and its role.
 |------|---------|------------|
 | `preprocess.py` | Grayscale conversion, Otsu thresholding, illumination correction and binarization (NumPy/SciPy only) | `scipy.ndimage` |
 | `qr_gen.py` | Generate synthetic QR images with noise, rotation, and perspective warp for testing; also ground-truth finder-pattern geometry. May use OpenCV. | `qrcode`, `cv2` |
-| `pipeline.py` | End-to-end `decode_image`: ranks triplets by cross-ratio, tries bounded (triplet, version) candidates, samples + decodes, returns `DecodeResult` with attempt trace | All detector modules, `decoder.decoder` |
+| `pipeline.py` | End-to-end `decode_image`: ranks triplets by cross-ratio, tries bounded (triplet, version) candidates, then gated scale or sampling fallbacks within one time budget; returns `DecodeResult` with provenance trace | All detector modules, `decoder.decoder`, `scipy.ndimage` |
 | `__init__.py` | Package root (empty) | — |
 
 ### Detector (`detector/`)
 
 | File | Purpose | Depends on |
 |------|---------|------------|
-| `detector.py` | High-level API: `detect_corners`, `detect_homography`, `detect_sample`. Orchestrates `_run_detection`, which returns a `DetectionResult` (always, even on failure). | All detector modules, `preprocess.binarize_image_illumination_corrected`, `preprocess.to_gray` |
+| `detector.py` | High-level API: `detect_corners`, `detect_homography`, `detect_sample`. Orchestrates `_run_detection`; triplets use edge associations at offset tolerance 0.62. | All detector modules, `preprocess.binarize_image_illumination_corrected`, `preprocess.to_gray` |
 | `alignment.py` | Find candidate alignment patterns via 1:1:3:1:1 ratio scanning (horizontal + vertical cross-validation) | — |
 | `clustering.py` | Merge overlapping alignment pattern candidates into `CandidateCluster` groups | — |
 | `corner.py` | Angular non-maximum suppression to pick the 4 corner points of a region | — |
@@ -53,7 +53,7 @@ Every source file under `src/qr_reader/` and its role.
 | `landmarks.py` | Build `NamedLandmarks` from a Triplet, compute colinear quadruples for cross-ratio measurement | `finder_pattern.py` |
 | `landmarks_refined.py` | Interior 5×5 alignment-pattern landmarks for a better homography: template matching + `build_refined_homography` (outer corners + alignment patterns, DLT + LM). Used by `pipeline.decode_image`. | `homography.py`, `tables.py` |
 | `region.py` | Wave-front fill, 8-connected boundary trace, connected-components on boundaries | `scipy`, `networkx` |
-| `sample.py` | Sample the module bit matrix from the rectified QR image using the homography | `homography.py`, `scipy` |
+| `sample.py` | Sample module bit matrices using global adaptive or finder-derived planar spatial thresholds | `homography.py`, `scipy` |
 | `version.py` | Cross-ratio measurement, constraint building/filtering, version estimation | `landmarks.py` |
 | `roi.py` | Compute padded bounding box from `CandidateCluster`, extract clamped sub-image cutout | `clustering.py` |
 | `ray_fit.py` | Ray-profile finder fitting: ``fit_finder_ray(roi, center_xy, m_est) → RayFitResult``. Samples radial profiles, fits per-ray module pitch, clusters boundary points into edges. | `edge_fitting.py`, `scipy` |
@@ -118,14 +118,15 @@ clustering.cluster_candidates()          → list[CandidateCluster]
 ray_fit.fit_finder_ray()                   → RayFitResult (corners, score, valid)
   │
   ▼
-detector._prepare_detection() : deduplicate → find_valid_triplets()
+detector._prepare_detection() : deduplicate → find_all_associations(offset_tol=0.62)
+                                               → find_triplets()
                                                → DetectionContext (img, fps, triplets)
   │
   ▼
 detector._rank_triplets() : build_named_landmarks → build_constraints →
   filter_constraints → estimate_version      → list[TripletCandidate] (best first)
   │
-  ▼ (bounded triplet × version loop)
+  ▼ (bounded triplet × version loop; first pass unchanged)
 detector._fit_candidate_homography() : 12-corner DLT + LM
   │
   ▼
@@ -141,6 +142,20 @@ decoder.decode()                           → text; stop on accepted payload
   ▼
 pipeline.decode_image()                    → DecodeResult (text, attempts, timings)
 ```
+
+On a failed first pass, `decode_image` follows one mutually exclusive fallback:
+
+- Exactly two fitted finder patterns: one `scipy.ndimage.zoom` retry at 1.25×,
+  linear interpolation, `grid_mode=True`, `mode="reflect"`, and the same
+  bounded production decoder. The successful homography is mapped back to the
+  original image's pixel-centre coordinates.
+- Otherwise, when ranked triplets exist: retry base 12-corner H with global
+  sampling, then refined H with a planar threshold interpolated from finder
+  black/white medians, reusing the original ranked candidates and version caps.
+
+All stages share `time_budget_s`. `DecodeAttempt.provenance` distinguishes
+`production`, `scale_retry`, `base_global_retry`, and
+`refined_spatial_retry`.
 
 The single-candidate wrappers (`detect_corners`, `detect_homography`,
 `detect_sample`) call `detector._run_detection()`, which uses only the
@@ -173,8 +188,8 @@ bit matrix (N×N bool)
 - **`DetectionTimings`** (`detector.py`): per-stage wall times in seconds (binarize, alignment, clustering, refinement, dedup, triplet, homography, total).
 - **`DetectionContext`** (`detector.py`): preprocessing output reused across candidates — `img_gray`, `fps`, `score_map`, `global_corners_xy`, `triplets`, `timings`, and stage counts.
 - **`TripletCandidate`** (`detector.py`): `triplet`, `landmarks`, `version_candidates` (best first), `version_scores`, `best_version`, `cross_ratio_score`.
-- **`DecodeAttempt`** (`pipeline.py`): one (triplet, version) trial — candidate ids, version, cross-ratio score, homography/sample/decode times, decoded text, success flag, and `failure_reason`.
-- **`DecodeResult`** (`pipeline.py`): `success`, `text`, `version`, `H`, `error`, `attempts`, stage counts, `detection_ok`, `prep_time_s`, `total_time_s`, `time_budget_exhausted`.
+- **`DecodeAttempt`** (`pipeline.py`): one (triplet, version, provenance) trial — candidate ids, version, cross-ratio score, homography/sample/decode times, decoded text, success flag, and `failure_reason`.
+- **`DecodeResult`** (`pipeline.py`): `success`, `text`, `version`, `H`, `error`, `attempts`, stage counts, `detection_ok`, `prep_time_s`, `total_time_s`, `time_budget_exhausted`, fallback timing and scale-retry counts.
 - **`DataBlock`** (`data_block.py`): `data: bytes`, `ec: bytes` — one error-correction block after de-interleaving.
 
 ## Coordinate Conventions
@@ -188,7 +203,7 @@ bit matrix (N×N bool)
 
 - **Add a new encoding mode** (e.g., Kanji): add tables to `decoder/tables.py`, add a `_decode_kanji` function in `decoder/bitstream.py`, wire it into `decode_bitstream`.
 - **Improve finder pattern detection**: modify `detector/finder_pattern.py` (`find_valid_triplets` for triplet discovery). Legacy association thresholds live in `check_association` / `find_all_associations`.
-- **Change the detection pipeline order**: edit `_prepare_detection` or `_run_detection` in `detector/detector.py`. Update the Data Flow in this file and the Architecture section in README.md.
+- **Change the detection pipeline order**: edit `_prepare_detection` or `_run_detection` in `detector/detector.py`, or the staged retries in `pipeline.py`. Update the Data Flow in this file and the Architecture section in README.md.
 - **Add a new QR version table entry**: edit `tables.py` `VERSIONS` dict (EC block layout, alignment pattern positions, etc.).
 - **Fix a version estimation issue**: work in `detector/version.py` (cross-ratio computation, constraint filtering, `estimate_version`).
 - **Change binarization**: edit `preprocess.binarize_image_illumination_corrected`. The default estimates the illumination field with a 101×101 box blur, divides it out, applies Otsu, and removes isolated noise with a cross-shaped 3×3 opening. `preprocess.binarize_image` remains the plain Otsu helper. Keep this module OpenCV-free — `tests/test_no_opencv_in_pipeline.py` will fail otherwise.

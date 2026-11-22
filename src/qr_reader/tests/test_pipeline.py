@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import numpy as np
 
-from qr_reader.pipeline import decode_image
+import qr_reader.pipeline as pipeline_module
+from qr_reader.decoder.decoder import decode as decode_bits
+from qr_reader.pipeline import DecodeAttempt, DecodeResult, decode_image
 from qr_reader.qr_gen import generate_test_image, make_qr_image
+from qr_reader.detector.sample import sample_qr_bits_spatial_threshold
 
 
 def _two_qr_image(
@@ -98,9 +101,111 @@ class TestDecodeImage:
         assert result.attempts == []
         assert result.time_budget_exhausted
         assert result.n_candidates > 0
+        assert not result.scale_retry_attempted
 
-    def test_alignment_refinement_failure_is_not_swallowed(self, monkeypatch):
-        """A refinement exception must fail the candidate, not vanish."""
+    def test_two_finder_failure_runs_one_scaled_standard_pass(self, monkeypatch):
+        image = np.zeros((8, 10), dtype=np.uint8)
+        scaled = np.zeros((10, 13), dtype=np.uint8)
+        context = type("Context", (), {"img_gray": image})()
+        calls = []
+        scaled_h = np.array(
+            [[2.0, 0.0, 4.0], [0.0, 3.0, 6.0], [0.0, 0.0, 1.0]]
+        )
+
+        def standard_pass(
+            current, expected, max_triplets, max_versions, *, deadline, provenance="production"
+        ):
+            calls.append((current.shape, provenance))
+            if len(calls) == 1:
+                return (
+                    DecodeResult(n_finder_patterns=2),
+                    context,
+                    [],
+                    {},
+                )
+            retry = DecodeResult(
+                success=True,
+                text="payload",
+                version=1,
+                H=scaled_h,
+                detection_ok=True,
+                detected_version=1,
+                attempts=[
+                    DecodeAttempt(
+                        triplet_rank=0,
+                        top_left_idx=0,
+                        top_right_idx=1,
+                        bottom_left_idx=2,
+                        version=1,
+                        cross_ratio_score=0.0,
+                        success=True,
+                        decoded_text="payload",
+                        provenance=provenance,
+                    )
+                ],
+            )
+            return retry, context, [], {}
+
+        monkeypatch.setattr(pipeline_module, "_decode_standard_pass", standard_pass)
+        monkeypatch.setattr(pipeline_module, "zoom", lambda *a, **k: scaled)
+
+        result = decode_image(image, expected_payload="payload")
+
+        assert result.success
+        assert result.scale_retry_attempted
+        assert result.attempts[0].provenance == "scale_retry"
+        assert result.retry_n_finder_patterns == 0
+        assert calls == [((8, 10), "production"), ((10, 13), "scale_retry")]
+        sx, sy = 13 / 10, 10 / 8
+        expected_map = np.array(
+            [
+                [1 / sx, 0, (1 / sx - 1) / 2],
+                [0, 1 / sy, (1 / sy - 1) / 2],
+                [0, 0, 1],
+            ]
+        )
+        np.testing.assert_allclose(result.H, expected_map @ scaled_h)
+
+    def test_non_two_finder_failure_does_not_scale(self, monkeypatch):
+        image = np.zeros((8, 10), dtype=np.uint8)
+        result_without_retry = DecodeResult(n_finder_patterns=1)
+
+        def standard_pass(*args, **kwargs):
+            return result_without_retry, None, None, {}
+
+        monkeypatch.setattr(pipeline_module, "_decode_standard_pass", standard_pass)
+        monkeypatch.setattr(
+            pipeline_module,
+            "zoom",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("unexpected zoom")),
+        )
+
+        result = decode_image(image)
+
+        assert not result.success
+        assert not result.scale_retry_attempted
+
+    def test_spatial_threshold_sampler_decodes_clean_qr(self):
+        version = 2
+        modules = 17 + 4 * version
+        image = make_qr_image(
+            content="spatial threshold",
+            version=version,
+            box_size=10,
+            border=4,
+        )
+        H = np.array(
+            [[10.0, 0.0, 40.0], [0.0, 10.0, 40.0], [0.0, 0.0, 1.0]]
+        )
+
+        bits = sample_qr_bits_spatial_threshold(image, H, modules)
+
+        assert decode_bits(bits) == "spatial threshold"
+
+    def test_alignment_refinement_failure_is_traced_before_base_h_fallback(
+        self, monkeypatch
+    ):
+        """The failed refined attempt remains visible if base-H sampling succeeds."""
         import qr_reader.pipeline as pipeline_module
 
         img = make_qr_image(
@@ -116,14 +221,17 @@ class TestDecodeImage:
 
         result = decode_image(img, expected_payload="refine failure")
 
-        assert not result.success
-        assert not result.detection_ok
+        assert result.success
+        assert result.text == "refine failure"
         assert result.attempts
-        assert all(
-            "homography failed" in attempt.failure_reason
+        first_pass_failures = [
+            attempt
             for attempt in result.attempts
+            if attempt.provenance == "production"
+            and "alignment refinement exploded" in attempt.failure_reason
+        ]
+        assert first_pass_failures
+        fallback_success = next(
+            attempt for attempt in result.attempts if attempt.success
         )
-        assert all(
-            "alignment refinement exploded" in attempt.failure_reason
-            for attempt in result.attempts
-        )
+        assert fallback_success.provenance == "base_global_retry"

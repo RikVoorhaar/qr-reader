@@ -25,7 +25,8 @@ from qr_reader.detector.ray_fit import RayFitResult, fit_finder_ray
 from qr_reader.detector.finder_pattern import (
     FinderPattern,
     Triplet,
-    find_valid_triplets,
+    find_all_associations,
+    find_triplets,
 )
 from qr_reader.detector.homography import (
     compute_qr_corners,
@@ -263,9 +264,10 @@ def _prepare_detection(image: np.ndarray, result: DetectionResult) -> DetectionC
     if not fps:
         raise ValueError("No finder patterns after deduplication")
 
-    # Find triplets via centre geometry + axis alignment
+    # Preserve the edge-association geometry used by the production decoder.
     t0 = perf_counter()
-    triplets = find_valid_triplets(fps, score_map)
+    associations = find_all_associations(fps, offset_tol=0.62)
+    triplets = find_triplets(fps, associations)
     timings.triplet_s = perf_counter() - t0
     result.n_triplets = len(triplets)
     if not triplets:

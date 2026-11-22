@@ -220,3 +220,57 @@ def sample_qr_bits(
     light_modules = white_votes >= 5.0
 
     return (~light_modules).T
+
+
+def sample_qr_bits_spatial_threshold(
+    image: np.ndarray, H: np.ndarray, N: int
+) -> np.ndarray:
+    """Sample modules using a planar threshold fitted to the three finders.
+
+    A local black/white median threshold is measured independently inside each
+    finder pattern. The three thresholds are interpolated over QR-grid
+    coordinates by the unique affine plane through the finder centres.
+    """
+    black_cells, white_cells = finder_pattern_known_cells(N)
+    finder_centres = ((3.5, 3.5), (N - 3.5, 3.5), (3.5, N - 3.5))
+    image_f64 = image.astype(np.float64)
+    finder_thresholds: list[float] = []
+
+    for centre_x, centre_y in finder_centres:
+        def sample_finder_cells(cells: list[tuple[int, int]]) -> np.ndarray:
+            local_cells = [
+                (row, col)
+                for row, col in cells
+                if abs(col + 0.5 - centre_x) <= 3.5
+                and abs(row + 0.5 - centre_y) <= 3.5
+            ]
+            grid_xy = np.asarray(
+                [[col + 0.5, row + 0.5] for row, col in local_cells],
+                dtype=np.float64,
+            )
+            return _sample_points(image_f64, H, grid_xy)
+
+        black_values = sample_finder_cells(black_cells)
+        white_values = sample_finder_cells(white_cells)
+        finder_thresholds.append(
+            float((np.median(black_values) + np.median(white_values)) / 2.0)
+        )
+
+    plane_design = np.asarray(
+        [[1.0, x, y] for x, y in finder_centres], dtype=np.float64
+    )
+    plane = np.linalg.solve(plane_design, np.asarray(finder_thresholds))
+    rows, cols = np.meshgrid(
+        np.arange(N, dtype=np.float64),
+        np.arange(N, dtype=np.float64),
+        indexing="ij",
+    )
+    threshold = plane[0] + plane[1] * (cols + 0.5) + plane[2] * (rows + 0.5)
+
+    values = _supersample_cells(
+        image_f64, H, rows.ravel(), cols.ravel()
+    ).reshape(N, N, 3, 3)
+    white_votes = np.sum(
+        (values > threshold[:, :, None, None]) * _WEIGHTS, axis=(-2, -1)
+    )
+    return (~(white_votes >= 5.0)).T
