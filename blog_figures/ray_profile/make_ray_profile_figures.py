@@ -50,7 +50,7 @@ from qr_reader.detector.ray_fit import (  # noqa: E402
     sample_ray_profiles,
 )
 from qr_reader.detector.roi import cluster_to_bbox, cutout  # noqa: E402
-from qr_reader.qr_gen import binarize_image  # noqa: E402
+from qr_reader.preprocess import binarize_image  # noqa: E402
 
 # ── Figure configuration ─────────────────────────────────────────────────────
 
