@@ -38,7 +38,7 @@ ARROW = "#ff7800"
 ACCENT = "#c2410c"
 ACCENT_RULE = "#ff7800"
 
-WIDTH, HEIGHT = 900, 575
+WIDTH, HEIGHT = 900, 558
 BOX_W, BOX_H = 400, 68
 X = (20, 480)
 Y0, ROW_GAP = 16, 88
@@ -53,14 +53,14 @@ def _stage_positions() -> list[tuple[int, int]]:
     return positions
 
 
-def render(counts: dict[str, int], notes: dict, recoveries: dict[str, int]) -> str:
+def render(counts: dict[str, int], notes: dict, scale_recoveries: int) -> str:
     positions = _stage_positions()
     lines = [
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {WIDTH} {HEIGHT}" '
         f'width="{WIDTH}" height="{HEIGHT}" role="img">',
         (
-            "<desc>First-pass pipeline viability counts, followed separately by "
-            "the cumulative recoveries from the three fallback paths.</desc>"
+            "<desc>Pipeline viability counts without resizing, followed separately by "
+            "the additional decodes from retrying on an enlarged image.</desc>"
         ),
         '<defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="7" '
         'refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 Z" '
@@ -123,40 +123,31 @@ def render(counts: dict[str, int], notes: dict, recoveries: dict[str, int]) -> s
                 f'<tspan font-weight="500">{html.escape(explanation)}</tspan></text>'
             )
 
-    # Recoveries are cumulative decode totals, not images proceeding through
-    # a single serial pipeline: scale and sampling fallback gates differ.
-    total = counts["decode"]
-    retry_cards = [
-        ("Scale retry", "scale_retry"),
-        ("Original homography", "base_global_retry"),
-        ("Spatial threshold", "refined_spatial_retry"),
-    ]
-    for i, (label, key) in enumerate(retry_cards):
-        x, y, w = 20 + i * 295, 485, 270
-        gained = recoveries.get(key, 0)
-        total += gained
-        lines.append(
-            f'<rect x="{x}" y="{y}" width="{w}" height="{BOX_H}" rx="8" '
-            f'fill="{CARD}" stroke="{CARD_STROKE}" stroke-width="1.4"/>'
-        )
-        lines.append(
-            f'<path d="M {x + 2} {y + 9} V {y + BOX_H - 9}" '
-            f'stroke="{ACCENT_RULE}" stroke-width="3" stroke-linecap="round"/>'
-        )
-        lines.append(
-            f'<text x="{x + 16}" y="{y + 28}" font-family="ui-sans-serif, sans-serif" '
-            f'font-size="16" font-weight="700" fill="{INK}">{html.escape(label)}</text>'
-        )
-        lines.append(
-            f'<text x="{x + w - 16}" y="{y + 30}" text-anchor="end" '
-            f'font-family="ui-sans-serif, sans-serif" font-size="20" font-weight="700" '
-            f'fill="{INK}">{total}</text>'
-        )
-        lines.append(
-            f'<text x="{x + 16}" y="{y + 53}" xml:space="preserve" font-family="ui-sans-serif, sans-serif" '
-            f'font-size="13" fill="{ACCENT}"><tspan font-weight="700">+{gained}</tspan>'
-            '<tspan font-weight="500"> recovered</tspan></text>'
-        )
+    # This is a separate retry, not the next step for images that decoded.
+    x, y = X[1], 474
+    total = counts["decode"] + scale_recoveries
+    lines.append(
+        f'<rect x="{x}" y="{y}" width="{BOX_W}" height="{BOX_H}" rx="8" '
+        f'fill="{CARD}" stroke="{CARD_STROKE}" stroke-width="1.4"/>'
+    )
+    lines.append(
+        f'<path d="M {x + 2} {y + 9} V {y + BOX_H - 9}" '
+        f'stroke="{ACCENT_RULE}" stroke-width="3" stroke-linecap="round"/>'
+    )
+    lines.append(
+        f'<text x="{x + 16}" y="{y + 28}" font-family="ui-sans-serif, sans-serif" '
+        f'font-size="17" font-weight="700" fill="{INK}">With scale retry</text>'
+    )
+    lines.append(
+        f'<text x="{x + BOX_W - 16}" y="{y + 30}" text-anchor="end" '
+        f'font-family="ui-sans-serif, sans-serif" font-size="20" font-weight="700" '
+        f'fill="{INK}">{total}</text>'
+    )
+    lines.append(
+        f'<text x="{x + 16}" y="{y + 53}" xml:space="preserve" font-family="ui-sans-serif, sans-serif" '
+        f'font-size="13" fill="{ACCENT}"><tspan font-weight="700">+{scale_recoveries}</tspan>'
+        '<tspan font-weight="500"> after enlarging the image</tspan></text>'
+    )
     lines.append("</svg>")
     return "\n".join(lines)
 
@@ -195,6 +186,9 @@ def main() -> None:
             for stage in ordered_stages[5:]
         },
     }
+    # Count both sampling variants in the decode stage on the original image.
+    scale_recoveries = data["recoveries"].get("scale_retry", 0)
+    funnel_counts["decode"] = data["final_decoded"] - scale_recoveries
     notes = {
         "find_candidates": (str(len(images) - funnel_counts["find_candidates"]), " had no candidate clusters"),
         "cluster": (str(funnel_counts["find_candidates"] - funnel_counts["cluster"]), " below the 3-cluster viability threshold"),
@@ -202,7 +196,7 @@ def main() -> None:
         "find_triplets": (str(funnel_counts["fit_finders"] - funnel_counts["find_triplets"]), " had ≥3 finders, but no valid triplet"),
         "decode": (str(funnel_counts["sample"] - funnel_counts["decode"]), " failed to decode after sampling"),
     }
-    OUT_PATH.write_text(render(funnel_counts, notes, data["recoveries"]))
+    OUT_PATH.write_text(render(funnel_counts, notes, scale_recoveries))
     print(f"wrote {OUT_PATH}")
 
 
