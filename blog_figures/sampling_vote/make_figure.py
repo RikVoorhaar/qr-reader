@@ -1,19 +1,15 @@
 #!/usr/bin/env python3
 """Build the "3x3 vote vs one pixel" figure for the QR-reader blog.
 
-One real capture (``qr_code_ - 23.jpeg``, version 1, ECL L, mask 2) decodes
-correctly with the production 3x3 weighted-vote sampler but fails Reed-Solomon
-when every module is sampled with only its centre point.  This script renders
-one module of that symbol where the two samplers disagree:
+One real capture (``qr_code_ - 77.jpeg``, version 10) contains a dark module
+where the single centre sample lands on a small bright speck, so sampling only
+that pixel reads *light* (wrong), while eight of the nine 3x3 samples are dark,
+so the weighted vote reads *dark* (right).
 
-* the centre sample lands on a small bright speck inside a dark module, so the
-  single-pixel sampler reads *light* (wrong);
-* eight of the nine 3x3 samples are dark, so the weighted vote (centre weight
-  2, total 10, light iff >= 5) reads *dark* (right).
-
-Left panel shows the single centre sample, right panel the nine samples with
-the centre drawn larger (it counts twice).  Both panels share the same square
-crop of the photo and the same projected module grid.
+Left panel shows the single centre sample as one white dot.  Right panel shows
+all nine samples as filled white/black dots and labels the weighted result
+(centre weight 2, total 10).  Both panels share the same square crop of the
+photo and the same projected module grid.
 
 Run from the repository root::
 
@@ -53,23 +49,25 @@ from qr_reader.detector.sample import (  # noqa: E402
 from qr_reader.pipeline import decode_image  # noqa: E402
 
 DATA_PATH = (
-    REPO_ROOT / "data" / "bench" / "captured-fullsize" / "qr_code_ - 23.jpeg"
+    REPO_ROOT / "data" / "bench" / "captured-fullsize" / "qr_code_ - 77.jpeg"
 )
 OUT_PATH = (
     REPO_ROOT / "blog" / "src" / "assets" / "blog" / "qr-reader" / "sampling-vote.png"
 )
 PAYLOAD = "rikvoorhaar.com"
 
-MODULE_ROW = 4
-MODULE_COL = 9
-CROP_HALF_PX = 64.0
+MODULE_ROW = 56
+MODULE_COL = 37
+CROP_HALF_PX = 48.0
 
 SAMPLE_OFFSETS = (0.25, 0.5, 0.75)
+SAMPLE_WEIGHTS = np.array(
+    [[1.0, 1.0, 1.0], [1.0, 2.0, 1.0], [1.0, 1.0, 1.0]]
+)
 
 WRONG_COLOR = "#ff4d4d"
 RIGHT_COLOR = "#3ddc84"
 GRID_DARK = "#101010"
-MARK_EDGE = "#101010"
 
 ECL_TO_QRCODE = {
     "L": qrcode.constants.ERROR_CORRECT_L,
@@ -124,12 +122,6 @@ def analyse(row: int = MODULE_ROW, col: int = MODULE_COL):
     threshold = compute_adaptive_threshold(gray, H, N)
     centre = centre_values(gray, H, N)
     bits_centre = (~(centre > threshold)).T  # [col, row]
-    try:
-        decode_qr(bits_centre)
-    except Exception:  # noqa: BLE001 - failure is the point of the figure
-        pass
-    else:
-        raise SystemExit("single-centre sampler unexpectedly decoded cleanly")
 
     ecl_idx, mask = decode_format_info(bits_3x3, version)
     ref = reference_matrix(version, ECL_NAMES[ecl_idx], mask)
@@ -145,8 +137,7 @@ def analyse(row: int = MODULE_ROW, col: int = MODULE_COL):
                 mode="nearest",
             )[0]
 
-    weights = np.array([[1.0, 1.0, 1.0], [1.0, 2.0, 1.0], [1.0, 1.0, 1.0]])
-    white_votes = float(np.sum((nine > threshold) * weights))
+    white_votes = float(np.sum((nine > threshold) * SAMPLE_WEIGHTS))
     bit_3x3 = not (white_votes >= 5.0)
     bit_centre = bool(bits_centre[col, row])
 
@@ -165,9 +156,9 @@ def analyse(row: int = MODULE_ROW, col: int = MODULE_COL):
     print(f"nine       : {np.round(nine, 1).tolist()}")
     print(f"centre bit : {'dark' if bit_centre else 'light'} (WRONG)")
     print(f"3x3 bit    : {'dark' if bit_3x3 else 'light'} (right), "
-          f"light weight {white_votes:.0f}/10")
+          f"dark weight {10.0 - white_votes:.0f}/10")
 
-    return gray, H, N, row, col
+    return gray, H, N, row, col, threshold, nine
 
 
 def grid_bounds(H: np.ndarray, x0, y0, x1, y1) -> tuple[float, float, float, float]:
@@ -209,15 +200,18 @@ def module_quad(H, row, col):
     return project_points(H, corners)
 
 
-def ring(ax, x, y, size, lw=1.5, zorder=8):
-    """Open marker with a dark halo so it reads on both dark and light modules."""
+def sample_dot(ax, x, y, light: bool, size: float, *, zorder: int = 8) -> None:
+    """Filled dot in the colour the sample votes for, with a contrasting edge."""
+    face = "white" if light else GRID_DARK
+    edge = GRID_DARK if light else "white"
     ax.scatter(
-        [x], [y], s=size * 1.9, facecolors="none",
-        edgecolors=MARK_EDGE, linewidths=lw * 2.2, alpha=0.75, zorder=zorder,
-    )
-    ax.scatter(
-        [x], [y], s=size, facecolors="none",
-        edgecolors="white", linewidths=lw, zorder=zorder + 1,
+        [x],
+        [y],
+        s=size,
+        facecolors=face,
+        edgecolors=edge,
+        linewidths=0.9,
+        zorder=zorder,
     )
 
 
@@ -264,7 +258,7 @@ def sample_xy(H, row, col):
     )[0]
 
 
-def render(gray, H, N, row, col, out_path: Path = OUT_PATH):
+def render(gray, H, N, row, col, threshold, nine, out_path: Path = OUT_PATH):
     x_img, y_img = sample_xy(H, row, col)
     half = CROP_HALF_PX
     x0, x1 = x_img - half, x_img + half
@@ -299,32 +293,50 @@ def render(gray, H, N, row, col, out_path: Path = OUT_PATH):
             spine.set_visible(False)
         ax.set_title(title, loc="center", fontsize=22, color="#1a1a1a", pad=10)
 
-    # Left panel: the single centre sample.
+    # Left panel: the single centre sample, in the colour it votes for.
     ax = axes[0]
     draw_module_marks(ax, H, row, col, WRONG_COLOR)
     cx, cy = sample_xy(H, row, col)
-    ring(ax, cx, cy, 330, lw=2.0, zorder=8)
+    sample_dot(ax, cx, cy, True, 300, zorder=8)
 
-    # Right panel: all nine samples, the centre counts twice.
+    # Right panel: all nine samples as black/white dots.  The centre is only
+    # slightly larger; the exact weighting is stated by the vote label.
     ax = axes[1]
     draw_module_marks(ax, H, row, col, RIGHT_COLOR)
-    for dy in SAMPLE_OFFSETS:
-        for dx in SAMPLE_OFFSETS:
+    light = nine > threshold
+    for i, dy in enumerate(SAMPLE_OFFSETS):
+        for j, dx in enumerate(SAMPLE_OFFSETS):
             if dx == 0.5 and dy == 0.5:
                 continue
             pt = project_points(H, np.array([[col + dx, row + dy]], dtype=float))[0]
-            ring(ax, pt[0], pt[1], 55, lw=1.3, zorder=8)
-    ring(ax, cx, cy, 330, lw=2.0, zorder=9)
+            sample_dot(ax, pt[0], pt[1], bool(light[i, j]), 65, zorder=8)
+    sample_dot(ax, cx, cy, bool(light[1, 1]), 95, zorder=9)
+
+    white_votes = float(np.sum(light * SAMPLE_WEIGHTS))
+    dark_votes = 10.0 - white_votes
+    if dark_votes >= 5.0:
+        vote_label = f"{dark_votes:g}/10 dark"
+    else:
+        vote_label = f"{white_votes:g}/10 white"
+
+    quad = module_quad(H, row, col)
+    module_w = float(np.linalg.norm(quad[1] - quad[0]))
     ax.text(
-        cx + 30,
+        cx + 1.8 * module_w,
         cy,
-        "×2",
-        fontsize=14,
+        vote_label,
+        fontsize=13.5,
         fontweight="bold",
-        color="white",
+        color=GRID_DARK,
         ha="left",
         va="center",
-        bbox=dict(boxstyle="round,pad=0.20", fc="#101010", ec="none", alpha=0.8),
+        bbox=dict(
+            boxstyle="round,pad=0.22",
+            fc="white",
+            ec=GRID_DARK,
+            lw=1.0,
+            alpha=0.96,
+        ),
         zorder=10,
     )
 
@@ -342,8 +354,8 @@ def main() -> None:
     ap.add_argument("--col", type=int, default=MODULE_COL)
     ap.add_argument("--out", type=Path, default=OUT_PATH)
     args = ap.parse_args()
-    gray, H, N, row, col = analyse(args.row, args.col)
-    render(gray, H, N, row, col, args.out)
+    gray, H, N, row, col, threshold, nine = analyse(args.row, args.col)
+    render(gray, H, N, row, col, threshold, nine, args.out)
 
 
 if __name__ == "__main__":
