@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import pytest
 
@@ -256,3 +258,33 @@ class TestConsistency:
         projected = projected[:, :2] / projected[:, 2:]
 
         np.testing.assert_allclose(corners, projected, atol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# LM refinement fallback
+# ---------------------------------------------------------------------------
+
+
+class TestLMFailure:
+    """LM refinement failures are logged, not swallowed."""
+
+    def test_lm_failure_logs_warning_and_keeps_dlt(self, monkeypatch, caplog):
+        import qr_reader.detector.detector as detector_module
+
+        img = make_qr_image(
+            content="lm warning", version=2, box_size=10, border=4
+        )
+
+        def fail_lm(*args, **kwargs):
+            raise RuntimeError("LM exploded")
+
+        monkeypatch.setattr(detector_module, "refine_homography_lm", fail_lm)
+
+        with caplog.at_level(logging.WARNING):
+            H, version = detector_module.detect_homography(img)
+
+        assert H.shape == (3, 3)
+        assert version == 2
+        assert (
+            "LM refinement of the 12-corner homography failed" in caplog.text
+        )

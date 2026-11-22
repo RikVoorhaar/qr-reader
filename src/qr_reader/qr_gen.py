@@ -104,19 +104,6 @@ def gaussian_blur(img: np.ndarray, kernel_size: int = 5) -> np.ndarray:
     return cv2.GaussianBlur(img, (kernel_size, kernel_size), 0)
 
 
-def binarize_image(img: np.ndarray, threshold: int | None = None) -> np.ndarray:
-    """Threshold to a boolean image (True = white).
-
-    If *threshold* is ``None`` (default), Otsu's method is used.
-    """
-    if threshold is None:
-        threshold, binary = cv2.threshold(
-            img, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU
-        )
-        return binary.astype(bool)
-    return cv2.threshold(img, threshold, 255, cv2.THRESH_BINARY)[1].astype(bool)
-
-
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------

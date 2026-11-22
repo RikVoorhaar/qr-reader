@@ -5,6 +5,7 @@ import pytest
 
 from qr_reader.detector.ray_fit import (
     RayFitResult,
+    _minimize_bounded_batch,
     finder_soft_template,
     fit_all_rays,
     fit_finder_ray,
@@ -342,3 +343,50 @@ class TestFinderSoftTemplate:
         peaks = (grad[1:-1] > grad[:-2]) & (grad[1:-1] > grad[2:])
         n_peaks = int(np.sum(peaks & (grad[1:-1] > 0.01)))
         assert n_peaks >= 3, f"Expected >= 3 gradient peaks, got {n_peaks}"
+
+
+# ---------------------------------------------------------------------------
+# Batch refiner equivalence
+# ---------------------------------------------------------------------------
+
+
+class TestMinimizeBoundedBatch:
+    """``_minimize_bounded_batch`` must reproduce scipy per row exactly."""
+
+    def test_matches_scipy_row_by_row(self):
+        from scipy.optimize import minimize_scalar
+
+        rng = np.random.default_rng(0)
+        n_rows = 24
+        n_samples = 120
+        t_pos = np.linspace(0.0, 80.0, n_samples)
+        row_lens = rng.integers(10, n_samples + 1, size=n_rows)
+        width = int(row_lens.max())
+
+        t_batch = np.zeros((n_rows, width))
+        p_batch = np.zeros((n_rows, width))
+        for i, n in enumerate(row_lens):
+            t_batch[i, :n] = t_pos[:n]
+            p_batch[i, :n] = np.clip(
+                finder_soft_template(t_pos[:n], rng.uniform(2.0, 20.0), 1.0)
+                + rng.normal(0.0, 0.1, n),
+                0.0,
+                1.0,
+            )
+        lower = rng.uniform(2.0, 4.0, size=n_rows)
+        upper = lower + rng.uniform(0.5, 2.0, size=n_rows)
+
+        x, fun, ok = _minimize_bounded_batch(
+            t_batch, p_batch, row_lens.astype(float), lower, upper, 1.0
+        )
+
+        for i, n in enumerate(row_lens):
+            def cost(m, t=t_batch[i, :n], p=p_batch[i, :n]):
+                return float(np.mean((finder_soft_template(t, m, 1.0) - p) ** 2))
+
+            res = minimize_scalar(
+                cost, bounds=(lower[i], upper[i]), method="bounded"
+            )
+            assert x[i] == res.x
+            assert fun[i] == res.fun
+            assert bool(ok[i]) == bool(res.success)

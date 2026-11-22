@@ -27,8 +27,12 @@ A named reference point (A–F) on the QR code grid used for homography estimati
 _Avoid_: Anchor point, reference point
 
 **Alignment Pattern**:
-A smaller 1:1:3:1:1 ratio pattern scattered across the QR code (versions ≥ 2)
-used to locate candidate regions.
+A 5×5 interior square (ratio 1:1:1:1:1) that appears at version-dependent grid
+positions (versions ≥ 2).  Its centre is a landmark for homography estimation.
+Note: `detector/alignment.py` historically names its 1:1:3:1:1 scan "alignment
+patterns", but that ratio is actually the **Finder Pattern** — a pre-existing
+naming drift.  The true 5×5 alignment pattern is detected for the first time by
+`detector/landmarks_refined.py`.
 _Avoid_: Timing pattern, positioning mark
 
 **Candidate Cluster**:
@@ -37,9 +41,38 @@ the same QR code region.
 _Avoid_: Region group, pattern cluster
 
 **Cross-ratio**:
-A projective invariant computed from four colinear points, used to estimate the
-QR code version by comparing measured ratios against expected values.
+A projective invariant computed from four colinear points, used to rank QR
+code versions by comparing measured ratios against expected values.
 _Avoid_: Ratio, projective measure
+
+**Version Candidate**:
+A QR version shortlisted for one Triplet by its cross-ratio score. The pipeline
+tries the best one or two candidates instead of searching all forty versions.
+_Avoid_: Guess, size hypothesis
+
+**Decode Attempt**:
+One (Triplet, Version Candidate) trial: fit a homography, sample the module
+grid, and decode. Records the cross-ratio score, stage timings, decoded text,
+and the failure reason when the attempt is rejected.
+_Avoid_: Iteration, pass, run
+
+**Payload Check**:
+Exact comparison of a decoded string against an expected payload. A mismatch
+keeps the search going; it is not a decoding failure.
+_Avoid_: Validation, match test
+
+**Decode Retry Pass**:
+A provenance-tagged bounded retry after the production pass fails. Scale retry
+is reserved for exactly two fitted finders; otherwise ranked triplets may be
+sampled with the base homography/global threshold and then refined homography/
+spatial threshold, using the same candidate and version limits.
+_Avoid_: Oracle, expanded search
+
+**Finder Threshold Plane**:
+An affine threshold over QR-grid coordinates fitted through the three finder
+centres, using the midpoint of local black- and white-module medians at each
+finder.
+_Avoid_: Per-pixel threshold map, illumination field
 
 **Homography**:
 A 3×3 matrix mapping grid coordinates to image coordinates, estimated via DLT,
@@ -179,3 +212,24 @@ Small random perturbation applied to each corner of the source quad before
 computing the perspective homography. The primary mechanism for introducing
 perspective distortion.
 _Avoid_: Corner noise, corner perturbation, projective jitter
+
+### Evaluation
+
+**Captured QR Benchmark**:
+ The dataset of 100 real-world photos (1920×1440) at `data/bench/captured`,
+ covering 15 QR symbols across 5 versions and 3 scales, all encoding the same
+ payload `rikvoorhaar.com`. Serves as an end-to-end accuracy test against real
+ camera conditions. Released as the GitHub release asset
+ `captured-qr-benchmark-v1.tar.gz`.
+_Avoid_: Real-world dataset, photo set
+
+**Payload**:
+The exact string a QR code encodes; the ground truth for decode correctness
+in benchmarks. The captured benchmark's payload is `rikvoorhaar.com`.
+_Avoid_: Content, message, expected text
+
+**Funnel**:
+The sequence of per-stage pass rates from raw detection to decode: candidate
+clusters → refined finder patterns → triplets → version estimation →
+decodable → correct payload. Used to localize where the pipeline loses images.
+_Avoid_: Conversion rate, stage analysis, drop-off

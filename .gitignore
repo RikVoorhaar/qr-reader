@@ -209,6 +209,9 @@ __marimo__/
 # Dataset downloads
 data/
 
+# Optional standalone blog checkout for regenerating article figures
+/blog/
+
 # Experiment outputs
 out/
 
@@ -217,4 +220,5 @@ diagnose_images/
 diagnose_composited.json
 benchmark_current.json
 benchmark_ray.json
+benchmark_captured.json
 data/bench/

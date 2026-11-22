@@ -32,19 +32,31 @@ def find_alignment_patterns(img_binary: np.ndarray, max_error: float):
     expected = expected / expected.sum()
     log_expected = np.log(expected)
 
-    rows, columns = np.where(np.diff(img_binary))
+    rows, columns = np.divmod(
+        np.flatnonzero(np.diff(img_binary, axis=1)), max(img_binary.shape[1] - 1, 1)
+    )
 
     row_changes = np.diff(rows) > 0
     run_lengths_smart = np.diff(columns).astype(np.float64)  # keep float for scoring below
     run_lengths_smart[row_changes] = 0
 
     seqs = sliding_window_view(run_lengths_smart, window_shape=5) + 1e-8
-    scores = np.max(
-        np.abs(np.log(seqs / np.sum(seqs, axis=1, keepdims=True)) - log_expected),
-        axis=1,
-    )
+    ratios = seqs / np.sum(seqs, axis=1, keepdims=True)
 
-    (candidate_indices,) = np.where(scores < max_error)
+    # Conservative pre-filter: a window passes the exact score test only if
+    # every ratio lies inside the acceptance band.  Ratios are compared with a
+    # tiny margin so the pre-filter can never reject a scoring window.
+    margin = 1e-9
+    lo = expected * np.exp(-max_error - margin)
+    hi = expected * np.exp(max_error + margin)
+    keep = np.all((ratios > lo) & (ratios < hi), axis=1)
+    kept_indices = np.flatnonzero(keep)
+
+    scores = np.max(
+        np.abs(np.log(ratios[kept_indices]) - log_expected), axis=1
+    )
+    (kept_candidates,) = np.where(scores < max_error)
+    candidate_indices = kept_indices[kept_candidates]
     candidate_rows = rows[candidate_indices]
 
     indices_to_add = np.arange(6)

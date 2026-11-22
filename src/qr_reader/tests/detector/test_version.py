@@ -6,6 +6,8 @@ from qr_reader.detector.landmarks import (
     NamedLandmarks,
     canonical_grid_landmarks,
 )
+from qr_reader.detector.detector import DetectionContext, DetectionTimings, _rank_triplets
+from qr_reader.detector.finder_pattern import FinderPattern, Triplet
 from qr_reader.detector.version import (
     Constraint,
     build_constraints,
@@ -280,3 +282,70 @@ class TestEstimateVersion:
 
 
 # Note: NamedLandmarks imported at module level above.
+
+
+def _outer_only_fps(N: int) -> list[FinderPattern]:
+    """Three finder patterns containing only canonical outer corners."""
+    A = np.array([[0, 0], [7, 0], [7, 7], [0, 7]], dtype=np.float64)
+    C = np.array(
+        [[0, N - 7], [7, N - 7], [7, N], [0, N]], dtype=np.float64
+    )
+    E = np.array(
+        [[N - 7, 0], [N, 0], [N, 7], [N - 7, 7]], dtype=np.float64
+    )
+    return [
+        FinderPattern(cluster_idx=0, outer_corners=A),
+        FinderPattern(cluster_idx=1, outer_corners=C),
+        FinderPattern(cluster_idx=2, outer_corners=E),
+    ]
+
+
+def _context(fps: list[FinderPattern], triplet: Triplet) -> DetectionContext:
+    return DetectionContext(
+        img_gray=np.zeros((1, 1), dtype=np.uint8),
+        fps=fps,
+        score_map={fp.cluster_idx: 0.0 for fp in fps},
+        global_corners_xy={
+            fp.cluster_idx: fp.outer_corners[:, ::-1] for fp in fps
+        },
+        triplets=[triplet],
+        timings=DetectionTimings(),
+    )
+
+
+class TestTripletRanking:
+    """Cross-ratio ranking with the outer corners available in the pipeline."""
+
+    def test_version_recovered_with_outer_corners_only(self):
+        """Outer corners alone are enough to rank the correct version first."""
+        for V in (2, 5, 10):
+            N = 4 * V + 17
+            fps = _outer_only_fps(N)
+            triplet = Triplet(top_left_idx=0, top_right_idx=1, bottom_left_idx=2)
+            ranked = _rank_triplets(_context(fps, triplet))
+
+            assert len(ranked) == 1
+            candidate = ranked[0]
+            assert candidate.best_version == V
+            assert candidate.version_candidates[0] == V
+            assert candidate.cross_ratio_score < 1e-6
+
+    def test_empty_constraints_raise(self):
+        """Degenerate landmarks must raise rather than silently fall back."""
+        t = 0.01
+        tiny_A = np.array([[0, 0], [t, 0], [t, t], [0, t]], dtype=np.float64)
+        tiny_C = tiny_A + np.array([[0.0, 2 * t], [0.0, 2 * t], [0.0, 2 * t], [0.0, 2 * t]])
+        tiny_E = tiny_A + np.array([[2 * t, 0.0], [2 * t, 0.0], [2 * t, 0.0], [2 * t, 0.0]])
+        fps = [
+            FinderPattern(cluster_idx=0, outer_corners=tiny_A),
+            FinderPattern(cluster_idx=1, outer_corners=tiny_C),
+            FinderPattern(cluster_idx=2, outer_corners=tiny_E),
+        ]
+        triplet = Triplet(top_left_idx=0, top_right_idx=1, bottom_left_idx=2)
+
+        try:
+            _rank_triplets(_context(fps, triplet))
+        except ValueError as exc:
+            assert "cross-ratio" in str(exc).lower()
+        else:
+            raise AssertionError("Expected ValueError for degenerate landmarks")
